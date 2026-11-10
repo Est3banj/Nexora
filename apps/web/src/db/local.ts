@@ -10,6 +10,7 @@ import {
   parseExpectedRow,
   type ExpectedBreakdown,
   type MutationEntity,
+  variantCodeSchema,
 } from "@pos/shared";
 import { localTx, type LocalQueryable } from "./pglite";
 
@@ -26,6 +27,19 @@ import { localTx, type LocalQueryable } from "./pglite";
  */
 
 type Q = LocalQueryable;
+
+async function assertLocalCategory(q: Q, tenantId: string, id?: string | null) {
+  if (!id) return;
+  const result = await q.query("SELECT id FROM categories WHERE tenant_id=$1 AND id=$2", [tenantId, id]);
+  if (!result.rows[0]) throw new Error("Categoría no encontrada en este comercio");
+}
+
+export function catalogError(err: unknown): string {
+  const e = err as { code?: string; constraint?: string; message?: string };
+  if (e?.code === "23505" && e.constraint === "product_variants_tenant_code_uq")
+    return "El código ya pertenece a otra variante de este comercio";
+  return e?.message ?? "No se pudo guardar el catálogo";
+}
 
 const newId = () => globalThis.crypto.randomUUID();
 
@@ -118,6 +132,7 @@ export type LocalProduct = {
     name: string;
     price: number;
     cost: number | null;
+    code: string | null;
     stock: number;
     low_stock_threshold: number | null;
     active: boolean;
@@ -149,11 +164,12 @@ export async function listProducts(
     name: string;
     price: number;
     cost: number | null;
+    code: string | null;
     stock: number;
     low_stock_threshold: number | null;
     active: boolean;
   }>(
-    `SELECT id, client_uuid, product_id, name, price, cost, stock, low_stock_threshold, active
+    `SELECT id, client_uuid, product_id, name, price, cost, code, stock, low_stock_threshold, active
      FROM product_variants WHERE tenant_id = $1 ORDER BY name`,
     [tenantId],
   );
@@ -203,6 +219,7 @@ export async function createLocalCategory(
 }
 
 export type SaleItem = {
+  code?: string | null;
   id: string;
   product_id: string;
   product_name: string;
@@ -224,16 +241,17 @@ export async function listSaleItems(db: Q, tenantId: string): Promise<SaleItem[]
     name: string;
     price: number;
     cost: number | null;
+    code: string | null;
     stock: number;
     active: boolean;
     product_active: boolean;
     category_id: string | null;
     photo: string | null;
   }>(
-    `SELECT v.id, v.product_id, p.name AS product_name, v.name, v.price, v.cost, v.stock, v.active,
+    `SELECT v.id, v.product_id, p.name AS product_name, v.name, v.price, v.cost, v.code, v.stock, v.active,
             p.active AS product_active, p.category_id, p.photo
      FROM product_variants v
-     JOIN products p ON p.id = v.product_id
+     JOIN products p ON p.id = v.product_id AND p.tenant_id = v.tenant_id
      WHERE v.tenant_id = $1 AND v.active = TRUE AND p.active = TRUE
      ORDER BY p.name, v.name`,
     [tenantId],
@@ -248,11 +266,13 @@ export async function createLocalProduct(
     name: string;
     category_id?: string | null;
     photo?: string | null;
-    variant: { name: string; price: number; cost?: number | null; stock?: number };
+    variant: { name: string; price: number; code?: string | null; cost?: number | null; stock?: number };
   },
 ): Promise<LocalProduct> {
   return localTx(db, async (tx) => {
     const productId = newId();
+    await assertLocalCategory(tx, tenantId, input.category_id);
+    const code = variantCodeSchema.parse(input.variant.code ?? null);
     const variantId = newId();
     const stock = input.variant.stock ?? 0;
     const cost = input.variant.cost ?? null;
@@ -264,9 +284,9 @@ export async function createLocalProduct(
     );
     await tx.query(
       `INSERT INTO product_variants
-         (id, tenant_id, client_uuid, product_id, name, price, cost, stock, low_stock_threshold, active)
-       VALUES ($1, $2, $1, $3, $4, $5, $6, $7, NULL, TRUE)`,
-      [variantId, tenantId, productId, input.variant.name, input.variant.price, cost, stock],
+         (id, tenant_id, client_uuid, product_id, name, price, cost, stock, code, low_stock_threshold, active)
+       VALUES ($1, $2, $1, $3, $4, $5, $6, $7, $8, NULL, TRUE)`,
+      [variantId, tenantId, productId, input.variant.name, input.variant.price, cost, stock, code],
     );
     if (stock !== 0) {
       const diaryId = newId();
@@ -296,6 +316,7 @@ export async function createLocalProduct(
     await enqueueMutation(tx, tenantId, "variant", variantId, {
       product_id: productId,
       name: input.variant.name,
+      code,
       price: input.variant.price,
       cost,
       stock,
@@ -315,6 +336,7 @@ export async function createLocalProduct(
           id: variantId,
           client_uuid: variantId,
           name: input.variant.name,
+          code,
           price: input.variant.price,
           cost,
           stock,
@@ -331,7 +353,7 @@ export async function addLocalVariant(
   db: PGlite,
   tenantId: string,
   productId: string,
-  variant: { name: string; price: number; cost?: number | null; stock?: number },
+  variant: { name: string; price: number; code?: string | null; cost?: number | null; stock?: number },
 ): Promise<{ id: string; stock: number } | null> {
   return localTx(db, async (tx) => {
     const product = await tx.query<{ id: string }>(
@@ -342,12 +364,13 @@ export async function addLocalVariant(
 
     const variantId = newId();
     const stock = variant.stock ?? 0;
+    const code = variantCodeSchema.parse(variant.code ?? null);
     const cost = variant.cost ?? null;
     await tx.query(
       `INSERT INTO product_variants
-         (id, tenant_id, client_uuid, product_id, name, price, cost, stock, low_stock_threshold, active)
-       VALUES ($1, $2, $1, $3, $4, $5, $6, $7, NULL, TRUE)`,
-      [variantId, tenantId, productId, variant.name, variant.price, cost, stock],
+         (id, tenant_id, client_uuid, product_id, name, price, cost, stock, code, low_stock_threshold, active)
+       VALUES ($1, $2, $1, $3, $4, $5, $6, $7, $8, NULL, TRUE)`,
+      [variantId, tenantId, productId, variant.name, variant.price, cost, stock, code],
     );
     if (stock !== 0) {
       const diaryId = newId();
@@ -370,6 +393,7 @@ export async function addLocalVariant(
     await enqueueMutation(tx, tenantId, "variant", variantId, {
       product_id: productId,
       name: variant.name,
+      code,
       price: variant.price,
       cost,
       stock,
@@ -392,6 +416,7 @@ export async function updateLocalProduct(
   },
 ): Promise<number> {
   return localTx(db, async (tx) => {
+    await assertLocalCategory(tx, tenantId, patch.category_id);
     const rows = await tx.query<{
       client_uuid: string;
       name: string;
@@ -430,7 +455,7 @@ export async function updateLocalVariant(
   db: PGlite,
   tenantId: string,
   variantId: string,
-  patch: { name?: string; price?: number; cost?: number | null; active?: boolean },
+  patch: { name?: string; price?: number; code?: string | null; cost?: number | null; active?: boolean },
 ): Promise<number> {
   return localTx(db, async (tx) => {
     const rows = await tx.query<{
@@ -440,10 +465,11 @@ export async function updateLocalVariant(
       price: number;
       cost: number | null;
       stock: number;
+      code: string | null;
       low_stock_threshold: number | null;
       active: boolean;
     }>(
-      `SELECT client_uuid, product_id, name, price, cost, stock, low_stock_threshold, active
+      `SELECT client_uuid, product_id, name, price, cost, code, stock, low_stock_threshold, active
        FROM product_variants WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
       [tenantId, variantId],
     );
@@ -454,18 +480,20 @@ export async function updateLocalVariant(
       name: patch.name ?? current.name,
       price: patch.price ?? current.price,
       cost: patch.cost !== undefined ? patch.cost : current.cost,
+      code: patch.code !== undefined ? variantCodeSchema.parse(patch.code) : current.code,
       active: patch.active ?? current.active,
     };
     await tx.query(
-      `UPDATE product_variants SET name = $3, price = $4, cost = $5, active = $6, updated_at = now()
+      `UPDATE product_variants SET name = $3, price = $4, cost = $5, active = $6, code = $7, updated_at = now()
        WHERE tenant_id = $1 AND id = $2`,
-      [tenantId, variantId, next.name, next.price, next.cost, next.active],
+      [tenantId, variantId, next.name, next.price, next.cost, next.active, next.code],
     );
     await enqueueMutation(tx, tenantId, "variant", current.client_uuid, {
       product_id: current.product_id,
       name: next.name,
       price: next.price,
       cost: next.cost,
+      code: next.code,
       stock: current.stock,
       low_stock_threshold: current.low_stock_threshold,
       active: next.active,
@@ -486,8 +514,8 @@ export async function adjustLocalStock(
   },
 ): Promise<{ stock: number } | null> {
   return localTx(db, async (tx) => {
-    const rows = await tx.query<{ stock: number; product_id: string; name: string; price: number; cost: number | null }>(
-      `SELECT stock, product_id, name, price, cost FROM product_variants
+    const rows = await tx.query<{ stock: number; product_id: string; name: string; price: number; cost: number | null; code: string | null; active: boolean; low_stock_threshold: number | null }>(
+      `SELECT stock, product_id, name, price, cost, code, active, low_stock_threshold FROM product_variants
        WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
       [tenantId, input.variant_id],
     );
@@ -525,9 +553,10 @@ export async function adjustLocalStock(
       name: variant.name,
       price: variant.price,
       cost: variant.cost,
+      code: variant.code,
       stock: nextStock,
-      low_stock_threshold: null,
-      active: true,
+      low_stock_threshold: variant.low_stock_threshold,
+      active: variant.active,
     });
 
     return { stock: nextStock };
@@ -666,11 +695,12 @@ export async function commitLocalSale(
         name: string;
         price: number;
         cost: number | null;
+        code: string | null;
         stock: number;
         low_stock_threshold: number | null;
         active: boolean;
       }>(
-        `SELECT product_id, name, price, cost, stock, low_stock_threshold, active
+        `SELECT product_id, name, price, cost, code, stock, low_stock_threshold, active
          FROM product_variants WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
         [tenantId, line.variant_id],
       );
@@ -712,6 +742,7 @@ export async function commitLocalSale(
           name: variant.name,
           price: variant.price,
           cost: variant.cost,
+          code: variant.code,
           stock: nextStock,
           low_stock_threshold: variant.low_stock_threshold,
           active: variant.active,

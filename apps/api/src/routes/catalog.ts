@@ -12,13 +12,7 @@ import { repoFor } from "../auth/ctx";
 
 const uuidParam = z.object({ id: z.uuid() });
 
-const variantInputSchema = z.object({
-  name: z.string().trim().min(1).max(80),
-  price: z.number().int().nonnegative(),
-  cost: z.number().int().nonnegative().nullable().optional(),
-  stock: z.number().int().optional(),
-  low_stock_threshold: z.number().int().nonnegative().nullable().optional(),
-});
+const variantInputSchema = createProductInputSchema.shape.variant;
 
 /**
  * Catalog vertical slice (task D1-7) — every handler reads/writes through

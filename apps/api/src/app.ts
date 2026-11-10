@@ -41,8 +41,12 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
         })),
       });
     }
-    const e = err as { code?: string; message?: string; statusCode?: number };
+    let e = err as { code?: string; message?: string; statusCode?: number; constraint?: string; cause?: unknown };
+    if (e.cause) e = e.cause as typeof e;
     if (e.code === "23505") {
+      if (e.constraint === "product_variants_tenant_code_uq") {
+        return reply.code(409).send({ error: "duplicate_code", message: "El código ya pertenece a otra variante de este comercio" });
+      }
       return reply.code(409).send({ error: "conflict", detail: e.message });
     }
     if (e.code === "23503") {

@@ -40,6 +40,7 @@ const EXPECTED_INDEXES = [
   "payments_tenant_created_idx",
   "payments_tenant_shift_status_idx",
   "product_variants_tenant_client_uq",
+  "product_variants_tenant_code_uq",
   "product_variants_tenant_product_idx",
   "product_variants_tenant_product_name_uq",
   "products_tenant_active_idx",

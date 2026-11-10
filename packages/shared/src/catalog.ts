@@ -6,6 +6,10 @@ export const variantNameSchema = z.string().trim().min(1, "required").max(80);
 export const productNameSchema = z.string().trim().min(1, "required").max(120);
 export const categoryNameSchema = z.string().trim().min(1, "required").max(60);
 
+/** One case-sensitive identifier per variant; never coerce numbers (leading zeros). */
+export const variantCodeSchema = z.string().trim().max(120).nullable()
+  .transform((value) => value === "" ? null : value);
+
 /** Prices are integer COP and must be >= 0 (catalog spec: invalid price rejected). */
 export const priceSchema = z
   .number("price must be a number")
@@ -36,6 +40,7 @@ export const createProductInputSchema = z.object({
   category_id: z.uuid().nullable().optional(),
   photo: photoSchema.nullable().optional(),
   variant: z.object({
+    code: variantCodeSchema.optional(),
     name: variantNameSchema,
     price: priceSchema,
     cost: priceSchema.nullable().optional(),
@@ -63,6 +68,7 @@ export const updateProductInputSchema = z
   );
 
 export const updateVariantInputSchema = z.object({
+  code: variantCodeSchema.optional(),
   name: variantNameSchema.optional(),
   price: priceSchema.optional(),
   cost: priceSchema.nullable().optional(),

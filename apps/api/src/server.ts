@@ -2,8 +2,10 @@ import { buildApp } from "./app";
 import { config } from "./config";
 import { ensureAuthTables } from "./db/bootstrap";
 import { closeDb } from "./db";
+import { migrateCatalog } from "./db/migrate-catalog";
 
 await ensureAuthTables();
+await migrateCatalog();
 
 const app = await buildApp();
 

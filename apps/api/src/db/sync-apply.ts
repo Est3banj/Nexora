@@ -48,6 +48,12 @@ import type { Db } from "./index";
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 class InvalidSync extends Error {}
 
+function duplicateCode(err: unknown): boolean {
+  const e = err as { code?: string; constraint?: string; cause?: unknown };
+  return e?.code === "23505" && e.constraint === "product_variants_tenant_code_uq"
+    || !!e?.cause && duplicateCode(e.cause);
+}
+
 /**
  * Sale-group key: everything that belongs to one ticket shares a tx.
  * Everything else (product/variant/stockdiary/shift/closedcash) is its own
@@ -205,7 +211,7 @@ export async function applyMutationGroups(
         byIndex.set(item.index, {
           client_uuid: item.m.client_uuid,
           status: "rejected",
-          reason: err instanceof InvalidSync ? "validation" : "db_error",
+          reason: duplicateCode(err) ? "duplicate_code" : err instanceof InvalidSync ? "validation" : "db_error",
         });
       }
     }
@@ -454,6 +460,11 @@ async function upsertEntity(
     }
     case "product": {
       const p = m.payload;
+      if (p.category_id) {
+        const [category] = await tx.select({ id: t.categories.id }).from(t.categories)
+          .where(and(eq(t.categories.tenant_id, tenantId), eq(t.categories.id, p.category_id)));
+        if (!category) throw new InvalidSync();
+      }
       await tx
         .insert(t.products)
         .values({
@@ -469,8 +480,8 @@ async function upsertEntity(
           target: [t.products.tenant_id, t.products.client_uuid],
           set: {
             name: p.name,
-            category_id: p.category_id ?? null,
-            photo: p.photo ?? null,
+            ...(p.category_id !== undefined ? { category_id: p.category_id } : {}),
+            ...(p.photo !== undefined ? { photo: p.photo } : {}),
             active: p.active,
             updated_at: now,
           },
@@ -479,6 +490,12 @@ async function upsertEntity(
     }
     case "variant": {
       const p = m.payload;
+      const [product] = await tx.select({ id: t.products.id }).from(t.products)
+        .where(and(eq(t.products.tenant_id, tenantId), eq(t.products.id, p.product_id)));
+      if (!product) throw new InvalidSync();
+      const [existing] = await tx.select({ product_id: t.productVariants.product_id }).from(t.productVariants)
+        .where(and(eq(t.productVariants.tenant_id, tenantId), eq(t.productVariants.id, cu)));
+      if (existing && existing.product_id !== p.product_id) throw new InvalidSync();
       await tx
         .insert(t.productVariants)
         .values({
@@ -489,6 +506,7 @@ async function upsertEntity(
           name: p.name,
           price: p.price,
           cost: p.cost ?? null,
+          code: p.code ?? null,
           stock: p.stock,
           low_stock_threshold: p.low_stock_threshold,
           active: p.active,
@@ -499,6 +517,7 @@ async function upsertEntity(
             name: p.name,
             price: p.price,
             ...(p.cost !== undefined ? { cost: p.cost } : {}),
+            ...(p.code !== undefined ? { code: p.code } : {}),
             stock: p.stock,
             low_stock_threshold: p.low_stock_threshold,
             active: p.active,

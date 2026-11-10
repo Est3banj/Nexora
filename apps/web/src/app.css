@@ -1189,6 +1189,10 @@ select {
   margin-bottom: 12px;
 }
 
+.scanner [role="status"] {
+  overflow-wrap: anywhere;
+}
+
 .cat-manage h3 {
   margin-bottom: 8px;
   font-size: 0.95rem;

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { variantCodeSchema } from "./catalog";
 
 /**
  * Mutation envelope — THE shared client/server sync contract (task D2-1,
@@ -96,6 +97,7 @@ const productPayloadSchema = z.object({
 });
 
 const variantPayloadSchema = z.object({
+  code: variantCodeSchema.optional(),
   product_id: uuid,
   name: z.string().min(1),
   price: money,
@@ -191,6 +193,7 @@ export const syncRejectReasonSchema = z.enum([
   "conflict_hash_mismatch",
   "validation",
   "db_error",
+  "duplicate_code",
 ]);
 
 export const syncResultSchema = z.object({

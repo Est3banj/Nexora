@@ -237,6 +237,7 @@ describe("LWW — later single-device write wins", () => {
   it("price edit twice on the device → later write wins, no crash, one row (sync §LWW)", async () => {
     const variantId = randomUUID();
     const productId = randomUUID();
+    await push(owner, [env("product", { name: "Granizado", active: true }, { client_uuid: productId, client_ts: 500 })]);
     const base = {
       product_id: productId,
       name: "Grande",

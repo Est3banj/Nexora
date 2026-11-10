@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import type { PGlite } from "@electric-sql/pglite";
-import { createProductInputSchema, priceSchema } from "@pos/shared";
+import { createProductInputSchema, priceSchema, variantCodeSchema } from "@pos/shared";
 import {
   addLocalVariant,
+  catalogError,
   adjustLocalStock,
   createLocalCategory,
   createLocalProduct,
@@ -42,6 +43,8 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
   const [categoryId, setCategoryId] = useState("");
   const [photo, setPhoto] = useState<string | null>(null);
   const [variantName, setVariantName] = useState("");
+  const [code, setCode] = useState("");
+  const [codeDraft, setCodeDraft] = useState<Record<string, string>>({});
   const [price, setPrice] = useState("");
   const [cost, setCost] = useState("");
   const [stock, setStock] = useState("");
@@ -54,7 +57,7 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
     Record<string, { delta: string; reason: string; note: string }>
   >({});
   const [extraVariant, setExtraVariant] = useState<
-    Record<string, { name: string; price: string; stock: string }>
+    Record<string, { name: string; price: string; stock: string; code?: string }>
   >({});
 
   const refresh = useCallback(async () => {
@@ -104,6 +107,7 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
       photo: photo,
       variant: {
         name: variantName,
+        code,
         price: Number(price),
         cost: cost === "" ? null : Number(cost),
         stock: Number(stock || 0),
@@ -120,6 +124,7 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
         photo: parsed.data.photo ?? null,
         variant: {
           name: parsed.data.variant.name,
+          code: parsed.data.variant.code,
           price: parsed.data.variant.price,
           cost: parsed.data.variant.cost ?? null,
           stock: parsed.data.variant.stock,
@@ -127,6 +132,7 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
       });
       setName("");
       setVariantName("");
+      setCode("");
       setPrice("");
       setCost("");
       setStock("");
@@ -134,8 +140,8 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
       await refresh();
       onMutated();
       showToast("Producto creado (pendiente de sync)");
-    } catch {
-      setError("No se pudo crear el producto");
+    } catch (err) {
+      setError(catalogError(err));
     }
   }
 
@@ -157,6 +163,23 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
     await refresh();
     onMutated();
     showToast("Precio actualizado (pendiente de sync)");
+  }
+
+  async function saveCode(variantId: string) {
+    setError(null);
+    const parsed = variantCodeSchema.safeParse(codeDraft[variantId]);
+    if (!parsed.success) { setError("Código inválido: máximo 120 caracteres"); return; }
+    try {
+      await updateLocalVariant(db, tenantId, variantId, { code: parsed.data });
+      setCodeDraft((previous) => {
+        const next = { ...previous };
+        delete next[variantId];
+        return next;
+      });
+      await refresh();
+      onMutated();
+      showToast("Código actualizado (pendiente de sync)");
+    } catch (err) { setError(catalogError(err)); }
   }
 
   async function saveCost(variantId: string) {
@@ -212,6 +235,7 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
     const draft = extraVariant[productId] ?? { name: "", price: "", stock: "" };
     const parsed = createProductInputSchema.shape.variant.safeParse({
       name: draft.name,
+      code: "code" in draft ? draft.code : null,
       price: Number(draft.price),
       stock: Number(draft.stock || 0),
     });
@@ -219,19 +243,22 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
       setError(parsed.error.issues[0]?.message ?? "Revisá la variante");
       return;
     }
-    const created = await addLocalVariant(db, tenantId, productId, {
-      name: parsed.data.name,
-      price: parsed.data.price,
-      stock: parsed.data.stock,
-    });
-    if (!created) {
-      setError("Producto no encontrado");
-      return;
-    }
-    setExtraVariant((prev) => ({ ...prev, [productId]: { name: "", price: "", stock: "" } }));
-    await refresh();
-    onMutated();
-    showToast("Talla agregada (pendiente de sync)");
+    try {
+      const created = await addLocalVariant(db, tenantId, productId, {
+        name: parsed.data.name,
+        code: parsed.data.code,
+        price: parsed.data.price,
+        stock: parsed.data.stock,
+      });
+      if (!created) {
+        setError("Producto no encontrado");
+        return;
+      }
+      setExtraVariant((prev) => ({ ...prev, [productId]: { name: "", price: "", stock: "" } }));
+      await refresh();
+      onMutated();
+      showToast("Talla agregada (pendiente de sync)");
+    } catch (err) { setError(catalogError(err)); }
   }
 
   const q = search.trim().toLowerCase();
@@ -239,7 +266,7 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
     if (filterCat !== "all" && (p.category_id ?? "") !== filterCat) return false;
     if (!q) return true;
     if (p.name.toLowerCase().includes(q)) return true;
-    return p.variants.some((v) => v.name.toLowerCase().includes(q));
+    return p.variants.some((v) => v.name.toLowerCase().includes(q) || v.code?.toLowerCase().includes(q));
   });
 
   const catName = (id: string | null) =>
@@ -263,6 +290,11 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
             />
           </div>
         </div>
+
+        <label htmlFor="v-code">SKU / código de barras — opcional por variante</label>
+        <input id="v-code" data-testid="variant-code" type="text" maxLength={120}
+          autoComplete="off" autoCapitalize="none" spellCheck={false}
+          value={code} onChange={(e) => setCode(e.target.value)} placeholder="Ej. 001234567890" />
 
         <div className="grid-2">
           <div>
@@ -418,7 +450,7 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
           className="search-input"
           data-testid="catalog-search"
           type="search"
-          placeholder="Buscar producto o talla…"
+          placeholder="Buscar nombre, SKU o código…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           aria-label="Buscar en catálogo"
@@ -460,6 +492,14 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
 
             {product.variants.map((v) => (
               <div key={v.id} className="variant-row" data-testid="variant-row">
+                <div className="row gap">
+                  <input aria-label={`Código ${product.name} ${v.name}`} data-testid="code-input"
+                    type="text" maxLength={120} autoComplete="off" autoCapitalize="none" spellCheck={false}
+                    placeholder="SKU / código (opcional)" value={codeDraft[v.id] ?? v.code ?? ""}
+                    onChange={(e) => setCodeDraft((prev) => ({ ...prev, [v.id]: e.target.value }))} />
+                  <button type="button" className="btn small" data-testid="save-code"
+                    disabled={codeDraft[v.id] === undefined} onClick={() => void saveCode(v.id)}>Guardar código</button>
+                </div>
                 <div className="row space-between">
                   <span>
                     {v.name} · stock <strong>{v.stock}</strong>
@@ -585,6 +625,13 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
               className="extra-variant"
               onSubmit={(e) => submitExtraVariant(e, product.id)}
             >
+              <input aria-label="Código nueva variante" data-testid="extra-variant-code" type="text"
+                maxLength={120} autoComplete="off" autoCapitalize="none" spellCheck={false}
+                placeholder="SKU / código (opcional)" value={extraVariant[product.id]?.code ?? ""}
+                onChange={(e) => setExtraVariant((prev) => ({ ...prev, [product.id]: {
+                  name: prev[product.id]?.name ?? "", price: prev[product.id]?.price ?? "",
+                  stock: prev[product.id]?.stock ?? "", code: e.target.value,
+                } }))} />
               <div className="row gap">
                 <input
                   aria-label="Nueva talla"
@@ -596,6 +643,7 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
                       ...prev,
                       [product.id]: {
                         name: e.target.value,
+                        code: prev[product.id]?.code,
                         price: prev[product.id]?.price ?? "",
                         stock: prev[product.id]?.stock ?? "",
                       },
@@ -613,6 +661,7 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
                       ...prev,
                       [product.id]: {
                         name: prev[product.id]?.name ?? "",
+                        code: prev[product.id]?.code,
                         price: e.target.value.replace(/[^\d]/g, ""),
                         stock: prev[product.id]?.stock ?? "",
                       },

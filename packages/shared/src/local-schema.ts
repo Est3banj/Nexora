@@ -8,6 +8,17 @@
  *
  * Local cache only: no auth tables, no audit_log (server-only concerns).
  */
+export const VARIANT_CODE_MIGRATION_SQL = /* sql */ `
+ALTER TABLE product_variants ADD COLUMN IF NOT EXISTS code text;
+CREATE UNIQUE INDEX IF NOT EXISTS product_variants_tenant_code_uq ON product_variants (tenant_id, code);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'product_variants_code_normalized' AND conrelid = 'product_variants'::regclass) THEN
+    ALTER TABLE product_variants ADD CONSTRAINT product_variants_code_normalized
+      CHECK (code IS NULL OR (code = btrim(code) AND length(code) BETWEEN 1 AND 120));
+  END IF;
+END $$;
+`;
+
 export const LOCAL_SCHEMA_SQL = /* sql */ `
 CREATE TABLE IF NOT EXISTS categories (
   id uuid PRIMARY KEY,
@@ -54,6 +65,9 @@ CREATE TABLE IF NOT EXISTS product_variants (
 CREATE UNIQUE INDEX IF NOT EXISTS product_variants_tenant_client_uq ON product_variants (tenant_id, client_uuid);
 CREATE UNIQUE INDEX IF NOT EXISTS product_variants_tenant_product_name_uq ON product_variants (tenant_id, product_id, name);
 CREATE INDEX IF NOT EXISTS product_variants_tenant_product_idx ON product_variants (tenant_id, product_id);
+
+-- Additive in-place migration: keep pos_v3 and all pending sales.
+${VARIANT_CODE_MIGRATION_SQL}
 
 CREATE TABLE IF NOT EXISTS shifts (
   id uuid PRIMARY KEY,

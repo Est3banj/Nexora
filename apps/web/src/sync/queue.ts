@@ -73,19 +73,20 @@ const SELECT_BATCH = `
   WHERE tenant_id = $1 AND status IN ('pending', 'failed')
    ORDER BY client_ts ASC, created_at ASC`;
 
-async function markInFlight(db: PGlite, id: string): Promise<void> {
+async function markInFlight(db: PGlite, row: QueueRow): Promise<void> {
   await db.query(
-    `UPDATE sync_log SET status = 'in_flight', updated_at = now() WHERE id = $1`,
-    [id],
+    `UPDATE sync_log SET status = 'in_flight', updated_at = now()
+     WHERE id = $1 AND client_ts = $2 AND payload = $3::jsonb`,
+    [row.id, row.client_ts, JSON.stringify(row.payload)],
   );
 }
 
-async function markSynced(db: PGlite, id: string): Promise<void> {
+async function markSynced(db: PGlite, row: QueueRow): Promise<void> {
   await db.query(
     `UPDATE sync_log
      SET status = 'synced', attempts = 0, last_error = NULL, updated_at = now()
-     WHERE id = $1`,
-    [id],
+      WHERE id = $1 AND client_ts = $2 AND payload = $3::jsonb`,
+    [row.id, row.client_ts, JSON.stringify(row.payload)],
   );
 }
 
@@ -105,8 +106,8 @@ async function markFailure(
   await db.query(
     `UPDATE sync_log
      SET status = $2, attempts = $3, last_error = $4, updated_at = now()
-     WHERE id = $1`,
-    [row.id, status, attempts, message.slice(0, 500)],
+      WHERE id = $1 AND client_ts = $5 AND payload = $6::jsonb`,
+    [row.id, status, attempts, message.slice(0, 500), row.client_ts, JSON.stringify(row.payload)],
   );
 }
 
@@ -197,7 +198,7 @@ async function drainOnce(
   }
   if (send.length === 0) return { synced: 0, handled };
 
-  for (const row of sendRows) await markInFlight(db, row.id);
+  for (const row of sendRows) await markInFlight(db, row);
 
   let results: SyncResult[];
   try {
@@ -237,7 +238,9 @@ async function drainOnce(
         const c = result.closedcash;
         await db.query("UPDATE closedcash SET expected=$3,counted=$4,diff=$5 WHERE tenant_id=$1 AND shift_id=$2", [tenantId, c.shift_id, c.expected, c.counted, c.diff]);
       }
-      await markSynced(db, row.id);
+      // ACK only the version actually sent. An in-flight catalog edit keeps
+      // its newer pending payload and will be drained on the next push.
+      await markSynced(db, row);
       synced += 1;
     } else if (result.reason === "db_error") {
       // transient-ish (constraint race): retryable, not poison

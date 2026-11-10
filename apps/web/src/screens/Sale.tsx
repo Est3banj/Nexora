@@ -118,6 +118,8 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
   // completing is always allowed (negative balance is legal + visible).
   const oversell = sale.lines.filter((l) => l.qty > l.stock);
   const [search, setSearch] = useState("");
+  const [scanCode, setScanCode] = useState("");
+  const [scanMessage, setScanMessage] = useState("");
 
   useEffect(() => {
     let alive = true;
@@ -134,9 +136,38 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
     if (!q) return true;
     return (
       it.product_name.toLowerCase().includes(q) ||
-      it.name.toLowerCase().includes(q)
+      it.name.toLowerCase().includes(q) ||
+      it.code?.toLowerCase().includes(q)
     );
   });
+
+  const scanner = (
+    <form className="card scanner" data-testid="scanner-form" onSubmit={(event) => {
+      event.preventDefault();
+      const code = scanCode.trim();
+      if (!code) return;
+      const item = items.find((candidate) => candidate.code === code);
+      if (!item) {
+        setScanMessage(`Código no encontrado: ${code}. No se agregó ningún producto.`);
+        return;
+      }
+      sale.addItem(item);
+      setError(null);
+      setScanCode("");
+      setScanMessage(`Agregado: ${item.product_name} ${item.name}, una unidad.`);
+    }}>
+      <label htmlFor="sale-code">SKU / código de barras</label>
+      <div className="row gap">
+        <input id="sale-code" data-testid="sale-code" type="text" maxLength={120}
+          autoComplete="off" autoCapitalize="none" spellCheck={false} enterKeyHint="go"
+          aria-describedby="scan-help scan-message" value={scanCode}
+          onChange={(event) => setScanCode(event.target.value)} />
+        <button type="submit" className="btn" data-testid="scan-add">Agregar</button>
+      </div>
+      <p id="scan-help" className="muted">Lector USB o teclado + Enter. Agrega una unidad; no cobra.</p>
+      <p id="scan-message" role="status" aria-live="polite" data-testid="scan-message">{scanMessage}</p>
+    </form>
+  );
 
   function openCheckout() {
     // tap 2 — empty cart must be blocked WITH a message (sales spec)
@@ -323,6 +354,7 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
     return (
       <div className="screen sale sale-layout" data-testid="sale-screen">
         <div className="sale-products">
+          {scanner}
           {oversell.length > 0 && (
             <div className="warn-banner" data-testid="oversell-warning" role="status">
               Stock insuficiente:{" "}
@@ -336,7 +368,7 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
               className="search-input"
               data-testid="sale-search"
               type="search"
-              placeholder="Buscar producto…"
+              placeholder="Buscar nombre, SKU o código…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               aria-label="Buscar producto"
@@ -479,12 +511,13 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
   /* ── Mobile browse: product grid + bottom cart bar ───────────────── */
   return (
     <div className="screen sale">
+      {scanner}
       <div className="sale-toolbar">
         <input
           className="search-input"
           data-testid="sale-search"
           type="search"
-          placeholder="Buscar producto…"
+          placeholder="Buscar nombre, SKU o código…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           aria-label="Buscar producto"

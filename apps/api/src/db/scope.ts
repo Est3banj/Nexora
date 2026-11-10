@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import type { MutationEnvelope } from "@pos/shared";
+import { variantCodeSchema } from "@pos/shared";
 import * as t from "./schema";
 import type { Db } from "./index";
 import * as reportsDb from "./reports";
@@ -29,6 +30,7 @@ async function insertVariantWithStock(
   variant: {
     name: string;
     price: number;
+    code?: string | null;
     cost?: number | null;
     stock?: number;
     low_stock_threshold?: number | null;
@@ -45,6 +47,7 @@ async function insertVariantWithStock(
       client_uuid: variantId,
       product_id: productId,
       name: variant.name,
+      code: variant.code === undefined ? null : variantCodeSchema.parse(variant.code),
       price: variant.price,
       cost: variant.cost ?? null,
       stock,
@@ -77,6 +80,12 @@ async function insertVariantWithStock(
 }
 
 export function scopedRepo(db: Db, tenantId: TenantId) {
+  async function assertCategory(id?: string | null) {
+    if (!id) return;
+    const [category] = await db.select({ id: t.categories.id }).from(t.categories)
+      .where(and(eq(t.categories.tenant_id, tenantId), eq(t.categories.id, id)));
+    if (!category) throw Object.assign(new Error("invalid_category"), { statusCode: 404 });
+  }
   return {
     categories: {
       list(opts: { active?: boolean; limit?: number } = {}) {
@@ -153,6 +162,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
         photo?: string | null;
         active?: boolean;
       }) {
+        await assertCategory(input.category_id);
         const rows = await db
           .insert(t.products)
           .values({
@@ -168,8 +178,8 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
             target: [t.products.tenant_id, t.products.client_uuid],
             set: {
               name: input.name,
-              category_id: input.category_id ?? null,
-              photo: input.photo ?? null,
+              ...(input.category_id !== undefined ? { category_id: input.category_id } : {}),
+              ...(input.photo !== undefined ? { photo: input.photo } : {}),
               active: input.active ?? true,
               updated_at: now(),
             },
@@ -186,6 +196,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
           active?: boolean;
         },
       ) {
+        await assertCategory(patch.category_id);
         const set: Record<string, unknown> = { updated_at: now() };
         if (patch.name !== undefined) set.name = patch.name;
         if (patch.category_id !== undefined) set.category_id = patch.category_id;
@@ -222,6 +233,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
             product_id: t.productVariants.product_id,
             client_uuid: t.productVariants.client_uuid,
             name: t.productVariants.name,
+            code: t.productVariants.code,
             price: t.productVariants.price,
             cost: t.productVariants.cost,
             stock: t.productVariants.stock,
@@ -233,7 +245,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
             photo: t.products.photo,
           })
           .from(t.productVariants)
-          .innerJoin(t.products, eq(t.productVariants.product_id, t.products.id))
+          .innerJoin(t.products, and(eq(t.productVariants.product_id, t.products.id), eq(t.products.tenant_id, tenantId)))
           .where(
             and(
               eq(t.productVariants.tenant_id, tenantId),
@@ -261,9 +273,13 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
         name: string;
         price: number;
         stock?: number;
+        code?: string | null;
         low_stock_threshold?: number | null;
         active?: boolean;
       }) {
+        const [product] = await db.select({ id: t.products.id }).from(t.products)
+          .where(and(eq(t.products.tenant_id, tenantId), eq(t.products.id, input.product_id)));
+        if (!product) throw Object.assign(new Error("invalid_product"), { statusCode: 404 });
         const rows = await db
           .insert(t.productVariants)
           .values({
@@ -273,6 +289,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
             product_id: input.product_id,
             name: input.name,
             price: input.price,
+            code: input.code === undefined ? null : variantCodeSchema.parse(input.code),
             stock: input.stock ?? 0,
             low_stock_threshold: input.low_stock_threshold ?? null,
             active: input.active ?? true,
@@ -282,6 +299,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
             set: {
               name: input.name,
               price: input.price,
+              ...(input.code !== undefined ? { code: variantCodeSchema.parse(input.code) } : {}),
               stock: input.stock ?? 0,
               low_stock_threshold: input.low_stock_threshold ?? null,
               updated_at: now(),
@@ -297,6 +315,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
           price?: number;
           cost?: number | null;
           active?: boolean;
+          code?: string | null;
           low_stock_threshold?: number | null;
         },
       ) {
@@ -304,6 +323,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
         if (patch.name !== undefined) set.name = patch.name;
         if (patch.price !== undefined) set.price = patch.price;
         if (patch.cost !== undefined) set.cost = patch.cost;
+        if (patch.code !== undefined) set.code = variantCodeSchema.parse(patch.code);
         if (patch.active !== undefined) set.active = patch.active;
         if (patch.low_stock_threshold !== undefined)
           set.low_stock_threshold = patch.low_stock_threshold;
@@ -453,11 +473,13 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
           name: string;
           price: number;
           cost?: number | null;
+          code?: string | null;
           stock?: number;
           low_stock_threshold?: number | null;
         };
         client_uuids?: { product?: string; variant?: string; diary?: string };
       }) {
+        await assertCategory(input.category_id);
         return db.transaction(async (tx) => {
           const productId = input.client_uuids?.product ?? randomUUID();
           const [product] = await tx
@@ -490,6 +512,8 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
         variant: {
           name: string;
           price: number;
+          cost?: number | null;
+          code?: string | null;
           stock?: number;
           low_stock_threshold?: number | null;
         },

@@ -1,6 +1,7 @@
 import {
   bigint,
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -87,6 +88,7 @@ export const productVariants = pgTable(
     tenant_id: tenantCol(),
     client_uuid: clientUuidCol(),
     product_id: uuid("product_id").notNull(),
+    code: text("code"),
     name: text("name").notNull(),
     price: integer("price").notNull(),
     /** unit cost COP — null when unknown; margin = price − cost */
@@ -108,6 +110,8 @@ export const productVariants = pgTable(
       t.name,
     ),
     index("product_variants_tenant_product_idx").on(t.tenant_id, t.product_id),
+    uniqueIndex("product_variants_tenant_code_uq").on(t.tenant_id, t.code),
+    check("product_variants_code_normalized", sql`${t.code} IS NULL OR (${t.code} = btrim(${t.code}) AND length(${t.code}) BETWEEN 1 AND 120)`),
   ],
 );
 
