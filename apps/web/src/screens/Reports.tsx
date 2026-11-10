@@ -106,6 +106,7 @@ export function Reports({ db, tenantId, refreshToken }: Props) {
         </button>
       </div>
 
+      <p className="muted">Ventas y productos excluyen tickets anulados; stock incluye su restitución.</p>
       {stale && (
         <div className="warn-banner" data-testid="reports-staleness" role="status">
           Los datos pueden estar incompletos — sincronizá para ver el estado

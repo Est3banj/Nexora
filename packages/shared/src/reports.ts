@@ -26,6 +26,7 @@ SELECT (p.created_at AT TIME ZONE 'America/Bogota')::date AS day,
        COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'confirmed' AND p.method = 'transfer'), 0) AS transfer
 FROM payments p
 WHERE p.tenant_id = $1
+  AND NOT EXISTS (SELECT 1 FROM tickets tk WHERE tk.tenant_id=p.tenant_id AND tk.id=p.ticket_id AND tk.status='voided')
   AND (p.created_at AT TIME ZONE 'America/Bogota')::date >= $2::date
   AND (p.created_at AT TIME ZONE 'America/Bogota')::date <= $3::date
 GROUP BY 1
@@ -43,6 +44,7 @@ JOIN tickets tk ON tk.id = l.ticket_id AND tk.tenant_id = l.tenant_id
 JOIN product_variants v ON v.id = l.variant_id AND v.tenant_id = l.tenant_id
 JOIN products pr ON pr.id = v.product_id AND pr.tenant_id = l.tenant_id
 WHERE l.tenant_id = $1
+  AND tk.status <> 'voided'
   AND (tk.created_at AT TIME ZONE 'America/Bogota')::date >= $2::date
   AND (tk.created_at AT TIME ZONE 'America/Bogota')::date <= $3::date
 GROUP BY l.variant_id, v.name, pr.name
@@ -188,6 +190,7 @@ SELECT
   ), 0) AS cogs
 FROM payments p
 WHERE p.tenant_id = $1
+  AND NOT EXISTS (SELECT 1 FROM tickets tk WHERE tk.tenant_id=p.tenant_id AND tk.id=p.ticket_id AND tk.status='voided')
   AND (p.created_at AT TIME ZONE 'America/Bogota')::date >= $2::date
   AND (p.created_at AT TIME ZONE 'America/Bogota')::date <= $3::date`;
 

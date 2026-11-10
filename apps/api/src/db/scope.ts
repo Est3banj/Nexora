@@ -761,6 +761,13 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
         id: string,
       ): Promise<{ payment: t.Payment } | { error: "not_found" | "invalid_transition" }> {
         return db.transaction(async (tx) => {
+          // Same parent lock as void/sync, before touching the payment.
+          const [parentPayment] = await tx.select({ ticket_id: t.payments.ticket_id }).from(t.payments)
+            .where(and(eq(t.payments.tenant_id, tenantId), eq(t.payments.id, id)));
+          if (!parentPayment) return { error: "not_found" as const };
+          const [parent] = await tx.select().from(t.tickets)
+            .where(and(eq(t.tickets.tenant_id, tenantId), eq(t.tickets.id, parentPayment.ticket_id))).for("update");
+          if (parent?.status === "voided") return { error: "invalid_transition" as const };
           const rows = await tx
             .select()
             .from(t.payments)
@@ -910,6 +917,9 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
     },
 
     stockdiary: {
+      async listByTicket(ticketId: string) {
+        return db.select().from(t.stockdiary).where(and(eq(t.stockdiary.tenant_id, tenantId), eq(t.stockdiary.ref_ticket_id, ticketId), eq(t.stockdiary.reason, "sale_void")));
+      },
       async listByVariant(variant_id: string, opts: { limit?: number } = {}) {
         return db
           .select()

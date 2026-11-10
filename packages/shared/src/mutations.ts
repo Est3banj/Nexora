@@ -197,6 +197,8 @@ export const syncResultSchema = z.object({
   client_uuid: z.string().nullable(),
   status: syncResultStatusSchema,
   reason: syncRejectReasonSchema.optional(),
+  voided_ticket: z.uuid().optional(),
+  closedcash: z.object({ shift_id: z.uuid(), expected: money, counted: money, diff: z.number().int() }).optional(),
 });
 export type SyncResult = z.infer<typeof syncResultSchema>;
 

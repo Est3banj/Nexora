@@ -217,6 +217,7 @@ export function Arqueo({ db, tenantId, refreshToken, showToast, onMutated }: Pro
   return (
     <div className="screen arqueo">
       <h2>Caja (arqueo)</h2>
+      <p className="muted">El esperado excluye ventas anuladas. Las cajas cerradas conservan su arqueo y no admiten nuevas anulaciones.</p>
 
       {openShift ? (
         <>

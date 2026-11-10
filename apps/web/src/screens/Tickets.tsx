@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { PGlite } from "@electric-sql/pglite";
 import {
   confirmLocalPayment,
@@ -7,6 +7,8 @@ import {
   type LocalTicketRow,
 } from "../db/local";
 import "./ticket-print.css";
+import { mirrorVoidedSale, type VoidSnapshot } from "../db/void-sale";
+import { pushNow } from "../sync/queue";
 
 const cop = (n: number) =>
   new Intl.NumberFormat("es-CO", {
@@ -45,6 +47,33 @@ export function Tickets({
   const [detail, setDetail] = useState<TicketDetail>(null);
   const [confirmErr, setConfirmErr] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [reason, setReason] = useState("");
+  const [voiding, setVoiding] = useState(false);
+  const dialog = useRef<HTMLDialogElement>(null);
+
+  async function annul() {
+    if (!detail) return;
+    setVoiding(true);
+    setConfirmErr(null);
+    try {
+      await pushNow(db, tenantId, { force: true });
+      const pending = await db.query("SELECT id FROM sync_log WHERE tenant_id=$1 AND status<>'synced' LIMIT 1", [tenantId]);
+      if (pending.rows.length) throw new Error("Terminá la sincronización antes de anular la venta");
+      const res = await fetch(`/api/sales/tickets/${detail.ticket.id}/void`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ reason: reason.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(res.status === 403 ? "Solo el dueño puede anular ventas" : res.status === 404 ? "La venta todavía no sincronizó" : data.error === "shift_closed" ? "No se puede anular: el turno ya cerró o no tiene caja abierta" : data.error === "incomplete_sale" ? "La venta no sincronizó completa; revisá la sincronización" : "No se pudo anular la venta; revisá el motivo y la conexión");
+      await mirrorVoidedSale(db, tenantId, data as VoidSnapshot);
+      dialog.current?.close();
+      showToast?.("Venta anulada · stock restituido. Registrá por fuera de NEXORA cualquier reintegro de dinero.");
+      await refresh();
+      setDetail(await getLocalTicket(db, tenantId, detail.ticket.id));
+      onMutated?.();
+    } catch (err) {
+      setConfirmErr(err instanceof Error ? err.message : "La anulación necesita conexión; podés seguir vendiendo offline");
+    } finally { setVoiding(false); }
+  }
   const [online, setOnline] = useState(
     typeof navigator === "undefined" ? true : navigator.onLine !== false,
   );
@@ -154,6 +183,7 @@ export function Tickets({
             <span>{when(t.created_at)}</span>
             <span>
               {t.method === "cash" ? "Efectivo" : "Transferencia"}
+              {t.status === "voided" ? " · ANULADA" : ""}
               {t.pay_status === "pending" ? " · pendiente" : ""}
               {t.vuelto ? ` · vuelto ${cop(t.vuelto)}` : ""}
             </span>
@@ -172,6 +202,7 @@ export function Tickets({
             Ticket #{detail.ticket.ticket_no}{" "}
             <span className="muted">({when(detail.ticket.created_at)})</span>
           </h3>
+          {detail.ticket.status === "voided" && <div role="status" data-testid="ticket-voided"><p>ANULADA · excluida de ventas y caja. Los importes y pagos siguientes son los originales.</p><p>Motivo: {detail.ticket.void_reason ?? "Consultá la auditoría del servidor"}{detail.ticket.voided_at ? ` · ${when(detail.ticket.voided_at)}` : ""}</p></div>}
           <p className="muted ticket-uuid" data-testid="ticket-uuid">
             {detail.ticket.id.slice(0, 8)}
           </p>
@@ -222,6 +253,7 @@ export function Tickets({
 
           <div className="row gap ticket-actions">
             {detail.ticket.method === "transfer" &&
+              detail.ticket.status !== "voided" &&
               detail.ticket.pay_status === "pending" && (
                 <button
                   className="btn primary"
@@ -243,6 +275,11 @@ export function Tickets({
                   {confirming ? "Confirmando…" : "Confirmar transferencia"}
                 </button>
               )}
+            {detail.ticket.status !== "voided" && <button className="btn danger" data-testid="void-sale"
+              disabled={!online || !detail.payment_synced || confirming}
+              onClick={() => { setReason(""); setConfirmErr(null); dialog.current?.showModal(); }}>
+              Anular venta completa
+            </button>}
             <button
               className="btn ghost"
               data-testid="ticket-print"
@@ -251,6 +288,24 @@ export function Tickets({
               Imprimir
             </button>
           </div>
+          {!online && <p className="muted">La anulación necesita conexión. Podés seguir vendiendo offline.</p>}
+          <p className="muted">Solo el dueño puede anular ventas sincronizadas de un turno abierto. Las cajas cerradas no se modifican.</p>
+          <dialog ref={dialog} aria-labelledby="void-title" aria-describedby="void-description" onCancel={e => { if (voiding) e.preventDefault(); }}>
+            <form onSubmit={e => { e.preventDefault(); void annul(); }}>
+              <h3 id="void-title">Anular venta #{detail.ticket.ticket_no}</h3>
+              <p id="void-description">Se anula toda la venta y se restituye el stock una sola vez. El historial se conserva. No realiza un reintegro bancario ni de efectivo.</p>
+              <label htmlFor="void-reason">Motivo obligatorio</label>
+              <textarea id="void-reason" data-testid="void-reason" autoFocus required minLength={3} maxLength={500}
+                value={reason} onChange={e => setReason(e.target.value)} disabled={voiding} />
+              {confirmErr && <p role="alert" data-testid="void-error">{confirmErr}</p>}
+              <div className="row gap">
+                <button type="button" className="btn ghost" disabled={voiding} onClick={() => dialog.current?.close()}>Cancelar</button>
+                <button type="submit" className="btn danger" data-testid="void-confirm" disabled={voiding || !online || reason.trim().length < 3}>
+                  {voiding ? "Anulando…" : "Confirmar anulación total"}
+                </button>
+              </div>
+            </form>
+          </dialog>
         </div>
       )}
     </div>

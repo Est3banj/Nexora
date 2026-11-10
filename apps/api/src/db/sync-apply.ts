@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import {
   contentHash,
+  EXPECTED_FROM_PAYMENTS_SQL,
+  parseExpectedRow,
   type MutationEnvelope,
   type SyncResult,
 } from "@pos/shared";
@@ -44,6 +46,7 @@ import type { Db } from "./index";
  */
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+class InvalidSync extends Error {}
 
 /**
  * Sale-group key: everything that belongs to one ticket shares a tx.
@@ -79,7 +82,9 @@ async function recomputeStock(
   tenantId: string,
   variants: Set<string>,
 ): Promise<void> {
-  for (const variantId of variants) {
+  for (const variantId of [...variants].sort()) {
+    await tx.select({ id: t.productVariants.id }).from(t.productVariants)
+      .where(and(eq(t.productVariants.tenant_id, tenantId), eq(t.productVariants.id, variantId))).for("update");
     const rows = await tx
       .select({ sum: sql<string>`coalesce(sum(${t.stockdiary.delta}), 0)` })
       .from(t.stockdiary)
@@ -137,23 +142,70 @@ export async function applyMutationGroups(
   for (const group of groups.values()) {
     try {
       const results = await db.transaction(async (tx) => {
+        // Lock both claimed and stored parents. A forged parent must not let an
+        // existing payment/line/movement of a voided sale escape the freeze.
+        const ticketIds = new Set<string>();
+        for (const { m } of group) {
+          const p = m.payload as Record<string, unknown>;
+          if (m.entity === "ticket") ticketIds.add(m.client_uuid);
+          if (typeof p.ticket_id === "string") ticketIds.add(p.ticket_id);
+          if (typeof p.ref_ticket_id === "string") ticketIds.add(p.ref_ticket_id);
+          if (m.entity === "stockdiary" && p.reason === "sale_void") throw new InvalidSync();
+          const table = m.entity === "payment" ? t.payments : m.entity === "ticket_line" ? t.ticketLines : null;
+          if (table) {
+            const [old] = await tx.select({ ticket_id: table.ticket_id }).from(table)
+              .where(and(eq(table.tenant_id, tenantId), eq(table.id, m.client_uuid)));
+            if (old) ticketIds.add(old.ticket_id);
+          }
+          if (m.entity === "stockdiary") {
+            const [old] = await tx.select().from(t.stockdiary).where(and(eq(t.stockdiary.tenant_id, tenantId), eq(t.stockdiary.id, m.client_uuid)));
+            if (old?.ref_ticket_id) ticketIds.add(old.ref_ticket_id);
+            if (old?.reason === "sale_void") throw new InvalidSync();
+          }
+        }
+        let voidedId: string | undefined;
+        for (const id of [...ticketIds].sort()) {
+          const [ticket] = await tx.select().from(t.tickets)
+            .where(and(eq(t.tickets.tenant_id, tenantId), eq(t.tickets.id, id))).for("update");
+          if (ticket?.status === "voided") voidedId = id;
+        }
+        if (voidedId) {
+          // ACK identical old envelopes without applying ANY member of the group.
+          // Include canonical state so a stale cache cannot report a live sale.
+          const duplicates: boolean[] = [];
+          for (const { m } of group) {
+            const [ledger] = await tx.select().from(t.syncLog).where(and(eq(t.syncLog.tenant_id, tenantId), eq(t.syncLog.client_uuid, m.client_uuid)));
+            duplicates.push(ledger?.entity === m.entity && contentHash(ledger.payload) === contentHash(m.payload));
+          }
+          const duplicate = duplicates.every(Boolean);
+          return group.map(({ m }): SyncResult => {
+            return { client_uuid: m.client_uuid, status: duplicate ? "duplicate" : "rejected", ...(duplicate ? {} : { reason: "validation" as const }), voided_ticket: voidedId };
+          });
+        }
         const inner: SyncResult[] = [];
         const dirtyVariants = new Set<string>();
         for (const { m } of group)
           inner.push(await applyOne(tx, tenantId, actor, m, dirtyVariants));
         // last step of the group: movement log → balance (D3-1 invariant)
         await recomputeStock(tx, tenantId, dirtyVariants);
+        for (let i = 0; i < group.length; i++) {
+          const m = group[i].m;
+          if (m.entity !== "closedcash" || inner[i].status === "rejected") continue;
+          const [closed] = await tx.select().from(t.closedcash)
+            .where(and(eq(t.closedcash.tenant_id, tenantId), eq(t.closedcash.shift_id, m.payload.shift_id)));
+          if (closed) inner[i].closedcash = { shift_id: closed.shift_id, expected: closed.expected, counted: closed.counted, diff: closed.diff };
+        }
         return inner;
       });
       group.forEach((item, i) => byIndex.set(item.index, results[i]));
-    } catch {
+    } catch (err) {
       // Whole group rolled back: report db_error for its members only —
       // the rest of the batch is unaffected (design §3 rule 3).
       for (const item of group) {
         byIndex.set(item.index, {
           client_uuid: item.m.client_uuid,
           status: "rejected",
-          reason: "db_error",
+          reason: err instanceof InvalidSync ? "validation" : "db_error",
         });
       }
     }
@@ -178,6 +230,7 @@ async function applyOne(
     .limit(1)
     .for("update");
   const stored = ledgerRows[0];
+  if (stored && stored.entity !== m.entity) throw new InvalidSync();
 
   if (stored) {
     if (contentHash(stored.payload) === contentHash(m.payload)) {
@@ -318,6 +371,9 @@ async function upsertEntity(
     }
     case "payment": {
       const p = m.payload;
+      const [existing] = await tx.select().from(t.payments).where(and(eq(t.payments.tenant_id, tenantId), eq(t.payments.id, cu)));
+      if (p.method === "transfer" && p.status === "confirmed" && existing?.status !== "confirmed") throw new InvalidSync();
+      if (existing?.status === "confirmed" && p.status !== "confirmed") throw new InvalidSync();
       await tx
         .insert(t.payments)
         .values({
@@ -442,7 +498,7 @@ async function upsertEntity(
           set: {
             name: p.name,
             price: p.price,
-            cost: p.cost ?? null,
+            ...(p.cost !== undefined ? { cost: p.cost } : {}),
             stock: p.stock,
             low_stock_threshold: p.low_stock_threshold,
             active: p.active,
@@ -450,6 +506,7 @@ async function upsertEntity(
           },
         });
       // derived cache follows the absolute stock the client pushed
+      dirtyVariants.add(cu);
       await tx
         .insert(t.stockcurrent)
         .values({
@@ -466,6 +523,11 @@ async function upsertEntity(
     }
     case "closedcash": {
       const p = m.payload;
+      await tx.select().from(t.shifts).where(and(eq(t.shifts.tenant_id, tenantId), eq(t.shifts.id, p.shift_id))).for("update");
+      // Offline counted is user input; expected and diff remain server-owned.
+      const query = sql.join(EXPECTED_FROM_PAYMENTS_SQL.split(/(\$[12])/).map(part =>
+        part === "$1" ? sql`${tenantId}` : part === "$2" ? sql`${p.shift_id}` : sql.raw(part)), sql.raw(""));
+      const expected = parseExpectedRow((await tx.execute(query)).rows[0]).expected;
       // IMMUTABLE row (cash-close spec §Closed shifts are immutable): the
       // first write wins forever — a replay or tampered close can never
       // rewrite expected/counted/diff (ON CONFLICT DO NOTHING on either
@@ -477,9 +539,9 @@ async function upsertEntity(
           tenant_id: tenantId,
           client_uuid: cu,
           shift_id: p.shift_id,
-          expected: p.expected,
+          expected,
           counted: p.counted,
-          diff: p.diff,
+          diff: p.counted - expected,
           closed_by: p.closed_by ?? null,
         })
         .onConflictDoNothing();
@@ -487,6 +549,8 @@ async function upsertEntity(
     }
     case "shift": {
       const p = m.payload;
+      const [closed] = await tx.select().from(t.closedcash).where(and(eq(t.closedcash.tenant_id, tenantId), eq(t.closedcash.shift_id, cu)));
+      if (closed && p.status === "open") return;
       await tx
         .insert(t.shifts)
         .values({

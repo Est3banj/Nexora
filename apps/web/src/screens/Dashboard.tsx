@@ -107,6 +107,7 @@ export function Dashboard({ db, tenantId, refreshToken }: Props) {
         {periodLabel}
       </p>
 
+      <p className="muted">Ventas netas de anulaciones completas. Los tickets originales se conservan en Tickets.</p>
       {sync.pending > 0 && (
         <div className="warn-banner" data-testid="dash-staleness" role="status">
           Datos posiblemente incompletos — {sync.pending} cambio(s) sin sincronizar.

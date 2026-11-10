@@ -7,6 +7,8 @@ import {
   type SyncResult,
 } from "@pos/shared";
 import { getSyncState, patchSync, writeLastSync } from "./store";
+import { pullVoidedSale } from "../db/void-sale";
+import { groupQueue } from "./batch";
 
 /**
  * Client sync queue (task D2-2 / D2-5, design §3 + §6).
@@ -69,8 +71,7 @@ const SELECT_BATCH = `
          updated_at, last_error
   FROM sync_log
   WHERE tenant_id = $1 AND status IN ('pending', 'failed')
-  ORDER BY client_ts ASC, created_at ASC
-  LIMIT $2`;
+   ORDER BY client_ts ASC, created_at ASC`;
 
 async function markInFlight(db: PGlite, id: string): Promise<void> {
   await db.query(
@@ -152,14 +153,23 @@ async function drainOnce(
   force: boolean,
   attempted: Set<string>,
 ): Promise<{ synced: number; handled: number }> {
-  const sel = await db.query<QueueRow>(SELECT_BATCH, [
-    tenantId,
-    MUTATION_BATCH_MAX,
-  ]);
+  const sel = await db.query<QueueRow>(SELECT_BATCH, [tenantId]);
   const now = Date.now();
-  const candidates = sel.rows.filter(
-    (r) => !attempted.has(r.id) && eligible(r, force, now),
-  );
+  const candidates: QueueRow[] = [];
+  for (const group of groupQueue(sel.rows)) {
+    if (group.some(r => attempted.has(r.id) || !eligible(r, force, now))) continue;
+    if (group.length > MUTATION_BATCH_MAX) {
+      for (const row of group) { attempted.add(row.id); await markFailure(db, row, "sale_exceeds_batch_limit", true); }
+      continue;
+    }
+    if (candidates.length + group.length > MUTATION_BATCH_MAX) break;
+    // Invalid member rejects the whole sale locally, rather than sending half.
+    if (group.some(row => !mutationEnvelopeSchema.safeParse({ ...row, client_ts: Number(row.client_ts) }).success)) {
+      for (const row of group) { attempted.add(row.id); await markFailure(db, row, "validation: invalid_sale_group", true); }
+      continue;
+    }
+    candidates.push(...group);
+  }
   if (candidates.length === 0) return { synced: 0, handled: 0 };
 
   const send: MutationEnvelope[] = [];
@@ -218,7 +228,15 @@ async function drainOnce(
       await markFailure(db, row, "missing_result", false);
       continue;
     }
+    if (result.voided_ticket) {
+      try { await pullVoidedSale(db, tenantId, result.voided_ticket); }
+      catch { await markFailure(db, row, "canonical_mirror_failed", false); continue; }
+    }
     if (result.status === "applied" || result.status === "duplicate") {
+      if (result.closedcash) {
+        const c = result.closedcash;
+        await db.query("UPDATE closedcash SET expected=$3,counted=$4,diff=$5 WHERE tenant_id=$1 AND shift_id=$2", [tenantId, c.shift_id, c.expected, c.counted, c.diff]);
+      }
       await markSynced(db, row.id);
       synced += 1;
     } else if (result.reason === "db_error") {

@@ -20,7 +20,8 @@ SELECT COALESCE(SUM(amount) FILTER (WHERE method = 'cash' AND status = 'confirme
        COALESCE(SUM(amount) FILTER (WHERE method = 'transfer' AND status = 'confirmed'), 0) AS transfers,
        COALESCE(SUM(amount) FILTER (WHERE status = 'pending'), 0) AS pending
 FROM payments
-WHERE tenant_id = $1 AND shift_id = $2`;
+WHERE tenant_id = $1 AND shift_id = $2
+  AND NOT EXISTS (SELECT 1 FROM tickets tk WHERE tk.tenant_id=payments.tenant_id AND tk.id=payments.ticket_id AND tk.status='voided')`;
 
 export type ExpectedBreakdown = {
   /** confirmed cash in the drawer */

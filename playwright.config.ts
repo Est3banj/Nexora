@@ -1,6 +1,8 @@
 import { defineConfig } from "@playwright/test";
 
 const E2E_DB_URL = "postgres://esteban@127.0.0.1:5432/pos_piloto_e2e";
+const apiPort = Number(process.env.E2E_API_PORT ?? 3000);
+const webPort = Number(process.env.E2E_WEB_PORT ?? 5173);
 
 export default defineConfig({
   testDir: "./e2e",
@@ -11,7 +13,7 @@ export default defineConfig({
   retries: 0,
   reporter: [["list"]],
   use: {
-    baseURL: "http://localhost:5173",
+    baseURL: `http://localhost:${webPort}`,
     // D1 gate is explicitly mobile (tasks.md: E2E, 375px)
     viewport: { width: 375, height: 812 },
     trace: "retain-on-failure",
@@ -19,23 +21,25 @@ export default defineConfig({
   webServer: [
     {
       command: "sh e2e/start-api.sh",
-      url: "http://localhost:3000/api/health",
+      url: `http://localhost:${apiPort}/api/health`,
       reuseExistingServer: false,
       timeout: 180_000,
       env: {
         DATABASE_URL: E2E_DB_URL,
         NODE_ENV: "test",
-        BETTER_AUTH_URL: "http://localhost:3000",
+        PORT: String(apiPort),
+        BETTER_AUTH_URL: `http://localhost:${apiPort}`,
+        TRUSTED_ORIGINS: `http://localhost:${webPort}`,
         BETTER_AUTH_SECRET: "e2e-secret-0123456789abcdef0123456789",
       },
     },
     {
-      command: "pnpm --filter @pos/web dev",
-      url: "http://localhost:5173",
+      command: `pnpm --filter @pos/web dev --port ${webPort} --strictPort`,
+      url: `http://localhost:${webPort}`,
       reuseExistingServer: false,
       timeout: 180_000,
       env: {
-        VITE_API_PROXY: "http://localhost:3000",
+        VITE_API_PROXY: `http://localhost:${apiPort}`,
       },
     },
   ],

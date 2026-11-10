@@ -486,8 +486,8 @@ export async function adjustLocalStock(
   },
 ): Promise<{ stock: number } | null> {
   return localTx(db, async (tx) => {
-    const rows = await tx.query<{ stock: number; product_id: string; name: string; price: number }>(
-      `SELECT stock, product_id, name, price FROM product_variants
+    const rows = await tx.query<{ stock: number; product_id: string; name: string; price: number; cost: number | null }>(
+      `SELECT stock, product_id, name, price, cost FROM product_variants
        WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
       [tenantId, input.variant_id],
     );
@@ -524,6 +524,7 @@ export async function adjustLocalStock(
       product_id: variant.product_id,
       name: variant.name,
       price: variant.price,
+      cost: variant.cost,
       stock: nextStock,
       low_stock_threshold: null,
       active: true,
@@ -664,11 +665,12 @@ export async function commitLocalSale(
         product_id: string;
         name: string;
         price: number;
+        cost: number | null;
         stock: number;
         low_stock_threshold: number | null;
         active: boolean;
       }>(
-        `SELECT product_id, name, price, stock, low_stock_threshold, active
+        `SELECT product_id, name, price, cost, stock, low_stock_threshold, active
          FROM product_variants WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
         [tenantId, line.variant_id],
       );
@@ -709,6 +711,7 @@ export async function commitLocalSale(
           product_id: variant.product_id,
           name: variant.name,
           price: variant.price,
+          cost: variant.cost,
           stock: nextStock,
           low_stock_threshold: variant.low_stock_threshold,
           active: variant.active,
@@ -879,6 +882,8 @@ export type LocalTicketRow = {
   pay_status: string | null;
   tendered: number | null;
   vuelto: number | null;
+  void_reason?: string | null;
+  voided_at?: string | null;
 };
 
 export async function listLocalTickets(
@@ -920,7 +925,9 @@ export async function getLocalTicket(
 } | null> {
   const ticket = await db.query<LocalTicketRow>(
     `SELECT t.id, t.ticket_no, t.total, t.status, t.created_at,
-            p.id AS payment_id, p.method, p.status AS pay_status, p.tendered, p.vuelto
+            p.id AS payment_id, p.method, p.status AS pay_status, p.tendered, p.vuelto,
+            (SELECT note FROM stockdiary d WHERE d.tenant_id=t.tenant_id AND d.ref_ticket_id=t.id AND d.reason='sale_void' ORDER BY created_at LIMIT 1) AS void_reason,
+            (SELECT created_at FROM stockdiary d WHERE d.tenant_id=t.tenant_id AND d.ref_ticket_id=t.id AND d.reason='sale_void' ORDER BY created_at LIMIT 1) AS voided_at
      FROM tickets t
      LEFT JOIN payments p ON p.ticket_id = t.id
      WHERE t.tenant_id = $1 AND t.id = $2`,
