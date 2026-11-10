@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import rateLimit from "@fastify/rate-limit";
 import { ZodError } from "zod";
 import { config } from "./config";
 import { authRouteHandler } from "./auth/handler";
@@ -16,6 +17,19 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
   const app = Fastify({
     logger: opts.logger ?? config.nodeEnv !== "test",
   });
+
+  // Brute-force / abuse protection (audit: no rate-limit on login).
+  // Global API cap + tighter window on /api/auth/* (sign-in lives there).
+  // Disabled in tests so suites are not throttled.
+  if (config.nodeEnv !== "test") {
+    await app.register(rateLimit, {
+      global: true,
+      max: 300,
+      timeWindow: "1 minute",
+      keyGenerator: (req) => req.ip,
+      allowList: (req) => req.url === "/api/health",
+    });
+  }
 
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof ZodError) {
@@ -42,11 +56,34 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
     return reply.code(status).send({ error: e.message });
   });
 
-  // better-auth routes (sign-in, session, organization set-active, …)
+  // Baseline security headers (audit: none present).
+  app.addHook("onSend", async (_req, reply, payload) => {
+    reply.header("X-Content-Type-Options", "nosniff");
+    reply.header("X-Frame-Options", "DENY");
+    reply.header("Referrer-Policy", "same-origin");
+    if (config.nodeEnv === "production") {
+      reply.header(
+        "Strict-Transport-Security",
+        "max-age=31536000; includeSubDomains",
+      );
+    }
+    return payload;
+  });
+
+  // better-auth routes (sign-in, session, organization set-active, …).
+  // Auth gets a tighter window: 20 req/min/IP — enough for login + org
+  // calls, too low for credential stuffing.
   app.route(
     {
       method: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       url: "/api/auth/*",
+      ...(config.nodeEnv !== "test"
+        ? {
+            config: {
+              rateLimit: { max: 20, timeWindow: "1 minute" },
+            },
+          }
+        : {}),
       handler: authRouteHandler,
     },
   );
