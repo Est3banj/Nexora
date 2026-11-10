@@ -20,9 +20,9 @@ export type SyncState = {
 
 const LAST_SYNC_KEY = "pos:last-sync";
 
-function readLastSync(): number | null {
+function readLastSync(tenant: string): number | null {
   try {
-    const v = localStorage.getItem(LAST_SYNC_KEY);
+    const v = localStorage.getItem(`${LAST_SYNC_KEY}:${tenant}`);
     return v === null ? null : Number(v);
   } catch {
     return null;
@@ -35,7 +35,7 @@ let state: SyncState = {
   poison: 0,
   inFlight: 0,
   online: typeof navigator === "undefined" ? true : navigator.onLine !== false,
-  lastSync: readLastSync(),
+  lastSync: null,
   error: null,
   syncing: false,
 };
@@ -68,9 +68,9 @@ export function patchSync(patch: Partial<SyncState>): void {
  * updates immediately after a successful push — no refresh required
  * (sync spec §Visible sync status).
  */
-export function writeLastSync(ts: number = Date.now()): void {
+export function writeLastSync(tenant: string, ts: number = Date.now()): void {
   try {
-    localStorage.setItem(LAST_SYNC_KEY, String(ts));
+    localStorage.setItem(`${LAST_SYNC_KEY}:${tenant}`, String(ts));
   } catch {
     /* private mode / SSR — last-sync is best-effort */
   }

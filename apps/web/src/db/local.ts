@@ -13,6 +13,7 @@ import {
   variantCodeSchema,
 } from "@pos/shared";
 import { localTx, type LocalQueryable } from "./pglite";
+import { assertWritable, unresolvedWork, BUSINESS_TABLES } from "./preservation";
 
 /**
  * Local-first data layer (tasks D1-7 / D1-8).
@@ -27,6 +28,13 @@ import { localTx, type LocalQueryable } from "./pglite";
  */
 
 type Q = LocalQueryable;
+
+function tenantTx<T>(db: PGlite, tenant: string, fn: (tx: Q) => Promise<T>): Promise<T> {
+  return localTx(db, async tx => {
+    await assertWritable(tx, tenant);
+    return fn(tx);
+  });
+}
 
 async function assertLocalCategory(q: Q, tenantId: string, id?: string | null) {
   if (!id) return;
@@ -60,6 +68,7 @@ export async function enqueueMutation(
   clientUuid: string,
   payload: Record<string, unknown>,
 ): Promise<void> {
+  await assertWritable(q, tenantId);
   const envelope = mutationEnvelopeSchema.parse({
     client_uuid: clientUuid,
     client_ts: Date.now(),
@@ -98,7 +107,8 @@ export async function pendingCount(db: Q, tenantId: string): Promise<number> {
   return Number(res.rows[0]?.n ?? 0);
 }
 
-/** Anything not yet synced — used by the datadir-upgrade flush check (D2-8). */
+/** Queue-only tenant count. Lifecycle checks MUST use unresolvedWork, which
+ * also covers snapshots and foreign tenants. */
 export async function unsyncedCount(db: Q, tenantId: string): Promise<number> {
   const res = await db.query<{ n: string }>(
     `SELECT count(*) AS n FROM sync_log
@@ -203,7 +213,7 @@ export async function createLocalCategory(
   tenantId: string,
   input: { name: string },
 ): Promise<LocalCategory> {
-  return localTx(db, async (tx) => {
+  return tenantTx(db, tenantId, async (tx) => {
     const id = newId();
     await tx.query(
       `INSERT INTO categories (id, tenant_id, client_uuid, name, active)
@@ -269,7 +279,7 @@ export async function createLocalProduct(
     variant: { name: string; price: number; code?: string | null; cost?: number | null; stock?: number };
   },
 ): Promise<LocalProduct> {
-  return localTx(db, async (tx) => {
+  return tenantTx(db, tenantId, async (tx) => {
     const productId = newId();
     await assertLocalCategory(tx, tenantId, input.category_id);
     const code = variantCodeSchema.parse(input.variant.code ?? null);
@@ -355,7 +365,7 @@ export async function addLocalVariant(
   productId: string,
   variant: { name: string; price: number; code?: string | null; cost?: number | null; stock?: number },
 ): Promise<{ id: string; stock: number } | null> {
-  return localTx(db, async (tx) => {
+  return tenantTx(db, tenantId, async (tx) => {
     const product = await tx.query<{ id: string }>(
       `SELECT id FROM products WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
       [tenantId, productId],
@@ -415,7 +425,7 @@ export async function updateLocalProduct(
     active?: boolean;
   },
 ): Promise<number> {
-  return localTx(db, async (tx) => {
+  return tenantTx(db, tenantId, async (tx) => {
     await assertLocalCategory(tx, tenantId, patch.category_id);
     const rows = await tx.query<{
       client_uuid: string;
@@ -457,7 +467,7 @@ export async function updateLocalVariant(
   variantId: string,
   patch: { name?: string; price?: number; code?: string | null; cost?: number | null; active?: boolean },
 ): Promise<number> {
-  return localTx(db, async (tx) => {
+  return tenantTx(db, tenantId, async (tx) => {
     const rows = await tx.query<{
       client_uuid: string;
       product_id: string;
@@ -513,7 +523,7 @@ export async function adjustLocalStock(
     note: string;
   },
 ): Promise<{ stock: number } | null> {
-  return localTx(db, async (tx) => {
+  return tenantTx(db, tenantId, async (tx) => {
     const rows = await tx.query<{ stock: number; product_id: string; name: string; price: number; cost: number | null; code: string | null; active: boolean; low_stock_threshold: number | null }>(
       `SELECT stock, product_id, name, price, cost, code, active, low_stock_threshold FROM product_variants
        WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
@@ -640,7 +650,7 @@ export async function commitLocalSale(
     tendered = input.tendered;
   }
 
-  return localTx(db, async (tx) => {
+  return tenantTx(db, tenantId, async (tx) => {
     const noRes = await tx.query<{ next: string }>(
       `SELECT coalesce(max(ticket_no), 0) + 1 AS next FROM tickets WHERE tenant_id = $1`,
       [tenantId],
@@ -825,7 +835,7 @@ export async function confirmLocalPayment(
   paymentId: string,
   confirmedAtIso?: string,
 ): Promise<{ payment: CommittedSale["payment"]; confirmed_at: string }> {
-  return localTx(db, async (tx) => {
+  return tenantTx(db, tenantId, async (tx) => {
     const payRes = await tx.query<{
       id: string;
       client_uuid: string;
@@ -1043,7 +1053,7 @@ export async function openLocalShift(
   tenantId: string,
   opts: { client_uuid?: string } = {},
 ): Promise<LocalShift> {
-  return localTx(db, async (tx) => {
+  return tenantTx(db, tenantId, async (tx) => {
     const open = await tx.query<{ id: string }>(
       `SELECT id FROM shifts WHERE tenant_id = $1 AND status = 'open' LIMIT 1`,
       [tenantId],
@@ -1080,7 +1090,7 @@ export async function mirrorOpenShift(
     closed_at?: string | Date | null;
   },
 ): Promise<boolean> {
-  return localTx(db, async (tx) => {
+  return tenantTx(db, tenantId, async (tx) => {
     const open = await tx.query<{ id: string }>(
       `SELECT id FROM shifts WHERE tenant_id = $1 AND status = 'open' LIMIT 1`,
       [tenantId],
@@ -1137,7 +1147,7 @@ export async function closeLocalShift(
   const counted = countedSchema.safeParse(input.counted);
   if (!counted.success) throw new Error("NEGATIVE_COUNTED");
 
-  return localTx(db, async (tx) => {
+  return tenantTx(db, tenantId, async (tx) => {
     const open = await tx.query<LocalShift>(
       `SELECT ${SHIFT_COLS} FROM shifts
        WHERE tenant_id = $1 AND status = 'open' LIMIT 1 FOR UPDATE`,
@@ -1213,7 +1223,7 @@ export async function mirrorServerClose(
     closed_by?: string | null;
   },
 ): Promise<void> {
-  await localTx(db, async (tx) => {
+  await tenantTx(db, tenantId, async (tx) => {
     await tx.query(
       `INSERT INTO closedcash
          (id, tenant_id, client_uuid, shift_id, expected, counted, diff, closed_by)
@@ -1255,26 +1265,16 @@ export async function listLocalClosedCash(
 
 /**
  * D4-4 · Sign-out / tenant switch partitioning (tenancy-auth §Session data
- * is tenant-partitioned locally): wipe ALL local business rows so the next
- * session (any tenant) starts from an empty cache. Auth/session data lives
- * outside PGlite and is untouched.
+ * is tenant-partitioned locally): wipe acknowledged business rows only.
+ * The caller ends auth first, with the durable write seal held throughout.
  */
-const LOCAL_BUSINESS_TABLES = [
-  "sync_log",
-  "stockdiary",
-  "stockcurrent",
-  "closedcash",
-  "payments",
-  "ticket_lines",
-  "tickets",
-  "shifts",
-  "product_variants",
-  "products",
-] as const;
-
 export async function clearLocalBusinessData(db: PGlite): Promise<void> {
-  await localTx(db, async (tx) => {
-    for (const table of LOCAL_BUSINESS_TABLES) {
+  await db.transaction(async (tx) => {
+    // Check and delete in ONE transaction; includes every tenant and every
+    // non-ACK status, including poison, unknown states and orphan snapshots.
+    await tx.query("UPDATE local_vault SET sealed=true WHERE id=1");
+    if (await unresolvedWork(tx)) throw new Error("unacknowledged_local_work");
+    for (const table of BUSINESS_TABLES) {
       await tx.query(`DELETE FROM ${table}`);
     }
   });

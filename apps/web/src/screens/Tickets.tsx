@@ -9,6 +9,7 @@ import {
 import "./ticket-print.css";
 import { mirrorVoidedSale, type VoidSnapshot } from "../db/void-sale";
 import { pushNow } from "../sync/queue";
+import { scopedFetch } from "../sync/scoped-fetch";
 
 const cop = (n: number) =>
   new Intl.NumberFormat("es-CO", {
@@ -59,7 +60,7 @@ export function Tickets({
       await pushNow(db, tenantId, { force: true });
       const pending = await db.query("SELECT id FROM sync_log WHERE tenant_id=$1 AND status<>'synced' LIMIT 1", [tenantId]);
       if (pending.rows.length) throw new Error("Terminá la sincronización antes de anular la venta");
-      const res = await fetch(`/api/sales/tickets/${detail.ticket.id}/void`, {
+      const res = await scopedFetch(tenantId, `/api/sales/tickets/${detail.ticket.id}/void`, {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ reason: reason.trim() }),
       });
       const data = await res.json();
@@ -116,7 +117,7 @@ export function Tickets({
     setConfirmErr(null);
     setConfirming(true);
     try {
-      const res = await fetch(`/api/payments/${paymentId}/confirm`, {
+      const res = await scopedFetch(tenantId, `/api/payments/${paymentId}/confirm`, {
         method: "POST",
       });
       if (res.status === 403) {

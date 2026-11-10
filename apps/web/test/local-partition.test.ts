@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { PGlite } from "@electric-sql/pglite";
 import { openLocalDb } from "../src/db/pglite";
+import { claimLocal } from "../src/db/preservation";
 import {
   clearLocalBusinessData,
   createLocalProduct,
@@ -59,6 +60,9 @@ describe("D4-4 · clearLocalBusinessData", () => {
     expect(await tableCount("sync_log")).toBeGreaterThan(0);
     expect(await tableCount("tickets")).toBe(1);
 
+    // These tests model acknowledged rows; pending work is covered by
+    // preservation.test.ts and MUST reject this destructive helper.
+    await db.query("UPDATE sync_log SET status='synced'");
     await clearLocalBusinessData(db);
 
     for (const t of [
@@ -77,6 +81,7 @@ describe("D4-4 · clearLocalBusinessData", () => {
     }
 
     // schema still intact — can create again after wipe
+    await claimLocal(db, TENANT_B);
     const again = await createLocalProduct(db, TENANT_B, {
       name: "Post-logout",
       variant: { name: "Chico", price: 2000 },
@@ -92,6 +97,7 @@ describe("D4-4 · clearLocalBusinessData", () => {
       variant: { name: "X", price: 1000 },
     });
     expect(await listProducts(db, TENANT_A)).toHaveLength(1);
+    await db.query("UPDATE sync_log SET status='synced'");
     await clearLocalBusinessData(db);
     expect(await listProducts(db, TENANT_A)).toEqual([]);
     expect(await pendingCount(db, TENANT_A)).toBe(0);
@@ -129,6 +135,7 @@ describe("D4-4 · isLocalCacheEmpty (first-boot rehydrate trigger)", () => {
       variant: { name: "Y", price: 1 },
     });
     expect(await isLocalCacheEmpty(db, TENANT_A)).toBe(false);
+    await db.query("UPDATE sync_log SET status='synced'");
     await clearLocalBusinessData(db);
     expect(await isLocalCacheEmpty(db, TENANT_A)).toBe(true);
   });

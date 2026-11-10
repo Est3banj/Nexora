@@ -8,9 +8,10 @@ import {
   SALE_OUTBOX_MIGRATION_SQL,
 } from "@pos/shared";
 import { saveSaleSnapshot, uploadSaleSnapshot, SaleUploadError } from "./sale-upload";
-import { getSyncState, patchSync, writeLastSync } from "./store";
+import { getSyncState, patchSync, writeLastSync, readLastSync } from "./store";
 import { pullVoidedSale } from "../db/void-sale";
 import { groupQueue } from "./batch";
+import { scopedFetch } from "./scoped-fetch";
 
 /**
  * Client sync queue (task D2-2 / D2-5, design §3 + §6).
@@ -22,7 +23,7 @@ import { groupQueue } from "./batch";
  * - `online` event + manual retry force-drain; post-commit push respects
  *   per-entry exponential backoff for previously failed entries
  * - deterministic rejections (validation / conflict_hash_mismatch) promote
- *   to `poison` after MAX_ATTEMPTS: isolated, visible, discardable — they
+ *   to `poison` after MAX_ATTEMPTS: isolated, visible, preserved — they
  *   can never stall the rest of the queue (sync §Partial batch failure)
  * - transport failures NEVER poison: they are retryable by definition
  */
@@ -49,7 +50,9 @@ type QueueRow = {
 type Active = { db: PGlite; tenantId: string };
 
 let active: Active | null = null;
+let generation = 0;
 let draining = false;
+let drainTask: Promise<void> | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let listenersBound = false;
 
@@ -95,7 +98,7 @@ async function markSynced(db: PGlite, row: QueueRow): Promise<void> {
 /**
  * `deterministic` = the server (or our own validation) rejected the content:
  * retrying can never succeed → attempts climb and, at MAX_ATTEMPTS, the
- * entry becomes `poison` (excluded from auto-retry, visible + discardable).
+ * entry becomes `poison` (excluded from auto-retry, visible + preserved).
  */
 async function markFailure(
   db: PGlite,
@@ -227,7 +230,7 @@ async function drainOnce(
 
   let results: SyncResult[];
   try {
-    const res = await fetch("/api/sync/mutations", {
+    const res = await scopedFetch(tenantId, "/api/sync/mutations", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ mutations: send }),
@@ -276,7 +279,7 @@ async function drainOnce(
     handled += 1;
   }
 
-  if (synced > 0) writeLastSync();
+  if (synced > 0) writeLastSync(tenantId);
   await refreshSyncStatus(db, tenantId);
   patchSync({ error: null });
   return { synced, handled };
@@ -295,15 +298,14 @@ async function drainSale(db: PGlite, tenantId: string, rows: QueueRow[], operati
       for (const row of rows) await tx.query("UPDATE sync_log SET status='synced',attempts=0,last_error=NULL,updated_at=now() WHERE tenant_id=$1 AND id=$2 AND client_ts=$3 AND payload=$4::jsonb", [tenantId, row.id, row.client_ts, JSON.stringify(row.payload)]);
       await tx.query("DELETE FROM sync_sale_outbox WHERE tenant_id=$1 AND operation_id=$2", [tenantId, operation]);
     });
-    writeLastSync();
+    writeLastSync(tenantId);
     return { synced: rows.length, handled: rows.length };
   } catch (err) {
     const deterministic = err instanceof SaleUploadError && err.deterministic;
     const message = err instanceof Error ? err.message : String(err);
     for (const row of rows) await markFailure(db, row, message, deterministic);
-    // Deterministically invalid snapshots cannot block independent/new work.
-    // Current matching versions retain the accessible queue error/poison.
-    if (deterministic) await db.query("DELETE FROM sync_sale_outbox WHERE tenant_id=$1 AND operation_id=$2", [tenantId, operation]);
+    // Even an invalid snapshot is unacknowledged business evidence. Keep it
+    // durable: a later edit must never make its older sale disappear.
     patchSync({ error: message });
     return { synced: 0, handled: rows.length };
   }
@@ -322,8 +324,8 @@ function scheduleRetry(): void {
 
 /**
  * Drain the queue. `force` bypasses per-entry backoff (online event,
- * manual retry, boot). Safe to call concurrently: extra calls are dropped
- * while a drain is running. Every row is attempted at most once per run
+ * manual retry, boot). Concurrent calls join the running drain, including its
+ * ACK writes. Every row is attempted at most once per run
  * (the `attempted` set), so the loop always terminates.
  */
 export async function pushNow(
@@ -331,6 +333,13 @@ export async function pushNow(
   tenantId: string,
   opts: { force?: boolean } = {},
 ): Promise<void> {
+  if (drainTask) return drainTask;
+  const task = drain(db, tenantId, opts);
+  drainTask = task;
+  try { await task; } finally { if (drainTask === task) drainTask = null; }
+}
+
+async function drain(db: PGlite, tenantId: string, opts: { force?: boolean }): Promise<void> {
   if (!online()) {
     await refreshSyncStatus(db, tenantId);
     return;
@@ -363,8 +372,11 @@ export async function pushNow(
  * sync §Automatic sync on reconnect).
  */
 export async function initSync(db: PGlite, tenantId: string): Promise<void> {
+  const current = ++generation;
   active = { db, tenantId };
   await resetInFlight(db, tenantId);
+  if (current !== generation) return;
+  patchSync({ lastSync: readLastSync(tenantId) });
 
   if (!listenersBound && typeof window !== "undefined") {
     listenersBound = true;
@@ -377,16 +389,27 @@ export async function initSync(db: PGlite, tenantId: string): Promise<void> {
   }
 
   await refreshSyncStatus(db, tenantId);
-  if (online()) void pushNow(db, tenantId, { force: true });
+  if (current === generation && online()) void pushNow(db, tenantId, { force: true });
 }
 
-/** Delete every poison entry (manual discard affordance, design §3 rule 3). */
-export async function discardPoison(db: PGlite, tenantId: string): Promise<number> {
+/** Detach listeners/timers from the old session and await any in-flight ACK. */
+export async function stopSync(): Promise<void> {
+  generation++;
+  active = null;
+  if (retryTimer) clearTimeout(retryTimer);
+  retryTimer = null;
+  if (drainTask) await drainTask;
+  patchSync({ pending: 0, failed: 0, poison: 0, inFlight: 0, syncing: false, error: null, lastSync: null });
+}
+
+/** Manual retry preserves every payload and immutable snapshot. */
+export async function retryPoison(db: PGlite, tenantId: string): Promise<number> {
   const res = await db.query<{ id: string }>(
-    `DELETE FROM sync_log WHERE tenant_id = $1 AND status = 'poison' RETURNING id`,
+    `UPDATE sync_log SET status='pending', attempts=0 WHERE tenant_id = $1 AND status = 'poison' RETURNING id`,
     [tenantId],
   );
   await refreshSyncStatus(db, tenantId);
+  await pushNow(db, tenantId, { force: true });
   return res.rows.length;
 }
 
@@ -419,7 +442,7 @@ export async function repushSynced(
       payload: row.payload,
     }),
   );
-  const res = await fetch("/api/sync/mutations", {
+  const res = await scopedFetch(tenantId, "/api/sync/mutations", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ mutations: envelopes }),

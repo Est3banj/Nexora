@@ -5,6 +5,7 @@ import {
   type LocalHandle,
   type OpenOptions,
 } from "./pglite";
+import { sealLocal, unresolvedWork } from "./preservation";
 
 /**
  * Module-level singleton for the local database.
@@ -123,21 +124,31 @@ export function getLocalDb(opts: OpenOptions = {}): Promise<LocalHandle | null> 
  * rehydrate the fresh cache afterwards (App.tsx).
  */
 export async function switchToCurrentDatadir(
-  opts: OpenOptions = {},
+  opts: OpenOptions & { prepare?: (handle: LocalHandle) => Promise<void> } = {},
 ): Promise<LocalHandle> {
   const old = await getLocalDb(opts);
   if (old) {
-    try {
-      await old.db.close();
-    } catch {
-      /* already closed */
-    }
+    await sealLocal(old.db);
+    if (await unresolvedWork(old.db)) throw new Error("unacknowledged_local_work");
   }
   const url =
     opts.url ??
     (typeof indexedDB !== "undefined" ? datadirUrl(DATA_DIR_VERSION) : "memory://");
+  if (old?.url === url && url !== "memory://") {
+    await opts.prepare?.(old);
+    return old;
+  }
   const handle = await openLocalDb({ ...opts, url, locks: null });
   if (!handle) throw new Error("datadir_switch_failed");
+  try {
+    await opts.prepare?.(handle);
+  } catch (error) {
+    await handle.db.close();
+    throw error;
+  }
+  // Open first: an open/migration failure leaves the OLD handle usable and
+  // the version pointer unchanged. Never delete the previous datadir.
+  if (old) await old.db.close();
   writeStoredVersion(DATA_DIR_VERSION);
   memoPlan = Promise.resolve({ version: DATA_DIR_VERSION, upgradeFrom: null });
   instance = Promise.resolve(handle);

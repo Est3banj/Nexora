@@ -1,4 +1,5 @@
 import type { PGlite } from "@electric-sql/pglite";
+import { scopedFetch } from "./scoped-fetch";
 import { canonicalJson, mutationEnvelopeSchema, saleDigest, saleManifestSchema, syncPushResponseSchema, MUTATION_BATCH_MAX, SALE_SYNC_BYTES_MAX, SALE_OUTBOX_MIGRATION_SQL } from "@pos/shared";
 
 export class SaleUploadError extends Error {
@@ -25,12 +26,12 @@ export async function uploadSaleSnapshot(db: PGlite, tenant: string, operation: 
   if (!parsed.success) throw new SaleUploadError("La venta excede el límite de 2000 mutaciones", true);
   const manifest = parsed.data;
   async function post(path: string, body: unknown) {
-    const res = await fetch(`/api/sync/sales/${operation}/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const res = await scopedFetch(tenant, `/api/sync/sales/${operation}/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     if (!res.ok) {
       const error = await res.json().catch(() => ({})) as { error?: string };
       const message = error.error ?? `server_${res.status}`;
       // Missing dependencies/expired staging and server errors stay retryable.
-      throw new SaleUploadError(message, [400, 413].includes(res.status) || res.status === 409 && !message.includes("db_error") && message !== "sale_incomplete");
+      throw new SaleUploadError(message, [400, 413].includes(res.status) || res.status === 409 && !message.includes("db_error") && message !== "sale_incomplete" && message !== "tenant_mismatch");
     }
     return res.json();
   }

@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { activeOrgId, authClient } from "./auth";
 import type { LocalHandle } from "./db/pglite";
+import { claimLocal, sealLocal, unresolvedWork } from "./db/preservation";
+import { safeTransition, type TransitionState } from "./sync/safe-transition";
 import { getLocalDb, planBoot, switchToCurrentDatadir } from "./db/instance";
 import {
   clearLocalBusinessData,
   isLocalCacheEmpty,
-  unsyncedCount,
 } from "./db/local";
 import {
-  discardPoison,
+  retryPoison,
+  stopSync,
   initSync,
   pushNow,
   refreshSyncStatus,
@@ -26,13 +28,6 @@ import { Dashboard } from "./screens/Dashboard";
 
 type Tab = "dashboard" | "sale" | "catalog" | "tickets" | "arqueo" | "reports";
 
-/** Flush the OLD datadir queue (D2-8: never silently drop local-only data). */
-async function tryFlush(handle: LocalHandle, tenantId: string): Promise<boolean> {
-  if (typeof navigator !== "undefined" && navigator.onLine === false) return false;
-  await pushNow(handle.db, tenantId, { force: true });
-  return (await unsyncedCount(handle.db, tenantId)) === 0;
-}
-
 export default function App() {
   const { data: session, isPending } = authClient.useSession();
   const [local, setLocal] = useState<LocalHandle | null>(null);
@@ -41,17 +36,13 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
   const [toast, setToast] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState(0);
-  const [tenantName, setTenantName] = useState<string | undefined>(() => {
-    try {
-      return localStorage.getItem("pos:tenant-name") ?? undefined;
-    } catch {
-      return undefined;
-    }
-  });
-  const [upgrade, setUpgrade] = useState<{
-    phase: "idle" | "blocked" | "switching";
-    pending?: number;
-  }>({ phase: "idle" });
+  const [tenantName, setTenantName] = useState<string>();
+  const [transition, setTransition] = useState<TransitionState>({ phase: "idle" });
+  const [intent, setIntent] = useState<"logout" | "upgrade">("logout");
+  const [ready, setReady] = useState<string | null>(null);
+  const [accessError, setAccessError] = useState<string | null>(null);
+  const [recoveryNeeded, setRecoveryNeeded] = useState(false);
+  const [reauth, setReauth] = useState(() => localStorage.getItem("pos:reauth") === "1");
   const upgradeRef = useRef<"idle" | "running" | "done">("idle");
   const sync = useSync();
 
@@ -74,13 +65,36 @@ export default function App() {
   }, []);
 
   const tenantId = activeOrgId(session);
+  const sessionKey = session && tenantId ? `${session.session.id}:${tenantId}` : null;
 
   // Sync engine: crash recovery (in_flight→pending), live status, and the
   // boot/reconnect auto-push. Re-runs after a datadir switch too (D2-5).
   useEffect(() => {
-    if (!local || !tenantId) return;
-    void initSync(local.db, tenantId);
-  }, [local, tenantId]);
+    if (!local) return;
+    let alive = true;
+    setReady(null);
+    setTenantName(undefined);
+    setToast(null);
+    setTab("dashboard");
+    void (async () => {
+      try {
+        await stopSync();
+        await sealLocal(local.db);
+        const pending = await unresolvedWork(local.db);
+        if (alive) setRecoveryNeeded(pending > 0);
+        if (!tenantId || !sessionKey || reauth || !alive) return;
+        await claimLocal(local.db, tenantId);
+        if (!alive) { await sealLocal(local.db); return; }
+        setAccessError(null);
+        setReady(sessionKey);
+        await initSync(local.db, tenantId);
+      } catch (error) {
+        if (alive) setAccessError(error instanceof Error ? error.message : "No se pudo recuperar la base protegida");
+      }
+    })();
+    // A completed datadir switch has already closed the previous handle.
+    return () => { alive = false; void stopSync(); void sealLocal(local.db).catch(() => {}); };
+  }, [local, tenantId, sessionKey, reauth]);
 
   // D4-4 first-boot / post-wipe rehydrate: empty local cache against a
   // populated server must pull truth BEFORE the first sale (ticket_no
@@ -88,7 +102,7 @@ export default function App() {
   // Bumps refreshToken so Sale/Catalog/Tickets re-query after the pull —
   // otherwise a fresh device stays on the empty state forever.
   useEffect(() => {
-    if (!local || !tenantId) return;
+    if (!local || !tenantId || ready !== sessionKey || transition.phase !== "idle") return;
     if (typeof navigator !== "undefined" && navigator.onLine === false) return;
     let alive = true;
     void (async () => {
@@ -104,7 +118,7 @@ export default function App() {
     return () => {
       alive = false;
     };
-  }, [local, tenantId]);
+  }, [local, tenantId, ready, sessionKey, transition.phase]);
 
   // Self-heal: session without active org (fresh sign-in / cache) → set-active.
   useEffect(() => {
@@ -119,54 +133,58 @@ export default function App() {
 
   // Tenant name for the printed ticket (cached; refreshed when online).
   useEffect(() => {
-    if (!session || !tenantId || typeof navigator === "undefined") return;
+    if (!session || !tenantId || ready !== sessionKey || typeof navigator === "undefined") return;
+    let alive = true;
+    setTenantName(localStorage.getItem(`pos:tenant-name:${tenantId}`) ?? undefined);
     if (!navigator.onLine) return;
     void authClient.organization
       .list()
       .then((res) => {
         const orgs = res.data ?? [];
-        const active = orgs.find((o) => o.id === tenantId) ?? orgs[0];
-        if (active?.name) {
+        const active = orgs.find((o) => o.id === tenantId);
+        if (alive && active?.name) {
           setTenantName(active.name);
           try {
-            localStorage.setItem("pos:tenant-name", active.name);
+            localStorage.setItem(`pos:tenant-name:${tenantId}`, active.name);
           } catch {
             /* best-effort */
           }
         }
       })
       .catch(() => {});
-  }, [session, tenantId]);
+    return () => { alive = false; };
+  }, [session, tenantId, ready, sessionKey]);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
     window.setTimeout(() => setToast(null), 3500);
   }, []);
 
-  // D4-4 sign-out: best-effort flush → wipe local business rows → end session.
-  // Next sign-in (any tenant) starts from an empty cache + first-boot rehydrate.
   const handleSignOut = useCallback(async () => {
-    if (local && tenantId) {
-      try {
-        await pushNow(local.db, tenantId, { force: true });
-      } catch {
-        /* offline — wipe anyway; unsynced rows are lost by design on logout */
-      }
-    }
-    if (local) {
-      try {
+    if (!local) return;
+    await safeTransition(local.db, {
+      state: state => { setIntent("logout"); setTransition(state); },
+      flush: async () => { await stopSync(); if (tenantId) await pushNow(local.db, tenantId, { force: true }); },
+      finish: async () => {
+        const result = await authClient.signOut({ fetchOptions: { timeout: 15_000 } });
+        if (result.error) throw new Error("No se pudo cerrar la sesión del servidor");
         await clearLocalBusinessData(local.db);
-      } catch {
-        /* best-effort */
-      }
-    }
-    try {
-      localStorage.removeItem("pos:tenant-name");
-    } catch {
-      /* best-effort */
-    }
-    await authClient.signOut();
+        setRecoveryNeeded(false);
+        setReady(null);
+        setTenantName(undefined);
+        localStorage.removeItem("pos:tenant-name");
+        if (tenantId) localStorage.removeItem(`pos:tenant-name:${tenantId}`);
+      },
+    });
   }, [local, tenantId]);
+
+  const reauthenticate = useCallback(async () => {
+    localStorage.setItem("pos:reauth", "1");
+    setReauth(true);
+    setReady(null);
+    if (local) await sealLocal(local.db);
+    await stopSync();
+  }, [local]);
 
   const onMutated = useCallback(() => {
     setRefreshToken((n) => n + 1);
@@ -179,42 +197,26 @@ export default function App() {
   /* Datadir upgrade (D2-8): flush old queue → switch → rehydrate      */
   /* ---------------------------------------------------------------- */
 
-  const performSwitch = useCallback(async () => {
-    if (!tenantId) return;
-    setUpgrade({ phase: "switching" });
-    try {
-      const handle = await switchToCurrentDatadir();
-      setLocal(handle);
-      try {
-        const result = await rehydrateFromServer(handle.db, tenantId);
-        if (result.inserted > 0) setRefreshToken((n) => n + 1);
-      } catch {
-        showToast("Catálogo local no pudo actualizarse — reintentá más tarde");
-      }
-      upgradeRef.current = "done";
-      setUpgrade({ phase: "idle" });
-    } catch {
-      upgradeRef.current = "done";
-      setUpgrade({ phase: "idle" });
-      showToast("No se pudo abrir la nueva base local");
-    }
-  }, [tenantId, showToast]);
-
   const retryUpgrade = useCallback(async () => {
     if (!local || !tenantId) return;
-    setUpgrade({ phase: "switching" });
-    const flushed = await tryFlush(local, tenantId);
-    if (flushed) {
-      await performSwitch();
-      return;
-    }
-    const left = await unsyncedCount(local.db, tenantId);
-    if (left === 0) await performSwitch();
-    else setUpgrade({ phase: "blocked", pending: left });
-  }, [local, tenantId, performSwitch]);
+    await safeTransition(local.db, {
+      state: state => { setIntent("upgrade"); setTransition(state); },
+      flush: async () => { await stopSync(); await pushNow(local.db, tenantId, { force: true }); },
+      finish: async () => {
+        const handle = await switchToCurrentDatadir({ prepare: async candidate => {
+          await claimLocal(candidate.db, tenantId);
+          await rehydrateFromServer(candidate.db, tenantId);
+        } });
+        upgradeRef.current = "done";
+        setReady(null);
+        setLocal(handle);
+        setRefreshToken(n => n + 1);
+      },
+    });
+  }, [local, tenantId]);
 
   useEffect(() => {
-    if (!local || !tenantId || upgradeRef.current !== "idle") return;
+    if (!local || !tenantId || ready !== sessionKey || upgradeRef.current !== "idle") return;
     upgradeRef.current = "running";
     let alive = true;
     void (async () => {
@@ -224,49 +226,38 @@ export default function App() {
           if (alive) upgradeRef.current = "done";
           return;
         }
-        const left = await unsyncedCount(local.db, tenantId);
-        if (!alive) return;
-        if (left > 0) {
-          await tryFlush(local, tenantId);
-          const after = await unsyncedCount(local.db, tenantId);
-          if (!alive) return;
-          if (after > 0) {
-            setUpgrade({ phase: "blocked", pending: after });
-            return;
-          }
-        }
-        await performSwitch();
+        if (alive) await retryUpgrade();
       } catch {
         if (alive) {
           upgradeRef.current = "done";
-          setUpgrade({ phase: "idle" });
+          setTransition({ phase: "blocked", message: "No se pudo comprobar la actualización. La base anterior sigue protegida." });
         }
       }
     })();
     return () => {
       alive = false;
     };
-  }, [local, tenantId, performSwitch]);
+  }, [local, tenantId, ready, sessionKey, retryUpgrade]);
 
   // E2E/test hooks: forced push + forced double-push (D2-9)
   useEffect(() => {
-    if (!local || !tenantId) return;
+    if (!local || !tenantId || ready !== sessionKey || transition.phase !== "idle") return;
     const w = window as unknown as {
       __pos?: {
         pushNow: () => Promise<void>;
         repushSynced: () => Promise<unknown>;
-        discardPoison: () => Promise<number>;
+        retryPoison: () => Promise<number>;
       };
     };
     w.__pos = {
       pushNow: () => pushNow(local.db, tenantId, { force: true }),
       repushSynced: () => repushSynced(local.db, tenantId),
-      discardPoison: () => discardPoison(local.db, tenantId),
+      retryPoison: () => retryPoison(local.db, tenantId),
     };
     return () => {
       delete w.__pos;
     };
-  }, [local, tenantId]);
+  }, [local, tenantId, ready, sessionKey, transition.phase]);
 
   if (secondTab) {
     return (
@@ -299,7 +290,25 @@ export default function App() {
     );
   }
 
-  if (!session) return <Login />;
+  if (reauth) return <Login recovery onAuthenticated={() => {
+    localStorage.removeItem("pos:reauth");
+    window.location.reload();
+  }} />;
+
+  if (transition.phase !== "idle") return (
+    <div className="notice-screen" data-testid={`${intent}-${transition.phase}`}>
+      <div className="card transition-card" role="status" aria-live="polite" aria-busy={transition.phase === "busy"}>
+        <h1>{transition.phase === "busy" ? "Protegiendo tus cambios…" : "Tus datos siguen protegidos"}</h1>
+        <p className="muted">{transition.message ?? "Esperando confirmación del servidor antes de continuar."}</p>
+        {transition.pending !== undefined && <p data-testid="protected-pending">{transition.pending} registros o snapshots sin confirmar</p>}
+        <button className="btn primary" data-testid="transition-retry" disabled={transition.phase === "busy"}
+          onClick={() => void (intent === "logout" ? handleSignOut() : retryUpgrade())}>Reintentar sincronizar</button>
+        <button className="btn ghost" data-testid="reauthenticate" disabled={transition.phase === "busy"}
+          onClick={() => void reauthenticate()}>Volver a ingresar sin borrar datos</button>
+      </div>
+    </div>
+  );
+  if (!session) return <Login recovery={recoveryNeeded} />;
   if (!local) {
     return (
       <div className="notice-screen" data-testid="booting">
@@ -322,39 +331,28 @@ export default function App() {
     );
   }
 
-  if (upgrade.phase === "blocked") {
+  if (accessError) {
     return (
-      <div className="notice-screen" data-testid="upgrade-blocked">
+      <div className="notice-screen" data-testid="access-blocked">
         <div>
-          <h1>Sincronización pendiente</h1>
-          <p className="muted">
-            Hay <strong data-testid="upgrade-pending">{upgrade.pending ?? 0}</strong>{" "}
-            cambios sin sincronizar en la versión anterior de la base. Conectate
-            a internet y reintentá para no perderlos.
-          </p>
-          <button
-            className="btn primary"
-            data-testid="upgrade-retry"
-            onClick={() => void retryUpgrade()}
-          >
-            Reintentar sincronizar
-          </button>
+          <h1>Base local protegida</h1>
+          <p className="muted" role="alert">{accessError}</p>
           <button
             className="btn ghost"
-            data-testid="upgrade-continue"
-            onClick={() => void performSwitch()}
+            data-testid="reauthenticate"
+            onClick={() => void reauthenticate()}
           >
-            Continuar sin sincronizar
+            Volver a ingresar sin borrar datos
           </button>
         </div>
       </div>
     );
   }
 
-  if (upgrade.phase === "switching") {
+  if (ready !== sessionKey) {
     return (
-      <div className="notice-screen" data-testid="upgrade-switching">
-        <p>Actualizando la base local…</p>
+      <div className="notice-screen" data-testid="local-unlocking">
+        <p>Comprobando la base protegida…</p>
       </div>
     );
   }
@@ -412,14 +410,14 @@ export default function App() {
         {sync.poison > 0 && (
           <div className="sync-poison-row" data-testid="sync-poison">
             <span>
-              {sync.poison} cambio con error permanente (no se reintentará)
+              {sync.poison} cambios requieren revisión. Siguen guardados; no se descartan.
             </span>
             <button
-              className="btn small danger"
-              data-testid="sync-discard"
-              onClick={() => void discardPoison(local.db, tenantId)}
+              className="btn small"
+              data-testid="sync-poison-retry"
+              onClick={() => void retryPoison(local.db, tenantId)}
             >
-              Descartar
+              Reintentar tras corregir
             </button>
           </div>
         )}

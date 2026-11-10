@@ -432,6 +432,16 @@ button {
   max-width: 360px;
 }
 
+/* Preservation states use the existing POS tokens; no blocking animations. */
+.transition-card {
+  width: min(100%, 428px);
+  display: grid;
+  gap: 12px;
+  overflow-wrap: anywhere;
+}
+.transition-card p { max-width: none; margin: 0; }
+.transition-card .btn { width: 100%; min-width: 0; }
+
 .login-card {
   width: 100%;
   max-width: 380px;

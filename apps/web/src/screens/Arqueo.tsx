@@ -13,6 +13,7 @@ import {
   type LocalShift,
 } from "../db/local";
 import { pushNow } from "../sync/queue";
+import { scopedFetch } from "../sync/scoped-fetch";
 
 const cop = (n: number) =>
   new Intl.NumberFormat("es-CO", {
@@ -105,7 +106,7 @@ export function Arqueo({ db, tenantId, refreshToken, showToast, onMutated }: Pro
     let alive = true;
     void (async () => {
       try {
-        const res = await fetch("/api/shifts/open");
+        const res = await scopedFetch(tenantId, "/api/shifts/open");
         if (!res.ok || !alive) return;
         const data = (await res.json()) as { shift: ServerShift | null };
         if (data.shift && alive) {
@@ -126,7 +127,7 @@ export function Arqueo({ db, tenantId, refreshToken, showToast, onMutated }: Pro
     setBusy(true);
     try {
       if (online) {
-        const res = await fetch("/api/shifts/open", {
+        const res = await scopedFetch(tenantId, "/api/shifts/open", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: "{}",
@@ -171,7 +172,7 @@ export function Arqueo({ db, tenantId, refreshToken, showToast, onMutated }: Pro
       if (online) {
         // flush first: an offline-opened shift must exist server-side
         await pushNow(db, tenantId, { force: true });
-        const res = await fetch(`/api/shifts/${openShift.id}/close`, {
+        const res = await scopedFetch(tenantId, `/api/shifts/${openShift.id}/close`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ counted: amount }),

@@ -58,6 +58,9 @@ export const authPlugin = fp(async (app) => {
     if (!ctx.tenantId || !ctx.role) {
       return reply.code(403).send({ error: "no_active_tenant" });
     }
+    if (req.headers["x-nexora-tenant"] && req.headers["x-nexora-tenant"] !== ctx.tenantId) {
+      return reply.code(409).send({ error: "tenant_mismatch" });
+    }
   });
 
   app.decorate(

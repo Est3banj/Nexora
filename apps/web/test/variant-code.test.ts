@@ -6,6 +6,7 @@ import { addLocalVariant, adjustLocalStock, catalogError, commitLocalSale, creat
 import { applyRehydratePage } from "../src/sync/rehydrate";
 import { pushNow } from "../src/sync/queue";
 import { vi } from "vitest";
+import { PRESERVATION_SQL } from "../src/db/preservation";
 
 const a = "11111111-1111-4111-8111-111111111111";
 const b = "22222222-2222-4222-8222-222222222222";
@@ -55,6 +56,7 @@ it("upgrades an existing pre-code database in place without losing pending sales
     await old.query("INSERT INTO sync_log(id,tenant_id,client_uuid,entity,op,payload,status,client_ts) VALUES($1,$2,$1,'ticket','upsert','{}','pending',1)", [id, a]);
     await old.exec(LOCAL_SCHEMA_SQL);
     await old.exec(LOCAL_SCHEMA_SQL);
+    await old.exec(PRESERVATION_SQL);
     expect((await old.query("SELECT total FROM tickets")).rows).toEqual([{ total: 4000 }]);
     expect((await old.query("SELECT status FROM sync_log")).rows).toEqual([{ status: "pending" }]);
     await createLocalProduct(old, a, { name: "Nuevo", variant: { name: "330", price: 1, code: "001" } });

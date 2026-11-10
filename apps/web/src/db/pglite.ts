@@ -1,5 +1,6 @@
 import { PGlite } from "@electric-sql/pglite";
 import { LOCAL_SCHEMA_SQL, SALE_OUTBOX_MIGRATION_SQL } from "@pos/shared";
+import { PRESERVATION_SQL, assertWritable } from "./preservation";
 
 /**
  * Versioned local datadir (task D1-6, design §12; rehydrate flow D2-8).
@@ -108,8 +109,15 @@ export async function openLocalDb(opts: OpenOptions = {}): Promise<LocalHandle |
   }
 
   const db = new PGlite(url);
-  await db.exec(LOCAL_SCHEMA_SQL);
-  await db.exec(SALE_OUTBOX_MIGRATION_SQL);
+  try {
+    await db.exec(LOCAL_SCHEMA_SQL);
+    await db.exec(SALE_OUTBOX_MIGRATION_SQL);
+    await db.exec(PRESERVATION_SQL);
+  } catch (error) {
+    await db.close().catch(() => {});
+    release();
+    throw error;
+  }
 
   return { db, url, release };
 }
@@ -129,5 +137,8 @@ export async function localTx<T>(
   db: PGlite,
   fn: (tx: LocalQueryable) => Promise<T>,
 ): Promise<T> {
-  return db.transaction(async (tx) => fn(tx as unknown as LocalQueryable));
+  return db.transaction(async (tx) => {
+    await assertWritable(tx);
+    return fn(tx as unknown as LocalQueryable);
+  });
 }

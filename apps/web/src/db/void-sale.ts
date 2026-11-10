@@ -1,5 +1,6 @@
 import type { PGlite } from "@electric-sql/pglite";
-import { localTx } from "./pglite";
+import { scopedFetch } from "../sync/scoped-fetch";
+import { assertWritable } from "./preservation";
 
 export type VoidSnapshot = {
   ticket_id: string;
@@ -8,8 +9,11 @@ export type VoidSnapshot = {
 
 /** Mirror server evidence, never enqueue a privileged command. Add only newly
  * inserted deltas, preserving stock effects of any later offline sales. */
-export async function mirrorVoidedSale(db: PGlite, tenantId: string, snapshot: VoidSnapshot) {
-  await localTx(db, async tx => {
+export async function mirrorVoidedSale(db: PGlite, tenantId: string, snapshot: VoidSnapshot, opts: { allowSealed?: boolean } = {}) {
+  await db.transaction(async tx => {
+    if (!opts.allowSealed) await assertWritable(tx, tenantId);
+    const vault = await tx.query<{ tenant_id: string | null }>("SELECT tenant_id FROM local_vault WHERE id=1");
+    if (vault.rows[0]?.tenant_id && vault.rows[0].tenant_id !== tenantId) throw new Error("tenant_mismatch");
     await tx.query("UPDATE tickets SET status='voided',updated_at=now() WHERE tenant_id=$1 AND id=$2", [tenantId, snapshot.ticket_id]);
     for (const d of snapshot.stockdiary) {
       const inserted = await tx.query(`INSERT INTO stockdiary (id,tenant_id,client_uuid,variant_id,delta,reason,note,ref_ticket_id,created_at)
@@ -30,8 +34,8 @@ export async function mirrorVoidedSale(db: PGlite, tenantId: string, snapshot: V
 }
 
 export async function pullVoidedSale(db: PGlite, tenantId: string, ticketId: string) {
-  const res = await fetch(`/api/sales/tickets/${ticketId}`);
+  const res = await scopedFetch(tenantId, `/api/sales/tickets/${ticketId}`);
   if (!res.ok) throw new Error("No se pudo actualizar la copia local; reintentá con conexión");
   const data = await res.json();
-  if (data.ticket.status === "voided") await mirrorVoidedSale(db, tenantId, { ticket_id: ticketId, stockdiary: data.stockdiary });
+  if (data.ticket.status === "voided") await mirrorVoidedSale(db, tenantId, { ticket_id: ticketId, stockdiary: data.stockdiary }, { allowSealed: true });
 }

@@ -1,5 +1,7 @@
 import type { PGlite } from "@electric-sql/pglite";
 import { localTx, type LocalQueryable } from "../db/pglite";
+import { scopedFetch } from "./scoped-fetch";
+import { assertWritable } from "../db/preservation";
 
 /**
  * Local cache rehydration (task D2-8, design §3 rule 5).
@@ -53,6 +55,7 @@ export async function applyRehydratePage(
   page: RehydratePage,
 ): Promise<number> {
   return localTx(db, async (tx) => {
+    await assertWritable(tx, tenantId);
     let inserted = 0;
 
     for (const c of page.categories ?? []) {
@@ -298,10 +301,11 @@ export async function rehydrateFromServer(
   let inserted = 0;
   let pages = 0;
   for (;;) {
-    const page = await fetchRehydratePage(offset, pageSize, opts.fetchFn);
+    const page = await fetchRehydratePage(offset, pageSize, opts.fetchFn ?? (path => scopedFetch(tenantId, path)));
     inserted += await applyRehydratePage(db, tenantId, page);
     pages += 1;
-    if (page.next_offset === null || pages >= maxPages) break;
+    if (page.next_offset === null) break;
+    if (pages >= maxPages) throw new Error("rehydrate_incomplete");
     offset = page.next_offset;
   }
   return { inserted, pages };
