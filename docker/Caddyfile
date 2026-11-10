@@ -1,0 +1,9 @@
+# Skeleton — D4-5 turns this into the real TLS reverse proxy.
+:443 {
+    tls internal
+    reverse_proxy api:3000
+}
+
+:80 {
+    respond "POS Piloto — use HTTPS" 301
+}

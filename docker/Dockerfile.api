@@ -1,0 +1,17 @@
+# Skeleton — D4-5 (deploy). Multi-stage build for apps/api.
+FROM node:20-alpine AS build
+WORKDIR /app
+RUN corepack enable
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY packages/shared ./packages/shared
+COPY apps/api ./apps/api
+RUN pnpm install --frozen-lockfile --filter @pos/api...
+RUN pnpm --filter @pos/api build
+
+FROM node:20-alpine
+WORKDIR /app
+RUN corepack enable
+ENV NODE_ENV=production
+COPY --from=build /app ./
+EXPOSE 3000
+CMD ["pnpm", "--filter", "@pos/api", "start"]

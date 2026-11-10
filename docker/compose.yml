@@ -1,0 +1,51 @@
+# Skeleton — full compose lands in D4-5 (deploy task).
+# Local dev does NOT use docker: pnpm dev runs api + web directly.
+services:
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - api
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    environment:
+      DATABASE_URL: postgres://pos:pos@db:5432/pos
+      NODE_ENV: production
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pos
+      POSTGRES_PASSWORD: pos
+      POSTGRES_DB: pos
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pos -d pos"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backup:
+    image: postgres:16-alpine
+    volumes:
+      - ./backup.sh:/backup.sh:ro
+      - backups:/backups
+      - pgdata:ro
+    entrypoint: ["/bin/sh", "/backup.sh"]
+    depends_on:
+      - db
+
+volumes:
+  pgdata:
+  backups:

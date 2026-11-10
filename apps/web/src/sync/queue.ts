@@ -1,0 +1,356 @@
+import type { PGlite } from "@electric-sql/pglite";
+import {
+  MUTATION_BATCH_MAX,
+  mutationEnvelopeSchema,
+  syncPushResponseSchema,
+  type MutationEnvelope,
+  type SyncResult,
+} from "@pos/shared";
+import { getSyncState, patchSync, writeLastSync } from "./store";
+
+/**
+ * Client sync queue (task D2-2 / D2-5, design §3 + §6).
+ *
+ * - drain in `client_ts` order, batch ≤50, statuses
+ *   pending → in_flight → synced | failed → poison
+ * - boot reset: `in_flight` → `pending` (crash mid-push retried with the
+ *   SAME uuid — server idempotency makes that a `duplicate` ack)
+ * - `online` event + manual retry force-drain; post-commit push respects
+ *   per-entry exponential backoff for previously failed entries
+ * - deterministic rejections (validation / conflict_hash_mismatch) promote
+ *   to `poison` after MAX_ATTEMPTS: isolated, visible, discardable — they
+ *   can never stall the rest of the queue (sync §Partial batch failure)
+ * - transport failures NEVER poison: they are retryable by definition
+ */
+
+const MAX_ATTEMPTS = 3;
+const BACKOFF_BASE_MS = 1_000;
+const BACKOFF_MAX_MS = 30_000;
+const MAX_DRAIN_ROUNDS = 10;
+const RETRY_TIMER_MS = 4_000;
+
+type QueueRow = {
+  id: string;
+  client_uuid: string;
+  entity: string;
+  op: string;
+  payload: unknown;
+  client_ts: number;
+  attempts: number;
+  status: string;
+  updated_at: string | Date;
+  last_error: string | null;
+};
+
+type Active = { db: PGlite; tenantId: string };
+
+let active: Active | null = null;
+let draining = false;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let listenersBound = false;
+
+function online(): boolean {
+  return typeof navigator === "undefined" || navigator.onLine !== false;
+}
+
+function backoffMs(attempts: number): number {
+  return Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** Math.max(0, attempts - 1));
+}
+
+function eligible(row: QueueRow, force: boolean, now: number): boolean {
+  if (row.status === "pending") return true;
+  if (row.status !== "failed") return false;
+  if (force) return true;
+  return now - new Date(row.updated_at).getTime() >= backoffMs(row.attempts);
+}
+
+const SELECT_BATCH = `
+  SELECT id, client_uuid, entity, op, payload, client_ts, attempts, status,
+         updated_at, last_error
+  FROM sync_log
+  WHERE tenant_id = $1 AND status IN ('pending', 'failed')
+  ORDER BY client_ts ASC, created_at ASC
+  LIMIT $2`;
+
+async function markInFlight(db: PGlite, id: string): Promise<void> {
+  await db.query(
+    `UPDATE sync_log SET status = 'in_flight', updated_at = now() WHERE id = $1`,
+    [id],
+  );
+}
+
+async function markSynced(db: PGlite, id: string): Promise<void> {
+  await db.query(
+    `UPDATE sync_log
+     SET status = 'synced', attempts = 0, last_error = NULL, updated_at = now()
+     WHERE id = $1`,
+    [id],
+  );
+}
+
+/**
+ * `deterministic` = the server (or our own validation) rejected the content:
+ * retrying can never succeed → attempts climb and, at MAX_ATTEMPTS, the
+ * entry becomes `poison` (excluded from auto-retry, visible + discardable).
+ */
+async function markFailure(
+  db: PGlite,
+  row: QueueRow,
+  message: string,
+  deterministic: boolean,
+): Promise<void> {
+  const attempts = row.attempts + 1;
+  const status = deterministic && attempts >= MAX_ATTEMPTS ? "poison" : "failed";
+  await db.query(
+    `UPDATE sync_log
+     SET status = $2, attempts = $3, last_error = $4, updated_at = now()
+     WHERE id = $1`,
+    [row.id, status, attempts, message.slice(0, 500)],
+  );
+}
+
+/** Recompute the badge counts from sync_log and publish them. */
+export async function refreshSyncStatus(db: PGlite, tenantId: string): Promise<void> {
+  const res = await db.query<{
+    pending: string;
+    failed: string;
+    poison: string;
+    in_flight: string;
+  }>(
+    `SELECT count(*) FILTER (WHERE status = 'pending') AS pending,
+            count(*) FILTER (WHERE status = 'failed') AS failed,
+            count(*) FILTER (WHERE status = 'poison') AS poison,
+            count(*) FILTER (WHERE status = 'in_flight') AS in_flight
+     FROM sync_log WHERE tenant_id = $1`,
+    [tenantId],
+  );
+  const row = res.rows[0];
+  const pending =
+    Number(row?.pending ?? 0) + Number(row?.failed ?? 0) + Number(row?.in_flight ?? 0);
+  patchSync({
+    pending,
+    failed: Number(row?.failed ?? 0),
+    poison: Number(row?.poison ?? 0),
+    inFlight: Number(row?.in_flight ?? 0),
+    online: online(),
+  });
+}
+
+/** Crash recovery (design §6): entries left `in_flight` are pending again. */
+export async function resetInFlight(db: PGlite, tenantId: string): Promise<void> {
+  await db.query(
+    `UPDATE sync_log SET status = 'pending', updated_at = now()
+     WHERE tenant_id = $1 AND status = 'in_flight'`,
+    [tenantId],
+  );
+}
+
+/** One round: validate → mark in_flight → POST → apply per-result statuses. */
+async function drainOnce(
+  db: PGlite,
+  tenantId: string,
+  force: boolean,
+  attempted: Set<string>,
+): Promise<{ synced: number; handled: number }> {
+  const sel = await db.query<QueueRow>(SELECT_BATCH, [
+    tenantId,
+    MUTATION_BATCH_MAX,
+  ]);
+  const now = Date.now();
+  const candidates = sel.rows.filter(
+    (r) => !attempted.has(r.id) && eligible(r, force, now),
+  );
+  if (candidates.length === 0) return { synced: 0, handled: 0 };
+
+  const send: MutationEnvelope[] = [];
+  const sendRows: QueueRow[] = [];
+  let handled = 0;
+  for (const row of candidates) {
+    attempted.add(row.id);
+    const parsed = mutationEnvelopeSchema.safeParse({
+      client_uuid: row.client_uuid,
+      client_ts: row.client_ts,
+      entity: row.entity,
+      op: row.op,
+      payload: row.payload,
+    });
+    if (parsed.success) {
+      send.push(parsed.data);
+      sendRows.push(row);
+    } else {
+      // client-side pre-validation: an invalid entry is skipped locally and
+      // never blocks the valid ones behind it in the batch
+      const msg = `validation: ${parsed.error.issues[0]?.message ?? "invalid"}`;
+      await markFailure(db, row, msg, true);
+      handled += 1;
+    }
+  }
+  if (send.length === 0) return { synced: 0, handled };
+
+  for (const row of sendRows) await markInFlight(db, row.id);
+
+  let results: SyncResult[];
+  try {
+    const res = await fetch("/api/sync/mutations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mutations: send }),
+    });
+    if (!res.ok) throw new Error(`server_${res.status}`);
+    results = syncPushResponseSchema.parse(await res.json()).results;
+  } catch (err) {
+    // transport / server failure → whole batch stays retryable (never poison)
+    const msg = err instanceof Error ? err.message : String(err);
+    for (const row of sendRows) await markFailure(db, row, msg, false);
+    await refreshSyncStatus(db, tenantId);
+    patchSync({ syncing: false, error: msg });
+    scheduleRetry();
+    return { synced: 0, handled: sendRows.length };
+  }
+
+  let synced = 0;
+  const byUuid = new Map(
+    results.filter((r) => r.client_uuid).map((r) => [r.client_uuid as string, r]),
+  );
+  for (const row of sendRows) {
+    const result = byUuid.get(row.client_uuid);
+    if (!result) {
+      await markFailure(db, row, "missing_result", false);
+      continue;
+    }
+    if (result.status === "applied" || result.status === "duplicate") {
+      await markSynced(db, row.id);
+      synced += 1;
+    } else if (result.reason === "db_error") {
+      // transient-ish (constraint race): retryable, not poison
+      await markFailure(db, row, "db_error", false);
+    } else {
+      await markFailure(db, row, result.reason ?? "rejected", true);
+    }
+    handled += 1;
+  }
+
+  if (synced > 0) writeLastSync();
+  await refreshSyncStatus(db, tenantId);
+  patchSync({ error: null });
+  return { synced, handled };
+}
+
+function scheduleRetry(): void {
+  if (retryTimer || typeof window === "undefined") return;
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    const a = active;
+    if (a && online() && getSyncState().pending > 0) {
+      void pushNow(a.db, a.tenantId);
+    }
+  }, RETRY_TIMER_MS);
+}
+
+/**
+ * Drain the queue. `force` bypasses per-entry backoff (online event,
+ * manual retry, boot). Safe to call concurrently: extra calls are dropped
+ * while a drain is running. Every row is attempted at most once per run
+ * (the `attempted` set), so the loop always terminates.
+ */
+export async function pushNow(
+  db: PGlite,
+  tenantId: string,
+  opts: { force?: boolean } = {},
+): Promise<void> {
+  if (!online()) {
+    await refreshSyncStatus(db, tenantId);
+    return;
+  }
+  if (draining) return;
+  draining = true;
+  patchSync({ syncing: true });
+  try {
+    const attempted = new Set<string>();
+    for (let i = 0; i < MAX_DRAIN_ROUNDS; i++) {
+      const { handled } = await drainOnce(
+        db,
+        tenantId,
+        opts.force ?? false,
+        attempted,
+      );
+      if (handled === 0) break;
+    }
+    await refreshSyncStatus(db, tenantId);
+    if (getSyncState().pending > 0) scheduleRetry();
+  } finally {
+    draining = false;
+    patchSync({ syncing: false });
+  }
+}
+
+/**
+ * Boot: reset crashed in-flight rows, bind online/offline listeners once,
+ * publish status, and auto-push anything already queued (reconnect drain —
+ * sync §Automatic sync on reconnect).
+ */
+export async function initSync(db: PGlite, tenantId: string): Promise<void> {
+  active = { db, tenantId };
+  await resetInFlight(db, tenantId);
+
+  if (!listenersBound && typeof window !== "undefined") {
+    listenersBound = true;
+    window.addEventListener("online", () => {
+      patchSync({ online: true });
+      const a = active;
+      if (a) void pushNow(a.db, a.tenantId, { force: true });
+    });
+    window.addEventListener("offline", () => patchSync({ online: false }));
+  }
+
+  await refreshSyncStatus(db, tenantId);
+  if (online()) void pushNow(db, tenantId, { force: true });
+}
+
+/** Delete every poison entry (manual discard affordance, design §3 rule 3). */
+export async function discardPoison(db: PGlite, tenantId: string): Promise<number> {
+  const res = await db.query<{ id: string }>(
+    `DELETE FROM sync_log WHERE tenant_id = $1 AND status = 'poison' RETURNING id`,
+    [tenantId],
+  );
+  await refreshSyncStatus(db, tenantId);
+  return res.rows.length;
+}
+
+/**
+ * Forced DOUBLE-PUSH hook (D2-9 E2E): re-POSTs already-synced envelopes
+ * without touching their status — the server must ack `duplicate` and keep
+ * exactly one row (sync §Double-push creates one row).
+ */
+export async function repushSynced(
+  db: PGlite,
+  tenantId: string,
+  limit = 20,
+): Promise<SyncResult[]> {
+  const sel = await db.query<QueueRow>(
+    `SELECT id, client_uuid, entity, op, payload, client_ts, attempts, status,
+            updated_at, last_error
+     FROM sync_log
+     WHERE tenant_id = $1 AND status = 'synced'
+     ORDER BY client_ts DESC
+     LIMIT $2`,
+    [tenantId, limit],
+  );
+  if (sel.rows.length === 0) return [];
+  const envelopes = sel.rows.map((row) =>
+    mutationEnvelopeSchema.parse({
+      client_uuid: row.client_uuid,
+      client_ts: row.client_ts,
+      entity: row.entity,
+      op: row.op,
+      payload: row.payload,
+    }),
+  );
+  const res = await fetch("/api/sync/mutations", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ mutations: envelopes }),
+  });
+  if (!res.ok) throw new Error(`server_${res.status}`);
+  return syncPushResponseSchema.parse(await res.json()).results;
+}

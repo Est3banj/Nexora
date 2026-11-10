@@ -1,0 +1,67 @@
+/**
+ * Printable browser ticket (task D2-7, sales spec §Printable browser ticket).
+ * window.print() only — no drivers. In print media the app chrome and every
+ * button disappear, the ticket detail becomes the whole page, and the dark
+ * theme flips to black-on-white so the paper copy is readable.
+ */
+
+@media print {
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+
+  .app-header,
+  .tabbar,
+  .cart-bar,
+  .toast,
+  .sync-meta,
+  .sync-error-row,
+  .sync-poison-row,
+  .ticket-card,
+  .tickets > h2,
+  button {
+    display: none !important;
+  }
+
+  .app {
+    max-width: none;
+    height: auto;
+  }
+
+  .app-main {
+    padding: 0;
+    overflow: visible;
+  }
+
+  .ticket-detail {
+    position: static;
+    width: 100%;
+    max-width: 480px;
+    margin: 0 auto;
+    background: #fff !important;
+    color: #000 !important;
+    border: none !important;
+    padding: 0;
+  }
+
+  .ticket-detail .muted,
+  .ticket-detail .line .muted {
+    color: #444 !important;
+  }
+
+  .ticket-detail .total-row {
+    border-top: 2px solid #000;
+  }
+
+  .ticket-tenant {
+    font-size: 1.1rem;
+    font-weight: 700;
+    margin: 0 0 4px;
+  }
+
+  .ticket-uuid {
+    font-size: 0.75rem;
+    margin-top: -6px;
+  }
+}
