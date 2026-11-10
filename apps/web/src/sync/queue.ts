@@ -5,7 +5,9 @@ import {
   syncPushResponseSchema,
   type MutationEnvelope,
   type SyncResult,
+  SALE_OUTBOX_MIGRATION_SQL,
 } from "@pos/shared";
+import { saveSaleSnapshot, uploadSaleSnapshot, SaleUploadError } from "./sale-upload";
 import { getSyncState, patchSync, writeLastSync } from "./store";
 import { pullVoidedSale } from "../db/void-sale";
 import { groupQueue } from "./batch";
@@ -154,14 +156,37 @@ async function drainOnce(
   force: boolean,
   attempted: Set<string>,
 ): Promise<{ synced: number; handled: number }> {
+  await db.exec(SALE_OUTBOX_MIGRATION_SQL);
+  // Resume immutable operations first, even when a newer queue payload now
+  // references another sale. ACK comparisons below preserve those edits.
+  const snapshots = await db.query<{ operation_id: string; rows: QueueRow[] }>("SELECT operation_id,rows FROM sync_sale_outbox WHERE tenant_id=$1 ORDER BY coalesce(last_attempt,created_at)", [tenantId]);
+  const snapshotMembers = new Set(snapshots.rows.flatMap(s=>s.rows.map(r=>r.id)));
+  for (const snapshot of snapshots.rows) {
+    if (attempted.has("sale_snapshot_retry")) break;
+    if (snapshot.rows.some(r => attempted.has(r.id))) continue;
+    attempted.add("sale_snapshot_retry");
+    await db.query("UPDATE sync_sale_outbox SET last_attempt=now() WHERE tenant_id=$1 AND operation_id=$2",[tenantId,snapshot.operation_id]);
+    return drainSale(db, tenantId, snapshot.rows, snapshot.operation_id, attempted);
+  }
   const sel = await db.query<QueueRow>(SELECT_BATCH, [tenantId]);
   const now = Date.now();
   const candidates: QueueRow[] = [];
   for (const group of groupQueue(sel.rows)) {
-    if (group.some(r => attempted.has(r.id) || !eligible(r, force, now))) continue;
+    if (group.some(r => snapshotMembers.has(r.id) || attempted.has(r.id) || !eligible(r, force, now))) continue;
+    // A close cannot overtake an unresolved sale (including poison). Other
+    // independent catalog/sale groups continue draining normally.
+    if (group.some(r => r.entity === "closedcash" || r.entity === "shift" && (r.payload as { status?: string }).status === "closed")) {
+      const pendingSale = await db.query("SELECT id FROM sync_log WHERE tenant_id=$1 AND entity='ticket' AND status <> 'synced' LIMIT 1", [tenantId]);
+      if (pendingSale.rows.length || snapshots.rows.length) continue;
+    }
     if (group.length > MUTATION_BATCH_MAX) {
-      for (const row of group) { attempted.add(row.id); await markFailure(db, row, "sale_exceeds_batch_limit", true); }
-      continue;
+      if (candidates.length) break;
+      if (group.some(row => !mutationEnvelopeSchema.safeParse({ ...row, client_ts: Number(row.client_ts) }).success)) {
+        for (const row of group) { attempted.add(row.id); await markFailure(db, row, "validation: invalid_sale_group", true); }
+        continue;
+      }
+      const operation = await saveSaleSnapshot(db, tenantId, group);
+      return drainSale(db, tenantId, group, operation, attempted);
     }
     if (candidates.length + group.length > MUTATION_BATCH_MAX) break;
     // Invalid member rejects the whole sale locally, rather than sending half.
@@ -255,6 +280,33 @@ async function drainOnce(
   await refreshSyncStatus(db, tenantId);
   patchSync({ error: null });
   return { synced, handled };
+}
+
+async function drainSale(db: PGlite, tenantId: string, rows: QueueRow[], operation: string, attempted: Set<string>) {
+  for (const row of rows) { attempted.add(row.id); await markInFlight(db, row); }
+  try {
+    const results = await uploadSaleSnapshot(db, tenantId, operation);
+    const acknowledged = new Set(results.map(r=>r.client_uuid));
+    if (results.length !== rows.length || acknowledged.size !== rows.length || rows.some(r=>!acknowledged.has(r.client_uuid)) || results.some(r => r.status === "rejected")) throw new Error("sale_commit_not_acknowledged");
+    // One local transaction: receipt ACK and outbox removal survive reload as
+    // a unit. SQL version+payload guard prevents old ACK overwriting new edits.
+    for (const result of results) if (result.voided_ticket) await pullVoidedSale(db, tenantId, result.voided_ticket);
+    await db.transaction(async tx => {
+      for (const row of rows) await tx.query("UPDATE sync_log SET status='synced',attempts=0,last_error=NULL,updated_at=now() WHERE tenant_id=$1 AND id=$2 AND client_ts=$3 AND payload=$4::jsonb", [tenantId, row.id, row.client_ts, JSON.stringify(row.payload)]);
+      await tx.query("DELETE FROM sync_sale_outbox WHERE tenant_id=$1 AND operation_id=$2", [tenantId, operation]);
+    });
+    writeLastSync();
+    return { synced: rows.length, handled: rows.length };
+  } catch (err) {
+    const deterministic = err instanceof SaleUploadError && err.deterministic;
+    const message = err instanceof Error ? err.message : String(err);
+    for (const row of rows) await markFailure(db, row, message, deterministic);
+    // Deterministically invalid snapshots cannot block independent/new work.
+    // Current matching versions retain the accessible queue error/poison.
+    if (deterministic) await db.query("DELETE FROM sync_sale_outbox WHERE tenant_id=$1 AND operation_id=$2", [tenantId, operation]);
+    patchSync({ error: message });
+    return { synced: 0, handled: rows.length };
+  }
 }
 
 function scheduleRetry(): void {

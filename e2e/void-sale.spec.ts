@@ -20,6 +20,14 @@ test("owner annulment: accessible confirmation, offline edge, replay mirror and 
   await page.getByTestId("checkout-open").click();
   await page.getByTestId("checkout-confirm").click();
   await expect(page.getByTestId("sale-success")).toBeVisible();
+  // The badge can still display the catalog's previous zero while the sale
+  // starts draining. Wait for its actual local receipt, not that stale badge.
+  await expect.poll(() => page.evaluate(async () => {
+    const { getLocalDb } = await import("/src/db/instance.ts");
+    const local = await getLocalDb();
+    const rows = await local!.db.query("SELECT id FROM sync_log WHERE entity='payment' AND status='synced'");
+    return rows.rows.length;
+  })).toBe(1);
   await expect(page.getByTestId("pending-badge")).toContainText("sinc.");
   await page.getByTestId("tab-tickets").click();
   await page.getByTestId("ticket-item").click();

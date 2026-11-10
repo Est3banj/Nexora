@@ -4,7 +4,11 @@ import {
   syncPushBodySchema,
   type MutationEnvelope,
   type SyncResult,
+  salePartSchema,
+  saleManifestSchema,
 } from "@pos/shared";
+import { z } from "zod";
+import { uploadSalePart, finalizeSale } from "../db/sale-stage";
 import { db } from "../db";
 import { applyMutationGroups } from "../db/sync-apply";
 
@@ -23,6 +27,16 @@ import { applyMutationGroups } from "../db/sync-apply";
  *   request order.
  */
 export async function syncRoutes(app: FastifyInstance): Promise<void> {
+  app.post("/api/sync/sales/:operation/parts", { preHandler: app.requireAuth, bodyLimit: 1024 * 1024 }, async (req) => {
+    const { operation } = z.object({ operation: z.uuid() }).parse(req.params);
+    const body = salePartSchema.parse(req.body);
+    return uploadSalePart(req.ctx.tenantId!, operation, body.manifest, body.index, body.mutations);
+  });
+  app.post("/api/sync/sales/:operation/finalize", { preHandler: app.requireAuth }, async (req) => {
+    const { operation } = z.object({ operation: z.uuid() }).parse(req.params);
+    const manifest = saleManifestSchema.parse(req.body);
+    return finalizeSale(req.ctx.tenantId!, req.ctx.userId, operation, manifest);
+  });
   app.post(
     "/api/sync/mutations",
     { preHandler: app.requireAuth },

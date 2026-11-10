@@ -131,6 +131,7 @@ export async function applyMutationGroups(
   tenantId: string,
   actor: string,
   envelopes: MutationEnvelope[],
+  atomicSale?: string,
 ): Promise<SyncResult[]> {
   const ordered = envelopes
     .map((m, index) => ({ m, index }))
@@ -138,7 +139,7 @@ export async function applyMutationGroups(
 
   const groups = new Map<string, Array<{ m: MutationEnvelope; index: number }>>();
   for (const item of ordered) {
-    const key = groupKeyOf(item.m);
+    const key = atomicSale ? `ticket:${atomicSale}` : groupKeyOf(item.m);
     const group = groups.get(key);
     if (group) group.push(item);
     else groups.set(key, [item]);
@@ -148,6 +149,8 @@ export async function applyMutationGroups(
   for (const group of groups.values()) {
     try {
       const results = await db.transaction(async (tx) => {
+        // Existing-row locks cannot serialize two first inserts of a ticket.
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`${tenantId}:${groupKeyOf(group[0].m)}`}, 0))`);
         // Lock both claimed and stored parents. A forged parent must not let an
         // existing payment/line/movement of a voided sale escape the freeze.
         const ticketIds = new Set<string>();
@@ -190,8 +193,12 @@ export async function applyMutationGroups(
         }
         const inner: SyncResult[] = [];
         const dirtyVariants = new Set<string>();
-        for (const { m } of group)
-          inner.push(await applyOne(tx, tenantId, actor, m, dirtyVariants));
+        // Dependencies, not timestamp ties: a newly-created variant can travel
+        // with its first sale. Preserve result alignment with the input group.
+        const rank = (m: MutationEnvelope) => m.entity === "ticket" ? 0 : m.entity === "variant" ? 1 : 2;
+        const execution = group.map((item, i) => ({ ...item, i })).sort((a,b) => rank(a.m) - rank(b.m));
+        for (const { m, i } of execution)
+          inner[i] = await applyOne(tx, tenantId, actor, m, dirtyVariants);
         // last step of the group: movement log → balance (D3-1 invariant)
         await recomputeStock(tx, tenantId, dirtyVariants);
         for (let i = 0; i < group.length; i++) {

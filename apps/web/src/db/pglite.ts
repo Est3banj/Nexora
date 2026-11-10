@@ -1,5 +1,5 @@
 import { PGlite } from "@electric-sql/pglite";
-import { LOCAL_SCHEMA_SQL } from "@pos/shared";
+import { LOCAL_SCHEMA_SQL, SALE_OUTBOX_MIGRATION_SQL } from "@pos/shared";
 
 /**
  * Versioned local datadir (task D1-6, design §12; rehydrate flow D2-8).
@@ -109,6 +109,7 @@ export async function openLocalDb(opts: OpenOptions = {}): Promise<LocalHandle |
 
   const db = new PGlite(url);
   await db.exec(LOCAL_SCHEMA_SQL);
+  await db.exec(SALE_OUTBOX_MIGRATION_SQL);
 
   return { db, url, release };
 }

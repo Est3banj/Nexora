@@ -31,7 +31,7 @@ Una transacción bloquea ticket y turno; verifica líneas, subtotales, pagos y m
 - La UI sincroniza la cola antes del comando; si quedan pendientes o errores, pide resolverlos. Si se pierde el ACK del comando, reintentar es seguro.
 - El stock recibido en un refresh de variante ya no gana sobre el diario. Se conserva costo omitido por clientes viejos y los refreshes nuevos de venta/ajuste incluyen costo.
 - Transferencias confirmadas no se pueden desconfirmar con sync; la primera confirmación requiere el endpoint owner existente. La confirmación también bloquea el ticket y rechaza uno anulado.
-- La cola agrupa ventas antes de aplicar el límite HTTP de 50; no parte una venta entre requests. Grupos mayores al límite quedan con error explícito `sale_exceeds_batch_limit` (sin envío parcial). Resolver soporte para tickets muy grandes requiere un protocolo de staging; no se afirma que esté implementado.
+- La cola agrupa ventas antes de aplicar el límite HTTP de 50; no parte una venta entre requests legacy. Actualización posterior: grupos mayores usan staging durable + finalize atómico, documentado en `SYNC-VENTAS-GRANDES.md`; no se subió el límite legacy ni se aplican partes como ventas completas.
 - El cierre offline calcula `expected`/`diff` en servidor con SQL compartido y devuelve valores canónicos en ACK para actualizar la copia local. Un arqueo existente nunca se reescribe. Un replay de apertura no reabre un turno con arqueo.
 
 ## Verificación y evidencia

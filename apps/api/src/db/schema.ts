@@ -10,6 +10,8 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  primaryKey,
+  foreignKey,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
@@ -41,6 +43,29 @@ const createdAt = () =>
   timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
 const updatedAt = () =>
   timestamp("updated_at", { withTimezone: true }).notNull().defaultNow();
+
+// Server-only staging/receipts. Production uses the additive migration;
+// declarations also keep disposable-test schema tooling aware of these tables.
+export const syncSaleOperations = pgTable("sync_sale_operations", {
+  tenant_id: tenantCol(),
+  operation_id: uuid("operation_id").notNull(),
+  manifest: jsonb("manifest").notNull(),
+  results: jsonb("results"),
+  created_at: createdAt(),
+}, t => [
+  primaryKey({ columns: [t.tenant_id,t.operation_id] }),
+  index("sync_sale_operations_expiry").on(t.tenant_id,t.created_at).where(sql`${t.results} IS NULL`),
+]);
+
+export const syncSaleParts = pgTable("sync_sale_parts", {
+  tenant_id: tenantCol(),
+  operation_id: uuid("operation_id").notNull(),
+  part_index: integer("part_index").notNull(),
+  mutations: jsonb("mutations").notNull(),
+}, t => [
+  primaryKey({ columns: [t.tenant_id,t.operation_id,t.part_index] }),
+  foreignKey({ columns:[t.tenant_id,t.operation_id],foreignColumns:[syncSaleOperations.tenant_id,syncSaleOperations.operation_id] }).onDelete("cascade"),
+]);
 
 export const categories = pgTable(
   "categories",

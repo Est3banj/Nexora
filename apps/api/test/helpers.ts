@@ -3,9 +3,11 @@ import { TEST_DATABASE_URL } from "./setup-global";
 import { buildApp } from "../src/app";
 import { ensureAuthTables } from "../src/db/bootstrap";
 import type { FastifyInstance } from "fastify";
+import { migrateSaleStage } from "../src/db/sale-stage";
 
 export async function buildTestApp(): Promise<FastifyInstance> {
   await ensureAuthTables();
+  await migrateSaleStage();
   return buildApp({ logger: false });
 }
 

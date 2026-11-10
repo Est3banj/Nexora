@@ -3,9 +3,11 @@ import { config } from "./config";
 import { ensureAuthTables } from "./db/bootstrap";
 import { closeDb } from "./db";
 import { migrateCatalog } from "./db/migrate-catalog";
+import { migrateSaleStage } from "./db/sale-stage";
 
 await ensureAuthTables();
 await migrateCatalog();
+await migrateSaleStage();
 
 const app = await buildApp();
 
