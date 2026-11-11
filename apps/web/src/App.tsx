@@ -428,6 +428,7 @@ export default function App() {
             db={local.db}
             tenantId={tenantId}
             refreshToken={refreshToken}
+            onNavigate={(t) => setTab(t)}
           />
         )}
         {tab === "sale" && (

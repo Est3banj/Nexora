@@ -180,6 +180,7 @@ SELECT
   COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'confirmed' AND p.method = 'cash'), 0) AS cash,
   COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'confirmed' AND p.method = 'transfer'), 0) AS transfer,
   COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'pending'), 0) AS pending,
+  COUNT(*) FILTER (WHERE p.status = 'pending') AS pending_count,
   COALESCE((
     SELECT SUM(l.qty * COALESCE(l.unit_cost, 0))
     FROM ticket_lines l
@@ -225,6 +226,8 @@ export type DashboardSummaryRow = {
   cash: number;
   transfer: number;
   pending: number;
+  /** Count of pending payments (usually transfers awaiting owner confirmation). */
+  pending_count: number;
   cogs: number;
   /** Lines with a known historical cost — gates honest margin display. */
   costed_lines: number;
@@ -245,6 +248,7 @@ export function parseDashboardSummary(rows: RawRow[]): DashboardSummaryRow {
     cash: num(r.cash),
     transfer: num(r.transfer),
     pending: num(r.pending),
+    pending_count: num(r.pending_count),
     cogs: num(r.cogs),
     costed_lines: num(r.costed_lines),
   };

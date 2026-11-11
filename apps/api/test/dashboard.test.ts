@@ -126,6 +126,7 @@ describe("dashboard summary (exact numbers)", () => {
     expect(s.cash).toBe(10000);
     expect(s.transfer).toBe(0);
     expect(s.pending).toBe(7000);
+    expect(s.pending_count).toBe(1);
     // cogs = 2 units × 2000
     expect(s.cogs).toBe(4000);
     expect(s.revenue - s.cogs).toBe(6000);
