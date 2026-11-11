@@ -45,6 +45,8 @@ export function Tickets({
 }: Props) {
   const [tickets, setTickets] = useState<LocalTicketRow[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [methodFilter, setMethodFilter] = useState<"all" | "cash" | "transfer" | "voided">("all");
   const [detail, setDetail] = useState<TicketDetail>(null);
   const [confirmErr, setConfirmErr] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -166,31 +168,94 @@ export function Tickets({
   const methodName = (m: string | null) =>
     m === "cash" ? "Efectivo" : m === "transfer" ? "Transferencia" : "—";
 
+  const q = search.trim().toLowerCase();
+  const visible = tickets.filter((t) => {
+    if (methodFilter === "voided" && t.status !== "voided") return false;
+    if (methodFilter === "cash" && (t.method !== "cash" || t.status === "voided")) return false;
+    if (methodFilter === "transfer" && (t.method !== "transfer" || t.status === "voided")) return false;
+    if (!q) return true;
+    if (String(t.ticket_no).includes(q)) return true;
+    if (String(t.total).includes(q.replace(/[.\s]/g, ""))) return true;
+    if ((t.items ?? "").toLowerCase().includes(q)) return true;
+    if (t.status === "voided" && "anulada".includes(q)) return true;
+    return when(t.created_at).toLowerCase().includes(q);
+  });
+
   return (
     <div className="screen tickets">
-      <h2>Tickets ({tickets.length})</h2>
-      {tickets.map((t) => (
+      <div className="tickets-toolbar">
+        <h2 style={{ margin: 0 }}>Tickets ({visible.length})</h2>
+        <input
+          className="search-input"
+          data-testid="ticket-search"
+          type="search"
+          placeholder="Buscar #, monto o producto…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          aria-label="Buscar tickets"
+        />
+      </div>
+
+      <div className="seg ticket-filters" role="tablist" aria-label="Filtrar tickets">
+        {(
+          [
+            ["all", "Todos"],
+            ["cash", "Efectivo"],
+            ["transfer", "Transferencia"],
+            ["voided", "Anuladas"],
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={methodFilter === key}
+            className={methodFilter === key ? "active" : ""}
+            data-testid={`filter-${key}`}
+            onClick={() => setMethodFilter(key)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {visible.length === 0 && (
+        <div className="empty-state" data-testid="no-ticket-results">
+          <h2>Sin resultados</h2>
+          <p className="muted">Ningún ticket coincide con la búsqueda o el filtro.</p>
+        </div>
+      )}
+
+      <div className="ticket-list">
+      {visible.map((t) => (
         <button
           key={t.id}
-          className="card ticket-card"
+          className={`ticket-row${openId === t.id ? " open" : ""}${t.status === "voided" ? " voided" : ""}`}
           data-testid="ticket-item"
           onClick={() => setOpenId(openId === t.id ? null : t.id)}
         >
-          <div className="row space-between">
-            <strong data-testid="ticket-no">#{t.ticket_no}</strong>
+          <span className="ticket-row-no" data-testid="ticket-no">
+            #{t.ticket_no}
+          </span>
+          <span className="ticket-row-meta">
+            <span className="muted">{when(t.created_at)}</span>
+            <span className="ticket-row-items">{t.items ?? ""}</span>
+          </span>
+          <span className="ticket-row-right">
             <strong>{cop(t.total)}</strong>
-          </div>
-          <div className="row space-between muted">
-            <span>{when(t.created_at)}</span>
-            <span>
-              {t.method === "cash" ? "Efectivo" : "Transferencia"}
-              {t.status === "voided" ? " · ANULADA" : ""}
-              {t.pay_status === "pending" ? " · pendiente" : ""}
-              {t.vuelto ? ` · vuelto ${cop(t.vuelto)}` : ""}
+            <span className={`ticket-badge b-${t.status === "voided" ? "void" : t.method === "transfer" ? "transfer" : "cash"}`}>
+              {t.status === "voided"
+                ? "Anulada"
+                : t.method === "transfer"
+                  ? t.pay_status === "pending"
+                    ? "Transf. pend."
+                    : "Transferencia"
+                  : "Efectivo"}
             </span>
-          </div>
+          </span>
         </button>
       ))}
+      </div>
 
       {detail && (
         <div className="card ticket-detail" data-testid="ticket-detail">

@@ -930,16 +930,25 @@ export type LocalTicketRow = {
   vuelto: number | null;
   void_reason?: string | null;
   voided_at?: string | null;
+  /** Product names on the ticket — powers search without opening detail. */
+  items?: string;
 };
 
 export async function listLocalTickets(
   db: Q,
   tenantId: string,
-  limit = 50,
+  limit = 100,
 ): Promise<LocalTicketRow[]> {
   const res = await db.query<LocalTicketRow>(
     `SELECT t.id, t.ticket_no, t.total, t.status, t.created_at,
-            p.method, p.status AS pay_status, p.tendered, p.vuelto
+            p.method, p.status AS pay_status, p.tendered, p.vuelto,
+            (
+              SELECT string_agg(DISTINCT trim(COALESCE(pr.name, '') || ' ' || COALESCE(v.name, '')), ', ')
+              FROM ticket_lines tl
+              JOIN product_variants v ON v.id = tl.variant_id
+              JOIN products pr ON pr.id = v.product_id
+              WHERE tl.ticket_id = t.id
+            ) AS items
      FROM tickets t
      LEFT JOIN payments p ON p.ticket_id = t.id
      WHERE t.tenant_id = $1
