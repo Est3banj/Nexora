@@ -8,8 +8,7 @@ import {
 } from "../db/local";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import "./ticket-print.css";
-import { mirrorVoidedSale, type VoidSnapshot } from "../db/void-sale";
-import { pushNow } from "../sync/queue";
+import { annulTicket } from "../db/annul";
 import { scopedFetch } from "../sync/scoped-fetch";
 
 const cop = (n: number) =>
@@ -64,15 +63,7 @@ export function Tickets({
     setVoiding(true);
     setConfirmErr(null);
     try {
-      await pushNow(db, tenantId, { force: true });
-      const pending = await db.query("SELECT id FROM sync_log WHERE tenant_id=$1 AND status<>'synced' LIMIT 1", [tenantId]);
-      if (pending.rows.length) throw new Error("Terminá la sincronización antes de anular la venta");
-      const res = await scopedFetch(tenantId, `/api/sales/tickets/${detail.ticket.id}/void`, {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ reason: reason.trim() }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(res.status === 403 ? "Solo el dueño puede anular ventas" : res.status === 404 ? "La venta todavía no sincronizó" : data.error === "shift_closed" ? "No se puede anular: el turno ya cerró o no tiene caja abierta" : data.error === "incomplete_sale" ? "La venta no sincronizó completa; revisá la sincronización" : "No se pudo anular la venta; revisá el motivo y la conexión");
-      await mirrorVoidedSale(db, tenantId, data as VoidSnapshot);
+      await annulTicket(db, tenantId, detail.ticket.id, reason.trim());
       dialog.current?.close();
       showToast?.("Venta anulada · stock restituido. Registrá por fuera de NEXORA cualquier reintegro de dinero.");
       await refresh();

@@ -115,7 +115,8 @@ button {
   cursor: pointer;
 }
 
-.tickets dialog {
+/* Void dialogs live in Tickets AND Sale (quick annul) — shared base styles */
+dialog {
   width: min(560px, calc(100% - 32px));
   max-height: calc(100dvh - 32px);
   overflow-y: auto;
@@ -126,9 +127,9 @@ button {
   color: var(--text);
   box-shadow: var(--shadow);
 }
-.tickets dialog::backdrop { background: rgb(22 24 29 / 55%); }
-.tickets dialog textarea { min-height: 96px; resize: vertical; margin-bottom: 16px; }
-.tickets dialog .row, .ticket-actions { flex-wrap: wrap; }
+dialog::backdrop { background: rgb(22 24 29 / 55%); }
+dialog textarea { min-height: 96px; resize: vertical; margin-bottom: 16px; }
+dialog .row, .ticket-actions { flex-wrap: wrap; }
 
 .btn {
   min-height: var(--tap);
@@ -953,6 +954,31 @@ button {
   grid-column: span 2;
   background: rgba(61, 125, 255, 0.12);
   color: var(--primary);
+}
+
+/* F1/F2 hints on the pay-method tabs — desktop only (no F-keys on touch) */
+.pay-kbd {
+  display: none;
+  margin-left: 6px;
+  padding: 1px 5px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  font-family: inherit;
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+@media (min-width: 1024px) {
+  .pay-kbd {
+    display: inline-block;
+  }
+}
+
+/* Quick-annul trigger: visible but clearly secondary + destructive */
+.void-trigger {
+  color: var(--danger);
 }
 
 .change-display {

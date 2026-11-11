@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PGlite } from "@electric-sql/pglite";
 import { listSaleItems, type SaleItem } from "../db/local";
+import { annulTicket, AnnulError } from "../db/annul";
 import { useSale } from "../hooks/useSale";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 
@@ -136,6 +137,7 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
   const [tendered, setTendered] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [lastSale, setLastSale] = useState<{
+    id: string;
     ticketNo: number;
     total: number;
     vuelto: number | null;
@@ -152,15 +154,103 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
   const [scanMessage, setScanMessage] = useState("");
   const [payMethod, setPayMethod] = useState<"cash" | "transfer">("cash");
 
+  /* ── Batch B: quick annul + keyboard shortcuts ─────────────────────
+     All hooks live here, BEFORE the success/checkout early returns
+     (Rules of Hooks — a hook after an early return crashes on toggle). */
+  const [online, setOnline] = useState(
+    typeof navigator === "undefined" ? true : navigator.onLine !== false,
+  );
+  const [lastTicket, setLastTicket] = useState<{
+    id: string;
+    ticket_no: number;
+  } | null>(null);
+  const [voidTarget, setVoidTarget] = useState<{
+    id: string;
+    ticket_no: number;
+  } | null>(null);
+  const [voidReason, setVoidReason] = useState("");
+  const [voidBusy, setVoidBusy] = useState(false);
+  const [voidErr, setVoidErr] = useState<string | null>(null);
+  const voidDialog = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const on = () => setOnline(true);
+    const off = () => setOnline(false);
+    window.addEventListener("online", on);
+    window.addEventListener("offline", off);
+    return () => {
+      window.removeEventListener("online", on);
+      window.removeEventListener("offline", off);
+    };
+  }, []);
+
   useEffect(() => {
     let alive = true;
-    listSaleItems(db, tenantId)
-      .then((rows) => alive && setItems(rows))
-      .catch(() => alive && setItems([]));
+    Promise.all([
+      listSaleItems(db, tenantId),
+      db.query<{ id: string; ticket_no: number }>(
+        "SELECT id, ticket_no FROM tickets WHERE tenant_id=$1 AND status<>'voided' ORDER BY ticket_no DESC LIMIT 1",
+        [tenantId],
+      ),
+    ])
+      .then(([rows, last]) => {
+        if (!alive) return;
+        setItems(rows);
+        setLastTicket(last.rows[0] ?? null);
+      })
+      .catch(() => {
+        if (alive) setItems([]);
+      });
     return () => {
       alive = false;
     };
   }, [db, tenantId, view, lastSale, refreshToken]);
+
+  /* Keyboard shortcuts for peak hours:
+     F1 = efectivo exacto · F2 = transferencia · Enter = cobrar.
+     Deliberately re-attached every render (no deps array) so the closure
+     always sees the fresh tendered/sale state. Skips: buttons (native
+     activation wins — never double-charge), other inputs, open dialogs. */
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "F1" || e.key === "F2") {
+        e.preventDefault();
+        if (sale.lines.length === 0) return;
+        const cash = e.key === "F1";
+        setPayMethod(cash ? "cash" : "transfer");
+        if (cash) setTendered(String(sale.total));
+        if (!isWide) {
+          setView("checkout");
+          return;
+        }
+        requestAnimationFrame(() => {
+          document
+            .querySelector<HTMLButtonElement>(
+              cash ? '[data-testid="checkout-confirm"]' : '[data-testid="checkout-transfer"]',
+            )
+            ?.focus();
+        });
+        return;
+      }
+      if (e.key !== "Enter") return;
+      const t = e.target as HTMLElement | null;
+      if (!t) return;
+      const tag = t.tagName;
+      if (tag === "BUTTON" || tag === "A" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (t.isContentEditable) return;
+      if (t.closest("dialog")) return;
+      const inTendered = t.getAttribute("data-testid") === "tendered";
+      if (tag === "INPUT" && !inTendered) return;
+      if (view === "success") return;
+      if (document.querySelector("dialog[open]")) return;
+      e.preventDefault();
+      if (payMethod === "cash") void confirmCash();
+      else void confirmTransfer();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   const q = search.trim().toLowerCase();
   const filteredItems = items.filter((it) => {
@@ -232,6 +322,7 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
     try {
       const committed = await sale.commit(db, tenantId, { method: "cash", tendered: amount });
       setLastSale({
+        id: committed.ticket.id,
         ticketNo: committed.ticket.ticket_no,
         total: committed.payment.amount,
         vuelto: committed.payment.vuelto,
@@ -257,6 +348,7 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
     try {
       const committed = await sale.commit(db, tenantId, { method: "transfer" });
       setLastSale({
+        id: committed.ticket.id,
         ticketNo: committed.ticket.ticket_no,
         total: committed.payment.amount,
         vuelto: null,
@@ -273,6 +365,99 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
       else setError("No se pudo registrar la venta");
     }
   }
+
+  /* ── Quick annul (Batch B): same auditable core as Tickets ──────── */
+  function openVoid(t: { id: string; ticket_no: number }) {
+    setVoidTarget(t);
+    setVoidReason("");
+    setVoidErr(null);
+    voidDialog.current?.showModal();
+  }
+
+  async function annulQuick() {
+    if (!voidTarget) return;
+    setVoidBusy(true);
+    setVoidErr(null);
+    try {
+      await annulTicket(db, tenantId, voidTarget.id, voidReason.trim());
+      voidDialog.current?.close();
+      showToast("Venta anulada · stock restituido. Registrá por fuera de NEXORA cualquier reintegro de dinero.");
+      setLastSale(null);
+      setView("browse");
+      onCommitted();
+    } catch (err) {
+      // AnnulError carries the operator message; anything else is a
+      // network/timeout failure — never leak fetch internals.
+      setVoidErr(
+        err instanceof AnnulError
+          ? err.message
+          : "La anulación necesita conexión; podés seguir vendiendo offline",
+      );
+    } finally {
+      setVoidBusy(false);
+    }
+  }
+
+  const voidDialogEl = (
+    <dialog
+      ref={voidDialog}
+      aria-labelledby="void-quick-title"
+      onCancel={(e) => {
+        if (voidBusy) e.preventDefault();
+      }}
+    >
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void annulQuick();
+        }}
+      >
+        <h3 id="void-quick-title">
+          Anular venta {voidTarget ? `#${voidTarget.ticket_no}` : ""}
+        </h3>
+        <p>
+          Se anula toda la venta y se restituye el stock una sola vez. El
+          historial se conserva. No realiza un reintegro bancario ni de
+          efectivo.
+        </p>
+        <label htmlFor="void-quick-reason">Motivo obligatorio</label>
+        <textarea
+          id="void-quick-reason"
+          data-testid="void-quick-reason"
+          autoFocus
+          required
+          minLength={3}
+          maxLength={500}
+          value={voidReason}
+          onChange={(e) => setVoidReason(e.target.value)}
+          disabled={voidBusy}
+        />
+        {voidErr && (
+          <p role="alert" data-testid="void-quick-error">
+            {voidErr}
+          </p>
+        )}
+        <div className="row gap">
+          <button
+            type="button"
+            className="btn ghost"
+            disabled={voidBusy}
+            onClick={() => voidDialog.current?.close()}
+          >
+            Cancelar
+          </button>
+          <button
+            type="submit"
+            className="btn danger"
+            data-testid="void-quick-confirm"
+            disabled={voidBusy || !online || voidReason.trim().length < 3}
+          >
+            {voidBusy ? "Anulando…" : "Confirmar anulación total"}
+          </button>
+        </div>
+      </form>
+    </dialog>
+  );
 
   if (view === "success" && lastSale) {
     return (
@@ -307,7 +492,7 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
             </strong>
           </div>
         </div>
-        <div className="row gap" style={{ justifyContent: "center" }}>
+        <div className="row gap" style={{ justifyContent: "center", flexWrap: "wrap" }}>
           <button
             className="btn primary"
             data-testid="new-sale"
@@ -327,7 +512,17 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
           >
             Imprimir
           </button>
+          <button
+            className="btn ghost void-trigger"
+            data-testid="void-last-sale"
+            disabled={!online || voidBusy}
+            title={!online ? "Se necesita conexión" : undefined}
+            onClick={() => openVoid({ id: lastSale.id, ticket_no: lastSale.ticketNo })}
+          >
+            Anular esta venta
+          </button>
         </div>
+        {voidDialogEl}
       </div>
     );
   }
@@ -580,6 +775,7 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
               onClick={() => setPayMethod("cash")}
             >
               Efectivo
+              <kbd className="pay-kbd">F1</kbd>
             </button>
             <button
               type="button"
@@ -590,6 +786,7 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
               onClick={() => setPayMethod("transfer")}
             >
               Transferencia
+              <kbd className="pay-kbd">F2</kbd>
             </button>
           </div>
 
@@ -637,6 +834,19 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
               Registrar transferencia
             </button>
           )}
+
+          {lastTicket && (
+            <button
+              className="btn ghost void-trigger"
+              data-testid="void-last-quick"
+              disabled={!online || voidBusy}
+              title={!online ? "Se necesita conexión" : undefined}
+              onClick={() => openVoid(lastTicket)}
+            >
+              Anular última venta #{lastTicket.ticket_no}
+            </button>
+          )}
+          {voidDialogEl}
         </aside>
       </div>
     );
