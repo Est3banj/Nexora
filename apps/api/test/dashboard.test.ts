@@ -125,6 +125,8 @@ describe("dashboard summary (exact numbers)", () => {
     expect(s.tickets).toBe(1);
     expect(s.cash).toBe(10000);
     expect(s.transfer).toBe(0);
+    expect(s.credit).toBe(0);
+    expect(s.abonos).toBe(0);
     expect(s.pending).toBe(7000);
     expect(s.pending_count).toBe(1);
     // cogs = 2 units × 2000

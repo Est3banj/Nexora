@@ -16,20 +16,50 @@ export const REPORT_TIMEZONE = "America/Bogota";
 /** System default low-stock threshold when a variant has none (task D3-4 decision). */
 export const LOW_STOCK_DEFAULT = 5;
 
-/** $1 = tenant_id · $2 = from (YYYY-MM-DD) · $3 = to (YYYY-MM-DD, inclusive). */
+/**
+ * $1 = tenant_id · $2 = from (YYYY-MM-DD) · $3 = to (YYYY-MM-DD, inclusive).
+ *
+ * Two CTEs + FULL OUTER JOIN (fiado design §4.2): `p` buckets payments
+ * (revenue keeps INCLUDING credit — accrual — reported in its own `credit`
+ * column, never folded into cash/transfer), `a` buckets abonos as COBROS
+ * (collections, never revenue). FULL OUTER so a day with only abonos — a
+ * customer pays down debt, zero sales — still shows up; a plain LEFT JOIN
+ * from payments would drop it. Existing days keep identical numbers.
+ */
 export const SALES_BY_DAY_SQL = /* sql */ `
-SELECT (p.created_at AT TIME ZONE 'America/Bogota')::date AS day,
-       COUNT(DISTINCT p.ticket_id) FILTER (WHERE p.status = 'confirmed') AS tickets,
-       COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'confirmed'), 0) AS revenue,
-       COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'pending'), 0) AS pending,
-       COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'confirmed' AND p.method = 'cash'), 0) AS cash,
-       COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'confirmed' AND p.method = 'transfer'), 0) AS transfer
-FROM payments p
-WHERE p.tenant_id = $1
-  AND NOT EXISTS (SELECT 1 FROM tickets tk WHERE tk.tenant_id=p.tenant_id AND tk.id=p.ticket_id AND tk.status='voided')
-  AND (p.created_at AT TIME ZONE 'America/Bogota')::date >= $2::date
-  AND (p.created_at AT TIME ZONE 'America/Bogota')::date <= $3::date
-GROUP BY 1
+WITH p AS (
+  SELECT (p.created_at AT TIME ZONE 'America/Bogota')::date AS day,
+         COUNT(DISTINCT p.ticket_id) FILTER (WHERE p.status = 'confirmed') AS tickets,
+         COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'confirmed'), 0) AS revenue,
+         COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'pending'), 0) AS pending,
+         COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'confirmed' AND p.method = 'cash'), 0) AS cash,
+         COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'confirmed' AND p.method = 'transfer'), 0) AS transfer,
+         COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'confirmed' AND p.method = 'credit'), 0) AS credit
+  FROM payments p
+  WHERE p.tenant_id = $1
+    AND NOT EXISTS (SELECT 1 FROM tickets tk WHERE tk.tenant_id=p.tenant_id AND tk.id=p.ticket_id AND tk.status='voided')
+    AND (p.created_at AT TIME ZONE 'America/Bogota')::date >= $2::date
+    AND (p.created_at AT TIME ZONE 'America/Bogota')::date <= $3::date
+  GROUP BY 1
+),
+a AS (
+  SELECT (a.created_at AT TIME ZONE 'America/Bogota')::date AS day,
+         COALESCE(SUM(a.amount), 0) AS abonos
+  FROM credit_abonos a
+  WHERE a.tenant_id = $1
+    AND (a.created_at AT TIME ZONE 'America/Bogota')::date >= $2::date
+    AND (a.created_at AT TIME ZONE 'America/Bogota')::date <= $3::date
+  GROUP BY 1
+)
+SELECT COALESCE(p.day, a.day) AS day,
+       COALESCE(p.tickets, 0) AS tickets,
+       COALESCE(p.revenue, 0) AS revenue,
+       COALESCE(p.pending, 0) AS pending,
+       COALESCE(p.cash, 0) AS cash,
+       COALESCE(p.transfer, 0) AS transfer,
+       COALESCE(p.credit, 0) AS credit,
+       COALESCE(a.abonos, 0) AS abonos
+FROM p FULL OUTER JOIN a ON a.day = p.day
 ORDER BY 1`;
 
 /**
@@ -94,6 +124,10 @@ export type SalesByDayRow = {
   pending: number;
   cash: number;
   transfer: number;
+  /** confirmed credit payments (accrual) — part of revenue, own column */
+  credit: number;
+  /** abonos registered that day (cobros) — never part of revenue */
+  abonos: number;
 };
 
 export type SalesByHourRow = {
@@ -137,6 +171,8 @@ export function parseSalesByDay(rows: RawRow[]): SalesByDayRow[] {
     pending: num(r.pending),
     cash: num(r.cash),
     transfer: num(r.transfer),
+    credit: num(r.credit),
+    abonos: num(r.abonos),
   }));
 }
 
@@ -199,7 +235,10 @@ export function defaultReportRange(now: Date = new Date()): {
 
 /**
  * $1 = tenant_id · $2 = from · $3 = to.
- * Revenue/tickets/cash/transfer from confirmed payments.
+ * Revenue/tickets/cash/transfer/credit from confirmed payments — identity
+ * `revenue = cash + transfer + credit` holds by construction (credit is
+ * accrual, its own column, never folded into cash/transfer). `abonos` is
+ * the cobros scalar (collections, never revenue).
  * COGS uses ticket_lines.unit_cost (historical cost captured at sale) —
  * changing a product's current cost NEVER rewrites past margins.
  * costed_lines counts lines that carry a known cost (for honest margin UI).
@@ -210,6 +249,7 @@ SELECT
   COUNT(DISTINCT p.ticket_id) FILTER (WHERE p.status = 'confirmed') AS tickets,
   COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'confirmed' AND p.method = 'cash'), 0) AS cash,
   COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'confirmed' AND p.method = 'transfer'), 0) AS transfer,
+  COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'confirmed' AND p.method = 'credit'), 0) AS credit,
   COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'pending'), 0) AS pending,
   COUNT(*) FILTER (WHERE p.status = 'pending') AS pending_count,
   COALESCE((
@@ -230,7 +270,13 @@ SELECT
       AND (tk.created_at AT TIME ZONE 'America/Bogota')::date >= $2::date
       AND (tk.created_at AT TIME ZONE 'America/Bogota')::date <= $3::date
       AND tk.status IN ('completed', 'transfer_pending')
-  ), 0) AS costed_lines
+  ), 0) AS costed_lines,
+  COALESCE((
+    SELECT SUM(a.amount) FROM credit_abonos a
+    WHERE a.tenant_id = $1
+      AND (a.created_at AT TIME ZONE 'America/Bogota')::date >= $2::date
+      AND (a.created_at AT TIME ZONE 'America/Bogota')::date <= $3::date
+  ), 0) AS abonos
 FROM payments p
 WHERE p.tenant_id = $1
   AND NOT EXISTS (SELECT 1 FROM tickets tk WHERE tk.tenant_id=p.tenant_id AND tk.id=p.ticket_id AND tk.status='voided')
@@ -256,12 +302,16 @@ export type DashboardSummaryRow = {
   tickets: number;
   cash: number;
   transfer: number;
+  /** confirmed credit payments (accrual) — own column, inside revenue */
+  credit: number;
   pending: number;
   /** Count of pending payments (usually transfers awaiting owner confirmation). */
   pending_count: number;
   cogs: number;
   /** Lines with a known historical cost — gates honest margin display. */
   costed_lines: number;
+  /** abonos registered in the period (cobros) — never part of revenue */
+  abonos: number;
 };
 
 export type InventoryValueRow = {
@@ -278,10 +328,12 @@ export function parseDashboardSummary(rows: RawRow[]): DashboardSummaryRow {
     tickets: num(r.tickets),
     cash: num(r.cash),
     transfer: num(r.transfer),
+    credit: num(r.credit),
     pending: num(r.pending),
     pending_count: num(r.pending_count),
     cogs: num(r.cogs),
     costed_lines: num(r.costed_lines),
+    abonos: num(r.abonos),
   };
 }
 
@@ -293,4 +345,68 @@ export function parseInventoryValue(rows: RawRow[]): InventoryValueRow {
     variants_with_cost: num(r.variants_with_cost),
     low_stock_count: num(r.low_stock_count),
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* Por cobrar (receivables) — fiado design §4.4                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * $1 = tenant_id.
+ *
+ * balance = Σ confirmed credit payments on non-voided tickets − Σ abonos,
+ * active customers only. Voided credit drops out (`tk.status <> 'voided'`);
+ * abonos always count (they are append-only, never voided).
+ *
+ * `balance > 0` filter is REQUIRED (reconciliation 2026-11-11, conflict #4 —
+ * spec wins over design's unfiltered SQL): a Por Cobrar list of zero/negative
+ * balance customers is noise, and filtering SQL-side keeps the Credito screen
+ * dumb (no client-side filtering). ORDER BY balance DESC, name ASC.
+ */
+export const CUSTOMER_BALANCES_SQL = /* sql */ `
+SELECT c.id AS customer_id,
+       c.name AS name,
+       c.phone AS phone,
+       COALESCE(cr.credit, 0) AS credit,
+       COALESCE(ab.abonos, 0) AS abonos,
+       COALESCE(cr.credit, 0) - COALESCE(ab.abonos, 0) AS balance
+FROM customers c
+LEFT JOIN (
+  SELECT tk.customer_id AS customer_id, SUM(p.amount) AS credit
+  FROM payments p
+  JOIN tickets tk ON tk.id = p.ticket_id AND tk.tenant_id = p.tenant_id
+  WHERE p.tenant_id = $1
+    AND p.method = 'credit' AND p.status = 'confirmed'
+    AND tk.status <> 'voided'
+    AND tk.customer_id IS NOT NULL
+  GROUP BY 1
+) cr ON cr.customer_id = c.id
+LEFT JOIN (
+  SELECT customer_id, SUM(amount) AS abonos
+  FROM credit_abonos
+  WHERE tenant_id = $1
+  GROUP BY 1
+) ab ON ab.customer_id = c.id
+WHERE c.tenant_id = $1 AND c.active = TRUE
+  AND COALESCE(cr.credit, 0) - COALESCE(ab.abonos, 0) > 0
+ORDER BY balance DESC, c.name ASC`;
+
+export type CustomerBalanceRow = {
+  customer_id: string;
+  name: string;
+  phone: string | null;
+  credit: number;
+  abonos: number;
+  balance: number;
+};
+
+export function parseCustomerBalances(rows: RawRow[]): CustomerBalanceRow[] {
+  return rows.map((r) => ({
+    customer_id: String(r.customer_id),
+    name: String(r.name ?? ""),
+    phone: r.phone == null ? null : String(r.phone),
+    credit: num(r.credit),
+    abonos: num(r.abonos),
+    balance: num(r.balance),
+  }));
 }

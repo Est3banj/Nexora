@@ -173,6 +173,8 @@ export const tickets = pgTable(
     ticket_no: integer("ticket_no").notNull(),
     status: text("status").notNull().default("completed"),
     total: integer("total").notNull(),
+    /** credit attribution — nullable, NO FK (business-table precedent) */
+    customer_id: uuid("customer_id"),
     created_at: createdAt(),
     updated_at: updatedAt(),
   },
@@ -180,6 +182,58 @@ export const tickets = pgTable(
     uniqueIndex("tickets_tenant_client_uq").on(t.tenant_id, t.client_uuid),
     uniqueIndex("tickets_tenant_ticket_no_uq").on(t.tenant_id, t.ticket_no),
     index("tickets_tenant_created_idx").on(t.tenant_id, t.created_at),
+    index("tickets_tenant_customer_idx").on(t.tenant_id, t.customer_id),
+  ],
+);
+
+export const customers = pgTable(
+  "customers",
+  {
+    id: idCol(),
+    tenant_id: tenantCol(),
+    client_uuid: clientUuidCol(),
+    name: text("name").notNull(),
+    phone: text("phone"),
+    notes: text("notes"),
+    /** soft-delete, mirrors products */
+    active: boolean("active").notNull().default(true),
+    created_at: createdAt(),
+    updated_at: updatedAt(),
+  },
+  (t) => [
+    // D7: unique(tenant_id, client_uuid) ONLY — two customers can share a
+    // name; duplicate prevention is a picker UX concern, not a DB constraint.
+    uniqueIndex("customers_tenant_client_uq").on(t.tenant_id, t.client_uuid),
+    index("customers_tenant_active_idx").on(t.tenant_id, t.active),
+    index("customers_tenant_name_idx").on(t.tenant_id, t.name),
+  ],
+);
+
+export const creditAbonos = pgTable(
+  "credit_abonos",
+  {
+    id: idCol(),
+    tenant_id: tenantCol(),
+    client_uuid: clientUuidCol(),
+    customer_id: uuid("customer_id").notNull(),
+    /** integer COP, >0 — enforced zod-only (payments precedent: no CHECK) */
+    amount: integer("amount").notNull(),
+    /** 'cash' | 'transfer' — never 'credit'; abonos are NEVER payments */
+    method: text("method").notNull(),
+    /** cash abono enters THIS shift's arqueo; null = no open shift */
+    shift_id: uuid("shift_id"),
+    /** optional attribution (D2) — never the void-rule input */
+    ticket_id: uuid("ticket_id"),
+    note: text("note"),
+    created_at: createdAt(),
+    updated_at: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("credit_abonos_tenant_client_uq").on(t.tenant_id, t.client_uuid),
+    index("credit_abonos_tenant_customer_idx").on(t.tenant_id, t.customer_id),
+    index("credit_abonos_tenant_shift_idx").on(t.tenant_id, t.shift_id),
+    index("credit_abonos_tenant_ticket_idx").on(t.tenant_id, t.ticket_id),
+    index("credit_abonos_tenant_created_idx").on(t.tenant_id, t.created_at),
   ],
 );
 
@@ -345,3 +399,5 @@ export type TicketLine = typeof ticketLines.$inferSelect;
 export type Payment = typeof payments.$inferSelect;
 export type StockDiary = typeof stockdiary.$inferSelect;
 export type SyncLogEntry = typeof syncLog.$inferSelect;
+export type Customer = typeof customers.$inferSelect;
+export type CreditAbono = typeof creditAbonos.$inferSelect;

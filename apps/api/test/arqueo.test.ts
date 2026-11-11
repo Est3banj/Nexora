@@ -213,6 +213,7 @@ describe("expected computed from payments (server-side source of truth)", () => 
       cash: 23500,
       transfers: 18000,
       pending: 0,
+      abonos: 0,
       expected: 41500,
     });
     expect(body.diff).toBe(0);
@@ -229,6 +230,7 @@ describe("expected computed from payments (server-side source of truth)", () => 
     expect(await repo.shifts.expected(shift.id)).toMatchObject({
       cash: 23500,
       transfers: 18000,
+      abonos: 0,
       expected: 41500,
     });
 
@@ -248,6 +250,7 @@ describe("expected computed from payments (server-side source of truth)", () => 
       cash: 10000,
       transfers: 0,
       pending: 18000,
+      abonos: 0,
       expected: 10000,
     });
     expect(res.json().diff).toBe(0);

@@ -61,6 +61,7 @@ describe("offline close (expected from local payments)", () => {
       cash: 23500,
       transfers: 18000,
       pending: 0,
+      abonos: 0,
       expected: 41500,
     });
 
@@ -89,6 +90,7 @@ describe("offline close (expected from local payments)", () => {
       cash: 10000,
       transfers: 0,
       pending: 18000,
+      abonos: 0,
       expected: 10000,
     });
 

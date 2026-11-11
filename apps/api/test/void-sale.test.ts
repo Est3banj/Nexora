@@ -64,7 +64,7 @@ it.each(["cash", "transfer", "confirmed-transfer"])("annuls %s once; preserves h
   expect(await repo.ticketLines.listByTicket(s.id)).toEqual(beforeLines);
   expect(await repo.payments.listByTicket(s.id)).toEqual(beforePayments);
   expect((await repo.tickets.byUuid(s.id))?.total).toBe(8000);
-  expect((await computeExpected(owner.orgId, s.shift.id))).toEqual({ cash: 0, transfers: 0, pending: 0, expected: 0 });
+  expect((await computeExpected(owner.orgId, s.shift.id))).toEqual({ cash: 0, transfers: 0, pending: 0, abonos: 0, expected: 0 });
   const date = localDate();
   const report = await app.inject({ url: `/api/reports/dashboard?from=${date}&to=${date}`, headers: authHeaders(owner) });
   expect(report.statusCode).toBe(200);

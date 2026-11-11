@@ -5,3 +5,4 @@ export * from "./catalog";
 export * from "./reports";
 export * from "./arqueo";
 export * from "./sale-sync";
+export * from "./methods";

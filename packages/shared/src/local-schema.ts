@@ -35,6 +35,55 @@ WHERE v.id = l.variant_id
   AND v.cost IS NOT NULL;
 `;
 
+/**
+ * Fiado (credit) schema — additive, design §2. One source of truth: the
+ * local PGlite open path interpolates this into LOCAL_SCHEMA_SQL and the
+ * server runs it from apps/api/src/db/migrate-fiado.ts, so both stores
+ * grow the same objects (schema parity test enforces it).
+ *
+ * Idempotent (`IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS`) like the
+ * VARIANT_CODE precedent: re-running on every open is safe, so no datadir
+ * bump and no forced rehydrate. Plain DDL only — no `$n` params.
+ */
+export const FIADO_MIGRATION_SQL = /* sql */ `
+CREATE TABLE IF NOT EXISTS customers (
+  id uuid PRIMARY KEY,
+  tenant_id uuid NOT NULL,
+  client_uuid uuid NOT NULL,
+  name text NOT NULL,
+  phone text,
+  notes text,
+  active boolean NOT NULL DEFAULT true,          -- soft-delete, mirrors products
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS customers_tenant_client_uq ON customers (tenant_id, client_uuid);
+CREATE INDEX IF NOT EXISTS customers_tenant_active_idx ON customers (tenant_id, active);
+CREATE INDEX IF NOT EXISTS customers_tenant_name_idx ON customers (tenant_id, name);   -- picker search (NON-unique)
+
+CREATE TABLE IF NOT EXISTS credit_abonos (
+  id uuid PRIMARY KEY,
+  tenant_id uuid NOT NULL,
+  client_uuid uuid NOT NULL,
+  customer_id uuid NOT NULL,
+  amount integer NOT NULL,                        -- >0 enforced zod-only (payments precedent: no CHECK)
+  method text NOT NULL,                           -- 'cash' | 'transfer' — NEVER 'credit', NEVER a payment
+  shift_id uuid,                                  -- cash abono enters THIS shift's arqueo; null = no open shift
+  ticket_id uuid,                                 -- nullable — optional linkage (D2)
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS credit_abonos_tenant_client_uq ON credit_abonos (tenant_id, client_uuid);
+CREATE INDEX IF NOT EXISTS credit_abonos_tenant_customer_idx ON credit_abonos (tenant_id, customer_id);
+CREATE INDEX IF NOT EXISTS credit_abonos_tenant_shift_idx ON credit_abonos (tenant_id, shift_id);
+CREATE INDEX IF NOT EXISTS credit_abonos_tenant_ticket_idx ON credit_abonos (tenant_id, ticket_id);
+CREATE INDEX IF NOT EXISTS credit_abonos_tenant_created_idx ON credit_abonos (tenant_id, created_at);
+
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS customer_id uuid;   -- nullable, NO DB FK (business-table precedent)
+CREATE INDEX IF NOT EXISTS tickets_tenant_customer_idx ON tickets (tenant_id, customer_id);
+`;
+
 export const LOCAL_SCHEMA_SQL = /* sql */ `
 CREATE TABLE IF NOT EXISTS categories (
   id uuid PRIMARY KEY,
@@ -112,6 +161,9 @@ CREATE TABLE IF NOT EXISTS tickets (
 CREATE UNIQUE INDEX IF NOT EXISTS tickets_tenant_client_uq ON tickets (tenant_id, client_uuid);
 CREATE UNIQUE INDEX IF NOT EXISTS tickets_tenant_ticket_no_uq ON tickets (tenant_id, ticket_no);
 CREATE INDEX IF NOT EXISTS tickets_tenant_created_idx ON tickets (tenant_id, created_at);
+
+-- Fiado: additive credit schema (needs the tickets table for the ALTER) — design §2.
+${FIADO_MIGRATION_SQL}
 
 CREATE TABLE IF NOT EXISTS ticket_lines (
   id uuid PRIMARY KEY,

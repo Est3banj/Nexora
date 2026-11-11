@@ -27,6 +27,8 @@ const SHARED_TABLES = [
   "stockcurrent",
   "stockdiary",
   "sync_log",
+  "customers",
+  "credit_abonos",
 ] as const;
 
 const EXPECTED_INDEXES = [
@@ -36,6 +38,12 @@ const EXPECTED_INDEXES = [
   "categories_tenant_name_uq",
   "closedcash_tenant_client_uq",
   "closedcash_tenant_shift_uq",
+  "credit_abonos_tenant_created_idx",
+  "credit_abonos_tenant_customer_idx",
+  "credit_abonos_tenant_shift_idx",
+  "credit_abonos_tenant_ticket_idx",
+  "customers_tenant_active_idx",
+  "customers_tenant_name_idx",
   "payments_tenant_client_uq",
   "payments_tenant_created_idx",
   "payments_tenant_shift_status_idx",
@@ -57,6 +65,7 @@ const EXPECTED_INDEXES = [
   "ticket_lines_ticket_idx",
   "tickets_tenant_client_uq",
   "tickets_tenant_created_idx",
+  "tickets_tenant_customer_idx",
   "tickets_tenant_ticket_no_uq",
 ];
 
@@ -136,6 +145,7 @@ describe("local PGlite ↔ server Drizzle parity", () => {
 
     expect(find("tickets", "total")).toBe("integer");
     expect(find("payments", "amount")).toBe("integer");
+    expect(find("credit_abonos", "amount")).toBe("integer");
     expect(find("product_variants", "price")).toBe("integer");
     expect(find("products", "tenant_id")).toBe("uuid");
     expect(find("products", "client_uuid")).toBe("uuid");
@@ -170,6 +180,8 @@ describe("D1-2: drizzle-kit push created every design §2 index", () => {
       "closedcash",
       "stockdiary",
       "sync_log",
+      "customers",
+      "credit_abonos",
     ]) {
       expect(defs).toContain(`UNIQUE INDEX ${table}_tenant_client_uq ON public.${table} USING btree (tenant_id, client_uuid)`);
     }

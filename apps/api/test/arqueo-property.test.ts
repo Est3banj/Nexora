@@ -207,7 +207,7 @@ describe("offline close reconciliation (cash-close §Arqueo works offline)", () 
         shift.id,
       ]);
       const E = parseExpectedRow(localRes.rows[0] as Record<string, unknown>);
-      expect(E).toEqual({ cash: 23500, transfers: 0, pending: 18000, expected: 23500 });
+      expect(E).toEqual({ cash: 23500, transfers: 0, pending: 18000, abonos: 0, expected: 23500 });
 
       const counted = 23500;
       const diff = counted - E.expected;
@@ -259,6 +259,7 @@ describe("offline close reconciliation (cash-close §Arqueo works offline)", () 
         cash: E.cash,
         transfers: E.transfers,
         pending: E.pending,
+        abonos: E.abonos,
       });
 
       const stored = await repo.closedcash.byShift(shift.id);

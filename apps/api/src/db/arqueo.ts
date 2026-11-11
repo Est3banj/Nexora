@@ -19,7 +19,9 @@ import { pool } from "./index";
  * (local expected == server recomputation) hold by construction.
  *
  * Invariant (cash-close spec):
- *  - expected = confirmed cash + confirmed transfers (pending EXCLUDED)
+ *  - expected = confirmed cash + confirmed transfers + cash abonos of the
+ *    shift (pending EXCLUDED; credit payments and transfer abonos enter
+ *    neither expected nor pending)
  *  - diff = counted − expected, derived, never editable
  *  - closedcash is IMMUTABLE: ON CONFLICT DO NOTHING, no update path
  *  - close requires the tenant's OPEN shift; otherwise blocked

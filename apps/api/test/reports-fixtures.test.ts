@@ -114,11 +114,11 @@ const RANGE = { from: "2026-11-01", to: "2026-11-02" };
 
 /* Exact expectations (reports spec numbers) */
 const EXPECTED_SALES_A = [
-  { day: "2026-11-01", tickets: 1, revenue: 45000, pending: 0, cash: 45000, transfer: 0 },
-  { day: "2026-11-02", tickets: 1, revenue: 30000, pending: 18000, cash: 30000, transfer: 0 },
+  { day: "2026-11-01", tickets: 1, revenue: 45000, pending: 0, cash: 45000, transfer: 0, credit: 0, abonos: 0 },
+  { day: "2026-11-02", tickets: 1, revenue: 30000, pending: 18000, cash: 30000, transfer: 0, credit: 0, abonos: 0 },
 ];
 const EXPECTED_SALES_B = [
-  { day: "2026-11-01", tickets: 1, revenue: 9000, pending: 0, cash: 9000, transfer: 0 },
+  { day: "2026-11-01", tickets: 1, revenue: 9000, pending: 0, cash: 9000, transfer: 0, credit: 0, abonos: 0 },
 ];
 const EXPECTED_TOP_A = [
   { product_name: "Bebidas", variant_name: "B", qty: 25, revenue: 15000 },
