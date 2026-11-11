@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { PGlite } from "@electric-sql/pglite";
 import { listSaleItems, type SaleItem } from "../db/local";
 import { useSale } from "../hooks/useSale";
@@ -129,18 +129,6 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
   const [scanCode, setScanCode] = useState("");
   const [scanMessage, setScanMessage] = useState("");
   const [payMethod, setPayMethod] = useState<"cash" | "transfer">("cash");
-  const tenderedTouched = useRef(false);
-
-  // Auto-follow total while the cashier has not typed a custom amount
-  // (desktop panel starts with empty tendered → used to show "Falta").
-  useEffect(() => {
-    if (payMethod !== "cash" || tenderedTouched.current) return;
-    if (sale.lines.length === 0) {
-      setTendered("");
-      return;
-    }
-    setTendered(String(sale.total));
-  }, [sale.total, payMethod, sale.lines.length]);
 
   useEffect(() => {
     let alive = true;
@@ -197,9 +185,8 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
       return;
     }
     setError(null);
-    tenderedTouched.current = false;
     setPayMethod("cash");
-    setTendered(String(sale.total));
+    setTendered("");
     setView("checkout");
   }
 
@@ -213,10 +200,14 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
   }
 
   async function confirmCash() {
-    // tap 3 — cash checkout (tendered ≥ total, vuelto computed)
+    // Cashier must state what was received — no auto-filled total (UX fix).
     if (!ensureCart()) return;
+    const amount = Number(tendered.replace(/[^\d]/g, "")) || 0;
+    if (amount === 0) {
+      setError("Ingresá el efectivo recibido o tocá Exacto");
+      return;
+    }
     try {
-      const amount = Number(tendered.replace(/[^\d]/g, "")) || 0;
       const committed = await sale.commit(db, tenantId, { method: "cash", tendered: amount });
       setLastSale({
         ticketNo: committed.ticket.ticket_no,
@@ -301,7 +292,6 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
             onClick={() => {
               setLastSale(null);
               setTendered("");
-              tenderedTouched.current = false;
               setPayMethod("cash");
               setView("browse");
             }}
@@ -373,10 +363,7 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
             <CashSection
               total={sale.total}
               tendered={tendered}
-              setTendered={(v) => {
-                tenderedTouched.current = true;
-                setTendered(v);
-              }}
+              setTendered={setTendered}
             />
           </div>
         ) : (
@@ -475,10 +462,7 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
                   data-testid="sale-item"
                   onClick={() => {
                     setError(null);
-                    if (sale.lines.length === 0) {
-                      tenderedTouched.current = false;
-                      setTendered("");
-                    }
+                    if (sale.lines.length === 0) setTendered("");
                     sale.addItem(item);
                   }}
                 >
@@ -584,10 +568,7 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
             <CashSection
               total={sale.total}
               tendered={tendered}
-              setTendered={(v) => {
-                tenderedTouched.current = true;
-                setTendered(v);
-              }}
+              setTendered={setTendered}
               compact
             />
           ) : (

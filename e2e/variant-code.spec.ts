@@ -84,8 +84,8 @@ for (const width of [375, 1440]) {
       await expect(page.getByTestId("checkout-summary")).toContainText("× 1");
     } else {
       await expect(page.getByTestId("order-qty")).toHaveText("1");
-      await page.getByTestId("quick-cash-exact").click();
     }
+    await page.getByTestId("quick-cash-exact").click(); // tendered is never auto-filled
     await page.getByTestId("checkout-confirm").click();
     await expect(page.getByTestId("sale-success")).toBeVisible();
     expect(dbOne("SELECT count(*) FROM tickets")).toBe("0");

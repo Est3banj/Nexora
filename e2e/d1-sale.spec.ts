@@ -6,10 +6,10 @@ import { wipeSalesAndCatalog } from "./helpers-db";
  * visible locally (tasks.md Day 1 end-of-day verifiable slice).
  *
  * Also covers ACs:
- *  - sales §Three-tap: tile → Cobrar → Efectivo (≤3 interactions)
+ *  - sales §Cash checkout: "Efectivo recibido" starts EMPTY (never
+ *    auto-filled); Exacto fills the total in one tap; overpayment accepted
+ *    via the tendered field; empty tendered is rejected with a clear message
  *  - sales §Empty cart blocked with a clear message
- *  - sales §Cash checkout with vuelto (exact by default, overpayment
- *    accepted via the tendered field)
  *  - catalog §Empty catalog shows an empty state (before creation)
  *  - sales §Sale survives reload offline: ticket still present after reload
  *  - sync §Local-first indicator: "pendiente de sync" toast + pending badge
@@ -65,9 +65,18 @@ test.describe("D1 gate — create → sell → ticket locally", () => {
     // tap 2: confirm cart / go to checkout
     await page.getByTestId("checkout-open").click();
     await expect(page.getByTestId("checkout-total")).toContainText("3.500");
-    await expect(page.getByTestId("tendered")).toHaveValue("3500");
+    // efectivo recibido is NEVER auto-filled (owner decision)
+    await expect(page.getByTestId("tendered")).toHaveValue("");
 
-    // tap 3: cash payment (exact by default)
+    // charging with an empty tendered is rejected with a clear message
+    await page.getByTestId("checkout-confirm").click();
+    await expect(page.getByTestId("cart-error")).toContainText(
+      "Ingresá el efectivo recibido",
+    );
+
+    // tap 3: one-tap Exacto fills the total, then charge
+    await page.getByTestId("quick-cash-exact").click();
+    await expect(page.getByTestId("tendered")).toHaveValue("3500");
     await page.getByTestId("checkout-confirm").click();
 
     await expect(page.getByTestId("sale-success")).toBeVisible();

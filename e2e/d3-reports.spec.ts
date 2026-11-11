@@ -97,6 +97,7 @@ test.describe("D3-5 — reports UI + offline staleness", () => {
       .filter({ hasText: "Reporte E2E" })
       .click();
     await page.getByTestId("checkout-open").click();
+    await page.getByTestId("quick-cash-exact").click();
     await page.getByTestId("checkout-confirm").click();
     await expect(page.getByTestId("sale-success")).toBeVisible();
 

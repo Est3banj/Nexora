@@ -36,7 +36,7 @@ async function seed(page: Page) {
 async function sell(page: Page) {
   await page.getByTestId("sale-item").click();
   if ((page.viewportSize()?.width ?? 375) < 1024) await page.getByTestId("checkout-open").click();
-  else await page.getByTestId("quick-cash-exact").click();
+  await page.getByTestId("quick-cash-exact").click(); // tendered is never auto-filled
   await page.getByTestId("checkout-confirm").click();
   await expect(page.getByTestId("sale-success")).toBeVisible();
 }

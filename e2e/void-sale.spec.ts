@@ -18,6 +18,7 @@ test("owner annulment: accessible confirmation, offline edge, replay mirror and 
   await page.getByTestId("tab-sale").click();
   await page.getByTestId("sale-item").filter({ hasText: "Café anulación E2E" }).click();
   await page.getByTestId("checkout-open").click();
+  await page.getByTestId("quick-cash-exact").click();
   await page.getByTestId("checkout-confirm").click();
   await expect(page.getByTestId("sale-success")).toBeVisible();
   // The badge can still display the catalog's previous zero while the sale

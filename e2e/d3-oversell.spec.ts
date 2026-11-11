@@ -63,6 +63,7 @@ test.describe("D3-1 — oversell warning", () => {
     await expect(warn).toContainText("negativo");
 
     /* ALLOW: completing is not blocked by the warning */
+    await page.getByTestId("quick-cash-exact").click();
     await page.getByTestId("checkout-confirm").click();
     await expect(page.getByTestId("sale-success")).toBeVisible();
 

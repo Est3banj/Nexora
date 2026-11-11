@@ -24,6 +24,7 @@ test("large offline cart → reload → interrupted upload/finalize → one atom
   await context.setOffline(true);
   for(let i=0;i<18;i++) await page.getByTestId("sale-item").filter({hasText:`Grande ${String(i).padStart(2,"0")}`}).click();
   await page.getByTestId("checkout-open").click();
+  await page.getByTestId("quick-cash-exact").click();
   await page.getByTestId("checkout-confirm").click();
   await expect(page.getByTestId("sale-success")).toBeVisible();
   await expect(page.getByTestId("pending-badge")).toContainText("56 pendientes");

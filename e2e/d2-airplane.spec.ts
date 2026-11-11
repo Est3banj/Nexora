@@ -125,7 +125,8 @@ test.describe("D2 gate — airplane mode → reload → reconnect → one copy",
       .click();
     await expect(page.getByTestId("cart-total")).toContainText("4.500");
     await page.getByTestId("checkout-open").click();
-    await page.getByTestId("checkout-confirm").click(); // tap 3: cash, exact
+    await page.getByTestId("quick-cash-exact").click(); // exact tendered (no auto-fill)
+    await page.getByTestId("checkout-confirm").click();
 
     await expect(page.getByTestId("sale-success")).toBeVisible();
     await expect(page.getByTestId("pending-note")).toContainText(
