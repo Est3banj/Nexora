@@ -1092,10 +1092,14 @@ button {
   /* reading screens: cap width so 1440 doesn't feel hollow */
   .tickets,
   .arqueo,
-  .reports,
   .dashboard,
   .catalog {
     max-width: 960px;
+  }
+
+  /* reports is data-dense: tables deserve more canvas */
+  .reports {
+    max-width: 1200px;
   }
 
   .sale-grid {
@@ -1121,9 +1125,23 @@ button {
     max-width: 480px;
   }
 
-  .reports .seg,
-  .reports .card {
-    max-width: 720px;
+  /* toolbar: date range left, view tabs right — one control row */
+  .reports-toolbar {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+
+  .reports-toolbar .range-row {
+    margin-bottom: 0;
+  }
+
+  .reports-toolbar .seg {
+    flex: 0 0 auto;
+    margin-bottom: 0;
   }
 }
 

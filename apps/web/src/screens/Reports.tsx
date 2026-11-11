@@ -148,47 +148,49 @@ export function Reports({ db, tenantId, refreshToken }: Props) {
         </div>
       )}
 
-      <div className="range-row">
-        <label htmlFor="rep-from">Desde</label>
-        <input
-          id="rep-from"
-          data-testid="report-from"
-          type="date"
-          value={range.from}
-          onChange={(e) => setRange((r) => ({ ...r, from: e.target.value || r.from }))}
-        />
-        <label htmlFor="rep-to">Hasta</label>
-        <input
-          id="rep-to"
-          data-testid="report-to"
-          type="date"
-          value={range.to}
-          onChange={(e) => setRange((r) => ({ ...r, to: e.target.value || r.to }))}
-        />
-      </div>
+      <div className="reports-toolbar">
+        <div className="range-row">
+          <label htmlFor="rep-from">Desde</label>
+          <input
+            id="rep-from"
+            data-testid="report-from"
+            type="date"
+            value={range.from}
+            onChange={(e) => setRange((r) => ({ ...r, from: e.target.value || r.from }))}
+          />
+          <label htmlFor="rep-to">Hasta</label>
+          <input
+            id="rep-to"
+            data-testid="report-to"
+            type="date"
+            value={range.to}
+            onChange={(e) => setRange((r) => ({ ...r, to: e.target.value || r.to }))}
+          />
+        </div>
 
-      <div className="seg" role="tablist">
-        <button
-          className={view === "sales" ? "active" : ""}
-          data-testid="tab-report-sales"
-          onClick={() => setView("sales")}
-        >
-          Ventas
-        </button>
-        <button
-          className={view === "top" ? "active" : ""}
-          data-testid="tab-report-top"
-          onClick={() => setView("top")}
-        >
-          Top
-        </button>
-        <button
-          className={view === "low" ? "active" : ""}
-          data-testid="tab-report-low"
-          onClick={() => setView("low")}
-        >
-          Stock bajo
-        </button>
+        <div className="seg" role="tablist">
+          <button
+            className={view === "sales" ? "active" : ""}
+            data-testid="tab-report-sales"
+            onClick={() => setView("sales")}
+          >
+            Ventas
+          </button>
+          <button
+            className={view === "top" ? "active" : ""}
+            data-testid="tab-report-top"
+            onClick={() => setView("top")}
+          >
+            Top
+          </button>
+          <button
+            className={view === "low" ? "active" : ""}
+            data-testid="tab-report-low"
+            onClick={() => setView("low")}
+          >
+            Stock bajo
+          </button>
+        </div>
       </div>
 
       {error && (
