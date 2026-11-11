@@ -330,6 +330,17 @@ async function upsertEntity(
   switch (m.entity) {
     case "ticket": {
       const p = m.payload;
+      // H7 backstop (fiado D3): the sale must reference a customer that
+      // already exists IN THIS TENANT — same pattern as product→category
+      // (`:473` below). Absent customer ⇒ whole sale group rejected:validation
+      // → client retries until the solo customer group has drained.
+      // Legacy queued tickets carry NO customer_id (undefined) or an explicit
+      // null (cash/transfer) — neither is a credit claim, so neither checks.
+      if (p.customer_id) {
+        const [customer] = await tx.select({ id: t.customers.id }).from(t.customers)
+          .where(and(eq(t.customers.tenant_id, tenantId), eq(t.customers.id, p.customer_id)));
+        if (!customer) throw new InvalidSync();
+      }
       await tx
         .insert(t.tickets)
         .values({
@@ -340,6 +351,8 @@ async function upsertEntity(
           ticket_no: p.ticket_no,
           status: p.status,
           total: p.total,
+          // legacy payloads omit customer_id — never wipe a stored link
+          ...(p.customer_id !== undefined ? { customer_id: p.customer_id } : {}),
           ...(p.created_at ? { created_at: new Date(p.created_at) } : {}),
         })
         .onConflictDoUpdate({
@@ -349,6 +362,7 @@ async function upsertEntity(
             ticket_no: p.ticket_no,
             status: p.status,
             total: p.total,
+            ...(p.customer_id !== undefined ? { customer_id: p.customer_id } : {}),
             updated_at: now,
           },
         });
@@ -390,6 +404,20 @@ async function upsertEntity(
       const [existing] = await tx.select().from(t.payments).where(and(eq(t.payments.tenant_id, tenantId), eq(t.payments.id, cu)));
       if (p.method === "transfer" && p.status === "confirmed" && existing?.status !== "confirmed") throw new InvalidSync();
       if (existing?.status === "confirmed" && p.status !== "confirmed") throw new InvalidSync();
+      // D1 hard rule: credit is CONFIRMED AT CREATION. A pending credit would
+      // leak into arqueo's pending line and dashboard pending_count, poisoning
+      // the cash close — there is no pending→confirmed flip for credit.
+      if (p.method === "credit" && p.status !== "confirmed") throw new InvalidSync();
+      // No orphan credit claims (credit-sales §Customer required): a credit
+      // payment needs a parent ticket that exists in-tenant AND carries a
+      // customer. Cash/transfer never pay a customer — skip the lookup.
+      // The ticket ranks before payments in-group (`rank()`), so a same-batch
+      // ticket is already written when this runs.
+      if (p.method === "credit") {
+        const [parent] = await tx.select({ customer_id: t.tickets.customer_id }).from(t.tickets)
+          .where(and(eq(t.tickets.tenant_id, tenantId), eq(t.tickets.id, p.ticket_id)));
+        if (!parent?.customer_id) throw new InvalidSync();
+      }
       await tx
         .insert(t.payments)
         .values({
@@ -593,6 +621,84 @@ async function upsertEntity(
         .onConflictDoUpdate({
           target: [t.shifts.tenant_id, t.shifts.client_uuid],
           set: { status: p.status, closed_at: p.closed_at ? new Date(p.closed_at) : null, updated_at: now },
+        });
+      return;
+    }
+    case "customer": {
+      // Catalog-ish upsert (pattern of `category`): unique(tenant_id,
+      // client_uuid) only — names may repeat (D7). Members may create/edit
+      // customers (D4): the money-touching action is the abono, not the row.
+      const p = m.payload;
+      await tx
+        .insert(t.customers)
+        .values({
+          id: cu,
+          tenant_id: tenantId,
+          client_uuid: cu,
+          name: p.name,
+          phone: p.phone ?? null,
+          notes: p.notes ?? null,
+          active: p.active,
+          ...(p.created_at ? { created_at: new Date(p.created_at) } : {}),
+        })
+        .onConflictDoUpdate({
+          target: [t.customers.tenant_id, t.customers.client_uuid],
+          set: {
+            name: p.name,
+            // legacy payloads may omit phone/notes — never wipe stored data
+            ...(p.phone !== undefined ? { phone: p.phone } : {}),
+            ...(p.notes !== undefined ? { notes: p.notes } : {}),
+            active: p.active,
+            updated_at: now,
+          },
+        });
+      return;
+    }
+    case "credit_abono": {
+      const p = m.payload;
+      // (1) the customer must exist IN THIS TENANT (product→category pattern
+      // `:473`) — cross-tenant abonos die here with the same validation
+      // rejection as any other dependency failure.
+      const [customer] = await tx.select({ id: t.customers.id }).from(t.customers)
+        .where(and(eq(t.customers.tenant_id, tenantId), eq(t.customers.id, p.customer_id)));
+      if (!customer) throw new InvalidSync();
+      // (2) optional linkage (D2): the ticket must exist in-tenant AND either
+      // carry no customer (legacy/unattributed) or carry the SAME customer —
+      // an abono can never pay down someone else's debt.
+      if (p.ticket_id) {
+        const [ticket] = await tx.select({ customer_id: t.tickets.customer_id }).from(t.tickets)
+          .where(and(eq(t.tickets.tenant_id, tenantId), eq(t.tickets.id, p.ticket_id)));
+        if (!ticket || (ticket.customer_id !== null && ticket.customer_id !== p.customer_id)) throw new InvalidSync();
+      }
+      // (3) LWW upsert on (tenant_id, client_uuid) — NEVER a second row.
+      // A replay with different content and an older/equal client_ts never
+      // reaches here (applyOne → conflict_hash_mismatch); a NEWER one is the
+      // legitimate last-write-wins update.
+      await tx
+        .insert(t.creditAbonos)
+        .values({
+          id: cu,
+          tenant_id: tenantId,
+          client_uuid: cu,
+          customer_id: p.customer_id,
+          amount: p.amount,
+          method: p.method,
+          shift_id: p.shift_id,
+          ticket_id: p.ticket_id ?? null,
+          note: p.note ?? null,
+          ...(p.created_at ? { created_at: new Date(p.created_at) } : {}),
+        })
+        .onConflictDoUpdate({
+          target: [t.creditAbonos.tenant_id, t.creditAbonos.client_uuid],
+          set: {
+            customer_id: p.customer_id,
+            amount: p.amount,
+            method: p.method,
+            shift_id: p.shift_id,
+            ticket_id: p.ticket_id ?? null,
+            note: p.note ?? null,
+            updated_at: now,
+          },
         });
       return;
     }

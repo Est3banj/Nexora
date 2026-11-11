@@ -51,6 +51,20 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
       body.mutations.forEach((raw, index) => {
         const parsed = mutationEnvelopeSchema.safeParse(raw);
         if (parsed.success) {
+          // D4 owner gate: abonos are owner-only money (same trust level as
+          // transfer confirm), but enforcement is PER-ITEM here — NOT HTTP 403.
+          // A 403 would nuke the member's legitimate sale mutations riding the
+          // same batch ("one poison entry never fails the batch", `:22-25`).
+          // Same `rejected/validation` shape an old server would produce for an
+          // unknown entity, so the response contract stays byte-compatible.
+          if (req.ctx.role !== "owner" && parsed.data.entity === "credit_abono") {
+            preResults.set(index, {
+              client_uuid: parsed.data.client_uuid,
+              status: "rejected",
+              reason: "validation",
+            });
+            return;
+          }
           valid.push({ index, envelope: parsed.data });
           return;
         }

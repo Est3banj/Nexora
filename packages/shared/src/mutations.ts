@@ -27,6 +27,10 @@ export const MUTATION_ENTITIES = [
   "variant",
   "closedcash",
   "shift",
+  // fiado: customers are catalog-ish solo groups (D3 split-group — never
+  // parented into a sale), abonos are money movements in their OWN table.
+  "customer",
+  "credit_abono",
 ] as const;
 
 export const mutationEntitySchema = z.enum(MUTATION_ENTITIES);
@@ -50,6 +54,12 @@ const ticketPayloadSchema = z.object({
   ticket_no: z.number().int().positive(),
   status: z.enum(["completed", "transfer_pending"]),
   total: money,
+  /**
+   * credit attribution (fiado) — OPTIONAL so legacy queued tickets
+   * (pre-deploy, no customer_id column yet) still parse and apply (H4).
+   * Pattern: `unit_cost` on ticket_line (`:63`).
+   */
+  customer_id: uuid.nullable().optional(),
   created_at: isoDate.optional(),
 });
 
@@ -66,7 +76,9 @@ const ticketLinePayloadSchema = z.object({
 
 const paymentPayloadSchema = z.object({
   ticket_id: uuid,
-  method: z.enum(["cash", "transfer"]),
+  // `credit` widens the enum (D1) — the client may CREATE a confirmed credit
+  // row, never a pending one (server-side guard, sync-apply payment case).
+  method: z.enum(["cash", "transfer", "credit"]),
   amount: money,
   tendered: money.nullable(),
   vuelto: money.nullable(),
@@ -131,6 +143,32 @@ const shiftPayloadSchema = z.object({
   closed_at: isoDate.nullable().optional(),
 });
 
+/* fiado (design §5.1) — customer is a SOLO sync group (D3 split-group: it is
+ * never parented into a sale; the sale only carries `ticket.customer_id`).
+ * Duplicate names are legal (D7): uniqueness is (tenant_id, client_uuid). */
+const customerPayloadSchema = z.object({
+  name: z.string().min(1).max(120),
+  phone: z.string().max(40).nullable().optional(),
+  notes: z.string().max(500).nullable().optional(),
+  active: z.boolean().default(true),
+  created_at: isoDate.optional(),
+});
+
+/* Abono = money received against the customer-level balance, OWN table
+ * (never a payment — payments would double-count revenue and break void
+ * evidence sums). amount is integer COP and STRICTLY > 0: a zero abono is
+ * nonsense. method never carries `credit` (an abono is not a new debt). */
+const creditAbonoPayloadSchema = z.object({
+  customer_id: uuid,
+  amount: z.number().int().positive(),
+  method: z.enum(["cash", "transfer"]),
+  shift_id: uuid.nullable(),
+  /** optional attribution (D2) — customer-level when omitted */
+  ticket_id: uuid.nullable().optional(),
+  note: z.string().max(300).nullable().optional(),
+  created_at: isoDate.optional(),
+});
+
 export const mutationPayloadSchemas = {
   ticket: ticketPayloadSchema,
   ticket_line: ticketLinePayloadSchema,
@@ -141,6 +179,8 @@ export const mutationPayloadSchemas = {
   variant: variantPayloadSchema,
   closedcash: closedcashPayloadSchema,
   shift: shiftPayloadSchema,
+  customer: customerPayloadSchema,
+  credit_abono: creditAbonoPayloadSchema,
 } as const;
 
 /* ------------------------------------------------------------------ */
@@ -171,6 +211,8 @@ export const mutationEnvelopeSchema = z.discriminatedUnion("entity", [
   envelopeFor("variant", variantPayloadSchema),
   envelopeFor("closedcash", closedcashPayloadSchema),
   envelopeFor("shift", shiftPayloadSchema),
+  envelopeFor("customer", customerPayloadSchema),
+  envelopeFor("credit_abono", creditAbonoPayloadSchema),
 ]);
 
 export type MutationEnvelope = z.infer<typeof mutationEnvelopeSchema>;

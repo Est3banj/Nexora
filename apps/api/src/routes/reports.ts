@@ -51,6 +51,18 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
     }),
   );
 
+  /**
+   * Por Cobrar (fiado) — server parity for the balance query the Crédito
+   * screen runs locally (same shared SQL, fixture parity both stores).
+   * Any authed role: balances are visible to members, only the abono FORM
+   * is owner-gated (D4, enforced on the sync push path).
+   */
+  app.get(
+    "/api/reports/customer-balances",
+    { preHandler: app.requireAuth },
+    async (req) => ({ rows: await repoFor(req).reports.customerBalances() }),
+  );
+
   app.get(
     "/api/reports/dashboard",
     { preHandler: app.requireAuth },

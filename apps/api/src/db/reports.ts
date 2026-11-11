@@ -1,4 +1,5 @@
 import {
+  CUSTOMER_BALANCES_SQL,
   DASHBOARD_SUMMARY_SQL,
   INVENTORY_VALUE_SQL,
   LOW_STOCK_DEFAULT,
@@ -6,11 +7,13 @@ import {
   SALES_BY_DAY_SQL,
   TOP_PRODUCTS_SQL,
   defaultReportRange,
+  parseCustomerBalances,
   parseDashboardSummary,
   parseInventoryValue,
   parseLowStock,
   parseSalesByDay,
   parseTopProducts,
+  type CustomerBalanceRow,
   type DashboardSummaryRow,
   type InventoryValueRow,
   type LowStockRow,
@@ -72,4 +75,13 @@ export async function inventoryValue(
   return parseInventoryValue(
     await run(INVENTORY_VALUE_SQL, [tenantId, defaultThreshold]),
   );
+}
+
+/**
+ * Por Cobrar (fiado) — balance per customer, derived from stored rows
+ * (never stored on the customer row). Same SQL text the local PGlite cache
+ * runs, so fixture parity holds across both stores. $1 = session tenant.
+ */
+export async function customerBalances(tenantId: string): Promise<CustomerBalanceRow[]> {
+  return parseCustomerBalances(await run(CUSTOMER_BALANCES_SQL, [tenantId]));
 }

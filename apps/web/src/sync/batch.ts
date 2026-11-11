@@ -23,6 +23,9 @@ export function groupQueue<T extends Item>(rows: T[]): T[][] {
   // Topological dependencies matter after upsert-latest moves a new variant
   // to a later sale. Products/categories/shifts precede their consumers;
   // initial stock travels with the sale owning the variant refresh.
+  // `customer_id` is the H7 load-bearing field (fiado D3): a ticket (and an
+  // abono) referencing customer X drags X's SOLO group ahead of its own, so
+  // the customer always lands on the server before the sale that claims it.
   const result:T[][]=[];
   const owner=new Map<string,string>();
   for(const [key,group] of groups) for(const row of group) owner.set(row.client_uuid,key);
@@ -33,7 +36,7 @@ export function groupQueue<T extends Item>(rows: T[]): T[][] {
     const group=groups.get(key)!;
     for(const row of group) {
       const p=row.payload as Record<string,unknown>;
-      for(const field of ["product_id","category_id","variant_id","shift_id"]) {
+      for(const field of ["product_id","category_id","variant_id","shift_id","customer_id"]) {
         const dep=owner.get(p[field] as string);
         if(dep && dep!==key) visit(dep);
       }

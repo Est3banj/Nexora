@@ -18,6 +18,21 @@ export async function voidSale(tenantId: string, actor: string, ticketId: string
       if (!shift || shift.status !== "open" || closed) {
         await c.query("ROLLBACK"); return { error: "shift_closed" as const };
       }
+      // H5 (reconciliation 2026-11-11 — customer-level, money invariant):
+      // ANY abono of the ticket's customer blocks voiding, linked or not.
+      // Balance = Σ credit − Σ abonos and abonos are capped at that balance,
+      // so dropping credit while an abono exists could drive it negative.
+      // Only credit-bearing tickets carry customer_id → cash-only tickets
+      // never match here and stay voidable. Precedence: not_found →
+      // shift_closed → abonos_exist → incomplete_sale (route maps to 409).
+      // Evidence checks below stay untouched: abonos are NOT payments.
+      if (ticket.customer_id) {
+        const abono = (await c.query(
+          "SELECT 1 FROM credit_abonos WHERE tenant_id=$1 AND customer_id=$2 LIMIT 1",
+          [tenantId, ticket.customer_id],
+        )).rows[0];
+        if (abono) { await c.query("ROLLBACK"); return { error: "abonos_exist" as const }; }
+      }
       // Refuse partial sync: derive all quantities and amounts from stored evidence.
       const lines = (await c.query("SELECT * FROM ticket_lines WHERE tenant_id=$1 AND ticket_id=$2", [tenantId, ticketId])).rows;
       const payments = (await c.query("SELECT * FROM payments WHERE tenant_id=$1 AND ticket_id=$2", [tenantId, ticketId])).rows;

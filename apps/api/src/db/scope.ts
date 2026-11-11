@@ -136,6 +136,67 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
         return rows.length;
       },
     },
+
+    /**
+     * Fiado customers — D7: unique(tenant_id, client_uuid) ONLY, names may
+     * repeat (duplicate prevention is picker UX, not a DB constraint).
+     * `list()` with no filter returns EVERY row incl. inactive: rehydrate of a
+     * rebuilt device must not resurrect deactivated customers as active.
+     */
+    customers: {
+      list(opts: { active?: boolean; limit?: number } = {}) {
+        const conds: SQL[] = [eq(t.customers.tenant_id, tenantId)];
+        if (opts.active !== undefined)
+          conds.push(eq(t.customers.active, opts.active));
+        return db
+          .select()
+          .from(t.customers)
+          .where(and(...conds))
+          .orderBy(t.customers.name)
+          .limit(opts.limit ?? 500);
+      },
+      async byUuid(id: string) {
+        const rows = await db
+          .select()
+          .from(t.customers)
+          .where(and(eq(t.customers.tenant_id, tenantId), eq(t.customers.id, id)));
+        return rows[0];
+      },
+      async upsert(input: {
+        client_uuid: string;
+        name: string;
+        phone?: string | null;
+        notes?: string | null;
+        active?: boolean;
+        created_at?: Date;
+      }) {
+        const rows = await db
+          .insert(t.customers)
+          .values({
+            id: input.client_uuid,
+            tenant_id: tenantId,
+            client_uuid: input.client_uuid,
+            name: input.name,
+            phone: input.phone ?? null,
+            notes: input.notes ?? null,
+            active: input.active ?? true,
+            created_at: input.created_at ?? now(),
+          })
+          .onConflictDoUpdate({
+            target: [t.customers.tenant_id, t.customers.client_uuid],
+            set: {
+              name: input.name,
+              // omitted fields are never wiped (products.upsert pattern)
+              ...(input.phone !== undefined ? { phone: input.phone } : {}),
+              ...(input.notes !== undefined ? { notes: input.notes } : {}),
+              ...(input.active !== undefined ? { active: input.active } : {}),
+              updated_at: now(),
+            },
+          })
+          .returning();
+        return rows[0];
+      },
+    },
     products: {
       list(opts: { active?: boolean; limit?: number } = {}) {
         const conds: SQL[] = [eq(t.products.tenant_id, tenantId)];
@@ -651,6 +712,8 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
         ticket_no: number;
         status?: string;
         total: number;
+        /** fiado credit link — optional so legacy/cash tickets stay valid */
+        customer_id?: string | null;
         created_at?: Date;
       }) {
         const rows = await db
@@ -663,6 +726,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
             ticket_no: input.ticket_no,
             status: input.status ?? "completed",
             total: input.total,
+            ...(input.customer_id !== undefined ? { customer_id: input.customer_id } : {}),
             created_at: input.created_at ?? now(),
           })
           .onConflictDoUpdate({
@@ -672,6 +736,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
               ticket_no: input.ticket_no,
               status: input.status ?? "completed",
               total: input.total,
+              ...(input.customer_id !== undefined ? { customer_id: input.customer_id } : {}),
               updated_at: now(),
             },
           })
@@ -883,6 +948,48 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
     },
 
     /**
+     * Abonos (fiado) — OWN table, append-only: the repo exposes reads only,
+     * no update()/delete(). Rows are written by the sync apply path and by
+     * local commit; a mistake is corrected with a NEW compensating row.
+     */
+    creditAbonos: {
+      /** Rehydrate page: newest first (same tail pattern as stockdiary). */
+      async listRecent(opts: { limit?: number; offset?: number } = {}) {
+        const q = db
+          .select()
+          .from(t.creditAbonos)
+          .where(eq(t.creditAbonos.tenant_id, tenantId))
+          .orderBy(desc(t.creditAbonos.created_at))
+          .limit(opts.limit ?? 100);
+        return opts.offset ? q.offset(opts.offset) : q;
+      },
+      async listByCustomer(customer_id: string) {
+        return db
+          .select()
+          .from(t.creditAbonos)
+          .where(
+            and(
+              eq(t.creditAbonos.tenant_id, tenantId),
+              eq(t.creditAbonos.customer_id, customer_id),
+            ),
+          )
+          .orderBy(desc(t.creditAbonos.created_at));
+      },
+      async listByTicket(ticket_id: string) {
+        return db
+          .select()
+          .from(t.creditAbonos)
+          .where(
+            and(
+              eq(t.creditAbonos.tenant_id, tenantId),
+              eq(t.creditAbonos.ticket_id, ticket_id),
+            ),
+          )
+          .orderBy(desc(t.creditAbonos.created_at));
+      },
+    },
+
+    /**
      * closedcash is IMMUTABLE by construction (cash-close spec): the repo
      * exposes upsert + read only — there is no update() method.
      */
@@ -1017,6 +1124,10 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
       },
       async inventoryValue(defaultThreshold?: number) {
         return reportsDb.inventoryValue(tenantId, defaultThreshold);
+      },
+      /** Por Cobrar (fiado): Σ confirmed credit − Σ abonos, balance > 0. */
+      async customerBalances() {
+        return reportsDb.customerBalances(tenantId);
       },
     },
 
