@@ -12,7 +12,7 @@ import {
   localTopProducts,
 } from "../db/local-reports";
 import { useSync } from "../hooks/useSync";
-import { downloadCsv } from "../lib/csv";
+import { downloadXlsx } from "../lib/excel";
 
 const cop = (n: number) =>
   new Intl.NumberFormat("es-CO", {
@@ -20,6 +20,9 @@ const cop = (n: number) =>
     currency: "COP",
     maximumFractionDigits: 0,
   }).format(n);
+
+/** Raw COP integer for spreadsheet cells (Excel formats poorly with $ strings). */
+const num = (n: number) => n;
 
 type Props = {
   db: PGlite;
@@ -30,12 +33,8 @@ type Props = {
 type View = "sales" | "top" | "low";
 
 /**
- * Reports screen (tasks D3-4 + D3-5, reports spec).
- *
- * Runs the SHARED report SQL against the local cache (identical WASM
- * Postgres) so it works offline; while the sync queue has pending rows a
- * visible "may be incomplete" banner is shown and clears by itself when
- * the queue drains (spec §Offline report behavior).
+ * Reports screen — accounting-style tables (headers + totals row),
+ * real .xlsx export, offline-first over PGlite with staleness banner.
  */
 export function Reports({ db, tenantId, refreshToken }: Props) {
   const sync = useSync();
@@ -69,28 +68,54 @@ export function Reports({ db, tenantId, refreshToken }: Props) {
   const stale = sync.pending > 0;
   const totalRevenue = sales.reduce((acc, r) => acc + r.revenue, 0);
   const totalPending = sales.reduce((acc, r) => acc + r.pending, 0);
+  const totalCash = sales.reduce((acc, r) => acc + r.cash, 0);
+  const totalTransfer = sales.reduce((acc, r) => acc + r.transfer, 0);
+  const totalQty = top.reduce((acc, r) => acc + r.qty, 0);
 
-  function exportCsv() {
+  function exportExcel() {
     if (view === "sales") {
-      downloadCsv(
-        `nexora-ventas-${range.from}_${range.to}.csv`,
-        ["día", "tickets", "ingresos", "pendiente", "efectivo", "transferencia"],
-        sales.map((r) => [r.day, r.tickets, r.revenue, r.pending, r.cash, r.transfer]),
+      downloadXlsx(
+        `nexora-ventas-${range.from}_${range.to}.xlsx`,
+        "Ventas",
+        ["Fecha", "Tickets", "Efectivo", "Transferencia", "Pendiente", "Ingresos"],
+        sales.map((r) => [
+          r.day,
+          num(r.tickets),
+          num(r.cash),
+          num(r.transfer),
+          num(r.pending),
+          num(r.revenue),
+        ]),
+        [
+          "TOTAL",
+          sales.reduce((a, r) => a + r.tickets, 0),
+          num(totalCash),
+          num(totalTransfer),
+          num(totalPending),
+          num(totalRevenue),
+        ],
       );
     } else if (view === "top") {
-      downloadCsv(
-        `nexora-top-${range.from}_${range.to}.csv`,
-        ["producto", "variante", "cantidad", "ingresos"],
-        top.map((r) => [r.product_name, r.variant_name, r.qty, r.revenue]),
+      downloadXlsx(
+        `nexora-top-${range.from}_${range.to}.xlsx`,
+        "Top productos",
+        ["#", "Producto", "Variante", "Unidades", "Ingresos"],
+        top.map((r, i) => [i + 1, r.product_name, r.variant_name, num(r.qty), num(r.revenue)]),
+        ["", "TOTAL", "", num(totalQty), num(top.reduce((a, r) => a + r.revenue, 0))],
       );
     } else {
-      downloadCsv(
-        "nexora-stock-bajo.csv",
-        ["producto", "variante", "stock", "mínimo"],
-        low.map((r) => [r.product_name, r.variant_name, r.stock, r.threshold]),
+      downloadXlsx(
+        "nexora-stock-bajo",
+        "Stock bajo",
+        ["Producto", "Variante", "Stock", "Mínimo"],
+        low.map((r) => [r.product_name, r.variant_name, num(r.stock), num(r.threshold)]),
+        ["", "TOTAL", low.reduce((a, r) => a + r.stock, 0), ""],
       );
     }
   }
+
+  const hasData =
+    view === "sales" ? sales.length > 0 : view === "top" ? top.length > 0 : low.length > 0;
 
   return (
     <div className="screen reports">
@@ -98,15 +123,19 @@ export function Reports({ db, tenantId, refreshToken }: Props) {
         <h2 style={{ margin: 0 }}>Reportes</h2>
         <button
           className="btn small"
-          data-testid="export-csv"
-          onClick={exportCsv}
-          disabled={view === "sales" ? sales.length === 0 : view === "top" ? top.length === 0 : low.length === 0}
+          data-testid="export-excel"
+          onClick={exportExcel}
+          disabled={!hasData}
         >
-          Exportar CSV
+          Exportar Excel
         </button>
       </div>
 
-      <p className="muted">Ventas y productos excluyen tickets anulados; stock incluye su restitución.</p>
+      <p className="muted">
+        Ventas y productos excluyen tickets anulados; stock incluye su restitución.
+        Los montos en las planillas son pesos enteros (sin símbolo).
+      </p>
+
       {stale && (
         <div className="warn-banner" data-testid="reports-staleness" role="status">
           Los datos pueden estar incompletos — sincronizá para ver el estado
@@ -126,9 +155,7 @@ export function Reports({ db, tenantId, refreshToken }: Props) {
           data-testid="report-from"
           type="date"
           value={range.from}
-          onChange={(e) =>
-            setRange((r) => ({ ...r, from: e.target.value || r.from }))
-          }
+          onChange={(e) => setRange((r) => ({ ...r, from: e.target.value || r.from }))}
         />
         <label htmlFor="rep-to">Hasta</label>
         <input
@@ -171,85 +198,128 @@ export function Reports({ db, tenantId, refreshToken }: Props) {
       )}
 
       {view === "sales" && (
-        <div className="card" data-testid="report-sales">
-          <div className="row space-between">
-            <span className="muted">Ingresos confirmados</span>
-            <strong data-testid="sales-total">{cop(totalRevenue)}</strong>
-          </div>
-          {totalPending > 0 && (
-            <div className="row space-between">
-              <span className="muted">Pendientes (no son ingresos)</span>
-              <strong data-testid="sales-pending-total">{cop(totalPending)}</strong>
-            </div>
-          )}
+        <div className="card report-card" data-testid="report-sales">
           {sales.length === 0 ? (
             <div className="empty-state" data-testid="empty-sales">
               <p>Sin ventas en este período.</p>
             </div>
           ) : (
-            sales.map((r) => (
-              <div className="report-row" key={r.day} data-testid="sales-day">
-                <div className="row space-between">
-                  <strong>{r.day}</strong>
-                  <strong>{cop(r.revenue)}</strong>
-                </div>
-                <div className="row space-between muted">
-                  <span>{r.tickets} tickets</span>
-                  <span>
-                    {cop(r.cash)} efectivo
-                    {r.transfer > 0 ? ` · ${cop(r.transfer)} transf.` : ""}
-                    {r.pending > 0 ? ` · ${cop(r.pending)} pendiente` : ""}
-                  </span>
-                </div>
-              </div>
-            ))
+            <>
+              <table className="rpt-table" data-testid="sales-table">
+                <thead>
+                  <tr>
+                    <th>Fecha</th>
+                    <th className="n">Tickets</th>
+                    <th className="n">Efectivo</th>
+                    <th className="n">Transferencia</th>
+                    <th className="n">Pendiente</th>
+                    <th className="n">Ingresos</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sales.map((r) => (
+                    <tr key={r.day} data-testid="sales-day">
+                      <td>{r.day}</td>
+                      <td className="n">{r.tickets}</td>
+                      <td className="n">{cop(r.cash)}</td>
+                      <td className="n">{cop(r.transfer)}</td>
+                      <td className="n">{cop(r.pending)}</td>
+                      <td className="n strong">{cop(r.revenue)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td>TOTAL</td>
+                    <td className="n">{sales.reduce((a, r) => a + r.tickets, 0)}</td>
+                    <td className="n">{cop(totalCash)}</td>
+                    <td className="n">{cop(totalTransfer)}</td>
+                    <td className="n">{cop(totalPending)}</td>
+                    <td className="n strong" data-testid="sales-total">
+                      {cop(totalRevenue)}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+              {totalPending > 0 && (
+                <p className="muted" data-testid="sales-pending-total" style={{ margin: "8px 0 0" }}>
+                  {cop(totalPending)} pendientes de confirmar — no son ingresos todavía.
+                </p>
+              )}
+            </>
           )}
         </div>
       )}
 
       {view === "top" && (
-        <div className="card" data-testid="report-top">
+        <div className="card report-card" data-testid="report-top">
           {top.length === 0 ? (
             <div className="empty-state" data-testid="empty-top">
               <p>Sin ventas en este período.</p>
             </div>
           ) : (
-            top.map((r, i) => (
-              <div className="report-row" key={r.variant_id} data-testid="top-row">
-                <div className="row space-between">
-                  <strong>
-                    {i + 1}. {r.product_name} · {r.variant_name}
-                  </strong>
-                  <strong>{cop(r.revenue)}</strong>
-                </div>
-                <div className="row space-between muted">
-                  <span>{r.qty} unidades</span>
-                </div>
-              </div>
-            ))
+            <table className="rpt-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Producto</th>
+                  <th>Variante</th>
+                  <th className="n">Unidades</th>
+                  <th className="n">Ingresos</th>
+                </tr>
+              </thead>
+              <tbody>
+                {top.map((r, i) => (
+                  <tr key={r.variant_id} data-testid="top-row">
+                    <td>{i + 1}</td>
+                    <td className="strong">{r.product_name}</td>
+                    <td>{r.variant_name}</td>
+                    <td className="n">{r.qty}</td>
+                    <td className="n strong">{cop(r.revenue)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td colSpan={3}>TOTAL</td>
+                  <td className="n">{totalQty}</td>
+                  <td className="n strong">
+                    {cop(top.reduce((a, r) => a + r.revenue, 0))}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
           )}
         </div>
       )}
 
       {view === "low" && (
-        <div className="card" data-testid="report-low">
+        <div className="card report-card" data-testid="report-low">
           {low.length === 0 ? (
             <div className="empty-state" data-testid="empty-low">
               <p>Ningún producto está por debajo del mínimo.</p>
             </div>
           ) : (
-            low.map((r) => (
-              <div className="report-row" key={r.variant_id} data-testid="low-row">
-                <div className="row space-between">
-                  <strong>
-                    {r.product_name} · {r.variant_name}
-                  </strong>
-                  <strong className={r.stock < 0 ? "error" : ""}>
-                    {r.stock} / mín {r.threshold}
-                  </strong>
-                </div>
-              </div>
-            ))
+            <table className="rpt-table">
+              <thead>
+                <tr>
+                  <th>Producto</th>
+                  <th>Variante</th>
+                  <th className="n">Stock</th>
+                  <th className="n">Mínimo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {low.map((r) => (
+                  <tr key={r.variant_id} data-testid="low-row">
+                    <td className="strong">{r.product_name}</td>
+                    <td>{r.variant_name}</td>
+                    <td className={`n ${r.stock < 0 ? "neg" : ""}`}>{r.stock}</td>
+                    <td className="n">{r.threshold}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </div>
       )}

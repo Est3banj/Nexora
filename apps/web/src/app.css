@@ -1709,3 +1709,66 @@ select {
     align-items: center;
   }
 }
+
+/* ── accounting report tables (#4) ──────────────────────── */
+
+.report-card {
+  padding: 0;
+  overflow-x: auto;
+}
+
+.rpt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.rpt-table th,
+.rpt-table td {
+  padding: 10px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.rpt-table th {
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+  position: sticky;
+  top: 0;
+}
+
+.rpt-table th.n,
+.rpt-table td.n {
+  text-align: right;
+}
+
+.rpt-table td.strong {
+  font-weight: 700;
+}
+
+.rpt-table td.neg {
+  color: var(--danger);
+}
+
+.rpt-table tbody tr:hover td {
+  background: var(--surface-2);
+}
+
+.rpt-table tfoot td {
+  border-top: 2px solid var(--text);
+  border-bottom: none;
+  font-weight: 700;
+  background: var(--surface-2);
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.rpt-table tfoot td.n {
+  text-align: right;
+}
