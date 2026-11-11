@@ -61,8 +61,13 @@ test.describe("Batch B — shortcuts + quick annul", () => {
       .poll(() => dbOne("SELECT status FROM payments"), { timeout: 15_000 })
       .toBe("confirmed");
 
-    /* F2 → transfer method + focus on the transfer button */
-    await page.getByTestId("new-sale").click();
+    /* confirmed cash sale → Panel shows the hour-of-day profile */
+    await page.getByTestId("tab-dashboard").click();
+    await expect(page.getByTestId("dash-hours")).toBeVisible();
+    await expect(page.locator(".hour-bar.peak")).toHaveCount(1);
+
+    /* F2 flow: back to a fresh Sale (tab remount resets view + cart) */
+    await page.getByTestId("tab-sale").click();
     await page
       .getByTestId("sale-item")
       .filter({ hasText: "Atajo E2E" })

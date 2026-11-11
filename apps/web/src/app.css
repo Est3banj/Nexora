@@ -1767,6 +1767,56 @@ select {
   padding-bottom: 0;
 }
 
+/* ── Panel · horas pico (Batch D) — pure CSS bars, zero chart deps ── */
+
+.hour-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 112px;
+}
+
+.hour-bar {
+  flex: 1;
+  min-width: 0;
+  background: var(--primary);
+  opacity: 0.35;
+  border-radius: 3px 3px 0 0;
+  transition: height var(--dur) var(--ease-out);
+}
+
+.hour-bar.peak {
+  opacity: 1;
+}
+
+.hour-bar.empty {
+  background: var(--surface-3);
+  opacity: 1;
+}
+
+.hour-labels {
+  display: flex;
+  gap: 2px;
+  margin-top: 4px;
+  font-size: 0.68rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.hour-labels span {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* Narrow phones: cells are ~13px — keep only 0h/12h, alignment preserved */
+@media (max-width: 479px) {
+  .hour-labels .lab-opt {
+    visibility: hidden;
+  }
+}
+
 /* ── Tanda C polish ──────────────────────────────────────── */
 
 .screen > h2 {
@@ -1855,6 +1905,86 @@ select {
     border: 1px solid #000;
     background: #fff !important;
     color: #000 !important;
+  }
+}
+
+/* ── corte de caja imprimible (Batch D) — térmica 58/80mm ────────────
+   The browser print dialog IS the PDF engine (no jsPDF — it scales badly
+   on receipt paper). Gated by body.printing-corte so ticket/success
+   prints (ticket-print.css) keep their own chrome-hiding behavior. */
+
+.print-corte {
+  display: none;
+}
+
+@media print {
+  body.printing-corte #root {
+    display: none !important;
+  }
+
+  body.printing-corte .print-corte {
+    display: block !important;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.4;
+    color: #000;
+    background: #fff;
+    padding: 0;
+    margin: 0;
+  }
+
+  .print-corte h1 {
+    margin: 0;
+    font-size: 15px;
+    text-align: center;
+    letter-spacing: 0.06em;
+  }
+
+  .print-corte p {
+    margin: 2px 0;
+  }
+
+  .pc-center {
+    text-align: center;
+  }
+
+  .pc-dash {
+    border-top: 1px dashed #000;
+    margin: 6px 0;
+  }
+
+  .pc-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .pc-strong {
+    font-weight: 700;
+  }
+
+  .pc-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 10.5px;
+  }
+
+  .pc-table th,
+  .pc-table td {
+    padding: 1px 0;
+    text-align: left;
+    font-weight: 400;
+  }
+
+  .pc-table th {
+    border-bottom: 1px solid #000;
+    font-weight: 700;
+  }
+
+  .pc-table td:not(:first-child),
+  .pc-table th:not(:first-child) {
+    text-align: right;
+    padding-left: 6px;
   }
 }
 

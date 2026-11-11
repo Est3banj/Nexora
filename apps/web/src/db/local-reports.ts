@@ -4,16 +4,19 @@ import {
   LOW_STOCK_DEFAULT,
   LOW_STOCK_SQL,
   SALES_BY_DAY_SQL,
+  SALES_BY_HOUR_SQL,
   TOP_PRODUCTS_SQL,
   parseDashboardSummary,
   parseInventoryValue,
   parseLowStock,
   parseSalesByDay,
+  parseSalesByHour,
   parseTopProducts,
   type DashboardSummaryRow,
   type InventoryValueRow,
   type LowStockRow,
   type SalesByDayRow,
+  type SalesByHourRow,
   type TopProductRow,
 } from "@pos/shared";
 import type { PGlite } from "@electric-sql/pglite";
@@ -40,6 +43,19 @@ export async function localSalesByDay(
     range.to,
   ]);
   return parseSalesByDay(res.rows);
+}
+
+export async function localSalesByHour(
+  db: Q,
+  tenantId: string,
+  range: { from: string; to: string },
+): Promise<SalesByHourRow[]> {
+  const res = await db.query<Record<string, unknown>>(SALES_BY_HOUR_SQL, [
+    tenantId,
+    range.from,
+    range.to,
+  ]);
+  return parseSalesByHour(res.rows);
 }
 
 export async function localTopProducts(

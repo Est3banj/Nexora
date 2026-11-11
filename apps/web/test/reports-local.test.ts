@@ -10,6 +10,7 @@ import {
   hasUnsyncedMutations,
   localLowStock,
   localSalesByDay,
+  localSalesByHour,
   localTopProducts,
 } from "../src/db/local-reports";
 
@@ -118,5 +119,47 @@ describe("staleness (reports spec §Offline report behavior)", () => {
       [TENANT],
     );
     expect(await hasUnsyncedMutations(db, TENANT)).toBe(false);
+  });
+});
+
+describe("sales by hour (Panel · horas pico)", () => {
+  it("buckets confirmed sales by LOCAL hour; pending payments excluded", async () => {
+    /*17:00Z = 12:00 America/Bogota (UTC-5, no DST) → hour12 deterministic */
+    const at = "2026-11-05T17:00:00.000Z";
+    const confirmedTicket = crypto.randomUUID();
+    const pendingTicket = crypto.randomUUID();
+    await db.query(
+      `INSERT INTO tickets (id, tenant_id, client_uuid, ticket_no, status, total, created_at)
+       VALUES ($1,$2,$1,1,'completed',5000,$3)`,
+      [confirmedTicket, TENANT, at],
+    );
+    await db.query(
+      `INSERT INTO payments (id, tenant_id, client_uuid, ticket_id, method, amount, tendered, vuelto, status, created_at)
+       VALUES ($1,$2,$1,$3,'cash',5000,5000,0,'confirmed',$4)`,
+      [crypto.randomUUID(), TENANT, confirmedTicket, at],
+    );
+    /* pending transfer in the SAME hour must not appear */
+    await db.query(
+      `INSERT INTO tickets (id, tenant_id, client_uuid, ticket_no, status, total, created_at)
+       VALUES ($1,$2,$1,2,'transfer_pending',7000,$3)`,
+      [pendingTicket, TENANT, at],
+    );
+    await db.query(
+      `INSERT INTO payments (id, tenant_id, client_uuid, ticket_id, method, amount, status, created_at)
+       VALUES ($1,$2,$1,$3,'transfer',7000,'pending',$4)`,
+      [crypto.randomUUID(), TENANT, pendingTicket, at],
+    );
+
+    const rows = await localSalesByHour(db, TENANT, {
+      from: "2026-11-01",
+      to: "2026-11-30",
+    });
+    expect(rows).toEqual([{ hour: 12, tickets: 1, revenue: 5000 }]);
+  });
+
+  it("empty range → empty rows", async () => {
+    expect(
+      await localSalesByHour(db, TENANT, { from: "2027-01-01", to: "2027-01-07" }),
+    ).toEqual([]);
   });
 });

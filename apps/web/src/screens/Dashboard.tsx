@@ -5,12 +5,14 @@ import {
   type DashboardSummaryRow,
   type InventoryValueRow,
   type LowStockRow,
+  type SalesByHourRow,
   type TopProductRow,
 } from "@pos/shared";
 import {
   localDashboardSummary,
   localInventoryValue,
   localLowStock,
+  localSalesByHour,
   localTopProducts,
 } from "../db/local-reports";
 import { useSync } from "../hooks/useSync";
@@ -82,23 +84,26 @@ export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
   const [inventory, setInventory] = useState<InventoryValueRow | null>(null);
   const [top, setTop] = useState<TopProductRow[]>([]);
   const [low, setLow] = useState<LowStockRow[]>([]);
+  const [hours, setHours] = useState<SalesByHourRow[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
       const range = rangeFor(period);
-      const [s, p, inv, t, l] = await Promise.all([
+      const [s, p, inv, t, l, h] = await Promise.all([
         localDashboardSummary(db, tenantId, range),
         localDashboardSummary(db, tenantId, prevRangeFor(period)),
         localInventoryValue(db, tenantId),
         localTopProducts(db, tenantId, range),
         localLowStock(db, tenantId),
+        localSalesByHour(db, tenantId, range),
       ]);
       setSummary(s);
       setPrev(p);
       setInventory(inv);
       setTop(t);
       setLow(l);
+      setHours(h);
       setError(null);
     } catch {
       setError("No se pudieron calcular los indicadores");
@@ -128,6 +133,11 @@ export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
 
   const pendingCount = summary?.pending_count ?? 0;
   const needsAttention = pendingCount > 0 || low.length > 0;
+
+  /* Hour-of-day profile (Batch D) — pure CSS bars, zero chart deps. */
+  const peakRevenue = hours.reduce((m, h) => Math.max(m, h.revenue), 0);
+  const showHours = peakRevenue > 0;
+  const peakHour = hours.find((h) => h.revenue === peakRevenue)?.hour;
 
   return (
     <div className="screen dashboard">
@@ -299,6 +309,48 @@ export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
               </div>
             )}
           </div>
+
+          {/* ── horas pico: barras CSS puras, sin lib de gráficos ── */}
+          {showHours && (
+            <div className="card" data-testid="dash-hours">
+              <h3>Horas pico</h3>
+              <p className="muted">
+                Ingresos confirmados por hora · pico a las {peakHour}h
+              </p>
+              <div
+                className="hour-bars"
+                role="img"
+                aria-label={`Ingresos por hora del día; pico a las ${peakHour}h con ${cop(peakRevenue)}`}
+              >
+                {Array.from({ length: 24 }, (_, hour) => {
+                  const row = hours.find((r) => r.hour === hour);
+                  const pct =
+                    row && peakRevenue > 0
+                      ? Math.max(4, Math.round((row.revenue / peakRevenue) * 100))
+                      : 0;
+                  const isPeak = row?.revenue === peakRevenue && peakRevenue > 0;
+                  return (
+                    <div
+                      key={hour}
+                      className={`hour-bar${isPeak ? " peak" : ""}${pct === 0 ? " empty" : ""}`}
+                      style={{ height: pct === 0 ? "3px" : `${pct}%` }}
+                      title={`${hour}:00 — ${cop(row?.revenue ?? 0)} · ${row?.tickets ?? 0} tickets`}
+                    />
+                  );
+                })}
+              </div>
+              <div className="hour-labels" aria-hidden>
+                {Array.from({ length: 24 }, (_, hour) => (
+                  <span
+                    key={hour}
+                    className={hour === 6 || hour === 18 ? "lab-opt" : ""}
+                  >
+                    {hour % 6 === 0 ? `${hour}h` : ""}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="card">
             <h3>Top productos</h3>

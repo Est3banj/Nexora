@@ -32,6 +32,23 @@ WHERE p.tenant_id = $1
 GROUP BY 1
 ORDER BY 1`;
 
+/**
+ * Hour-of-day profile for the Panel "Horas pico" card — $1 tenant · $2 from · $3 to.
+ * Buckets by LOCAL hour (America/Bogota) across the whole range, so a 7-day
+ * window shows the shop's typical day shape (which hours are busy).
+ */
+export const SALES_BY_HOUR_SQL = /* sql */ `
+SELECT EXTRACT(HOUR FROM (p.created_at AT TIME ZONE 'America/Bogota'))::int AS hour,
+       COUNT(DISTINCT p.ticket_id) FILTER (WHERE p.status = 'confirmed') AS tickets,
+       COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'confirmed'), 0) AS revenue
+FROM payments p
+WHERE p.tenant_id = $1
+  AND NOT EXISTS (SELECT 1 FROM tickets tk WHERE tk.tenant_id=p.tenant_id AND tk.id=p.ticket_id AND tk.status='voided')
+  AND (p.created_at AT TIME ZONE 'America/Bogota')::date >= $2::date
+  AND (p.created_at AT TIME ZONE 'America/Bogota')::date <= $3::date
+GROUP BY 1
+ORDER BY 1`;
+
 /** $1 = tenant_id · $2 = from · $3 = to (both inclusive, local day). */
 export const TOP_PRODUCTS_SQL = /* sql */ `
 SELECT l.variant_id AS variant_id,
@@ -79,6 +96,12 @@ export type SalesByDayRow = {
   transfer: number;
 };
 
+export type SalesByHourRow = {
+  hour: number;
+  tickets: number;
+  revenue: number;
+};
+
 export type TopProductRow = {
   variant_id: string;
   variant_name: string;
@@ -114,6 +137,14 @@ export function parseSalesByDay(rows: RawRow[]): SalesByDayRow[] {
     pending: num(r.pending),
     cash: num(r.cash),
     transfer: num(r.transfer),
+  }));
+}
+
+export function parseSalesByHour(rows: RawRow[]): SalesByHourRow[] {
+  return rows.map((r) => ({
+    hour: num(r.hour),
+    tickets: num(r.tickets),
+    revenue: num(r.revenue),
   }));
 }
 

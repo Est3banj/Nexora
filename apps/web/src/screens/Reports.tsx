@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import type { PGlite } from "@electric-sql/pglite";
 import {
   defaultReportRange,
@@ -28,15 +29,20 @@ type Props = {
   db: PGlite;
   tenantId: string;
   refreshToken: number;
+  tenantName?: string;
 };
 
 type View = "sales" | "top" | "low";
+
+/** 'YYYY-MM-DD' → '05/11/2026' (noon anchor avoids TZ day-shift). */
+const fmtDay = (iso: string) =>
+  new Date(`${iso}T12:00:00`).toLocaleDateString("es-CO");
 
 /**
  * Reports screen — accounting-style tables (headers + totals row),
  * real .xlsx export, offline-first over PGlite with staleness banner.
  */
-export function Reports({ db, tenantId, refreshToken }: Props) {
+export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
   const sync = useSync();
   const [view, setView] = useState<View>("sales");
   const [range, setRange] = useState(() => defaultReportRange());
@@ -117,18 +123,115 @@ export function Reports({ db, tenantId, refreshToken }: Props) {
   const hasData =
     view === "sales" ? sales.length > 0 : view === "top" ? top.length > 0 : low.length > 0;
 
+  /**
+   * Corte de caja for thermal printers (58/80mm) — browser print dialog, no
+   * PDF lib (jsPDF scales badly on receipt paper; the dialog also offers
+   * "Save as PDF"). The class gates the print CSS so ONLY the corte prints —
+   * ticket/success prints keep their own chrome-hiding rules untouched.
+   * window.print() blocks until the dialog closes → finally is safe.
+   */
+  function printCorte() {
+    document.body.classList.add("printing-corte");
+    try {
+      window.print();
+    } finally {
+      document.body.classList.remove("printing-corte");
+    }
+  }
+
+  const totalTickets = sales.reduce((acc, r) => acc + r.tickets, 0);
+
+  const corte = createPortal(
+    <div className="print-corte" data-testid="print-corte">
+      <h1>NEXORA</h1>
+      {tenantName && <p className="pc-center">{tenantName}</p>}
+      <p className="pc-center">CORTE DE CAJA</p>
+      <p className="pc-center">
+        {fmtDay(range.from)} — {fmtDay(range.to)}
+      </p>
+      <div className="pc-dash" />
+      <div className="pc-row">
+        <span>Tickets</span>
+        <span>{totalTickets}</span>
+      </div>
+      <div className="pc-row">
+        <span>Efectivo</span>
+        <span>{cop(totalCash)}</span>
+      </div>
+      <div className="pc-row">
+        <span>Transferencia</span>
+        <span>{cop(totalTransfer)}</span>
+      </div>
+      <div className="pc-row">
+        <span>Pendiente</span>
+        <span>{cop(totalPending)}</span>
+      </div>
+      <div className="pc-row pc-strong">
+        <span>Ingresos</span>
+        <span>{cop(totalRevenue)}</span>
+      </div>
+      <div className="pc-dash" />
+      <table className="pc-table">
+        <thead>
+          <tr>
+            <th>Fecha</th>
+            <th>T</th>
+            <th>Efect.</th>
+            <th>Transf.</th>
+            <th>Ingresos</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sales.map((r) => (
+            <tr key={r.day}>
+              <td>{fmtDay(r.day)}</td>
+              <td>{r.tickets}</td>
+              <td>{cop(r.cash)}</td>
+              <td>{cop(r.transfer)}</td>
+              <td>{cop(r.revenue)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="pc-dash" />
+      {totalPending > 0 && (
+        <p>
+          ¡Atención! {cop(totalPending)} pendientes de confirmar — no son
+          ingresos todavía.
+        </p>
+      )}
+      <p className="pc-center">
+        Generado {new Date().toLocaleString("es-CO", { dateStyle: "short", timeStyle: "short" })}
+        {" · "}Excluye tickets anulados.
+      </p>
+    </div>,
+    document.body,
+  );
+
   return (
-    <div className="screen reports">
+    <>
+      <div className="screen reports">
       <div className="row space-between" style={{ marginBottom: 12 }}>
         <h2 style={{ margin: 0 }}>Reportes</h2>
-        <button
-          className="btn small"
-          data-testid="export-excel"
-          onClick={exportExcel}
-          disabled={!hasData}
-        >
-          Exportar Excel
-        </button>
+        <div className="row" style={{ gap: 8 }}>
+          <button
+            className="btn small"
+            data-testid="corte-print"
+            onClick={printCorte}
+            disabled={sales.length === 0}
+            title="Se abre el diálogo de impresión — elegí la térmica 58/80mm o Guardar como PDF"
+          >
+            Corte de caja
+          </button>
+          <button
+            className="btn small"
+            data-testid="export-excel"
+            onClick={exportExcel}
+            disabled={!hasData}
+          >
+            Exportar Excel
+          </button>
+        </div>
       </div>
 
       <p className="muted">
@@ -325,6 +428,8 @@ export function Reports({ db, tenantId, refreshToken }: Props) {
           )}
         </div>
       )}
-    </div>
+      </div>
+      {corte}
+    </>
   );
 }

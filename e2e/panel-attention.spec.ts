@@ -55,6 +55,9 @@ test.describe("Panel — attention metrics", () => {
     const attention = page.getByTestId("dash-attention-title");
     await expect(attention).toBeVisible();
 
+    /* only a PENDING transfer exists → no confirmed hours → card hidden */
+    await expect(page.getByTestId("dash-hours")).toHaveCount(0);
+
     const pendingCard = page.getByTestId("kpi-pending");
     await expect(pendingCard).toBeVisible();
     await expect(page.getByTestId("pending-count")).toContainText("1 pago");

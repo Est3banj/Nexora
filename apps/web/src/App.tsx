@@ -528,6 +528,7 @@ export default function App() {
             db={local.db}
             tenantId={tenantId}
             refreshToken={refreshToken}
+            tenantName={tenantName}
           />
         )}
         </main>
