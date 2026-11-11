@@ -12,6 +12,8 @@
   --surface: #ffffff;
   --surface-2: #f0f1f5;
   --surface-3: #e6e8ee;
+  /* order panel: quiet primary tint so the cart reads as its own document */
+  --surface-accent: #f6f9ff;
   --border: #dfe2e9;
   --text: #16181d;
   --muted: #6b7280;
@@ -389,7 +391,12 @@ button {
 
 .tabbar button {
   min-height: 56px;
-  padding: 0 1px;
+  padding: 6px 1px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
   background: none;
   border: none;
   color: var(--muted);
@@ -927,18 +934,25 @@ button {
   min-height: 52px;
 }
 
+/* Denominations: compact pill grid (4 cols) — Exacto spans 2 (most-tapped) */
 .quick-cash {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
   gap: 6px;
 }
 
 .quick-cash-btn {
   min-height: 40px;
-  min-width: 48px;
-  flex: 1 1 auto;
+  min-width: 0;
+  border-radius: 999px;
   background: var(--surface-2);
   font-variant-numeric: tabular-nums;
+}
+
+.quick-cash-btn:first-child {
+  grid-column: span 2;
+  background: rgba(61, 125, 255, 0.12);
+  color: var(--primary);
 }
 
 .change-display {
@@ -1032,6 +1046,23 @@ button {
 
   .sale-order {
     display: flex;
+    /* differentiated surface + accent edge: the eye lands on the cart,
+       not on the catalog tiles (both used to be plain white cards) */
+    background: var(--surface-accent);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--primary);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+  }
+
+  .sale-order .order-head {
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .tabbar button {
+    flex-direction: row;
+    gap: 10px;
   }
 
   /* desktop uses the order panel — hide the floating cart bar */

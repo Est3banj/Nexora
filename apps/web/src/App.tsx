@@ -1,4 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  BarChart3,
+  LayoutDashboard,
+  LayoutGrid,
+  Receipt,
+  ShoppingCart,
+  Wallet,
+} from "lucide-react";
 import { activeOrgId, authClient } from "./auth";
 import type { LocalHandle } from "./db/pglite";
 import { claimLocal, sealLocal, unresolvedWork } from "./db/preservation";
@@ -480,48 +488,55 @@ export default function App() {
 
       <nav className="tabbar">
         {/* Priority order: sell first, then daily cash ops, then lookups,
-            catalog upkeep, overview last (deep reports at the end). */}
+            catalog upkeep, overview last (deep reports at the end).
+            Icons are decorative (aria-hidden) — labels stay for a11y. */}
         <button
           className={tab === "sale" ? "active" : ""}
           data-testid="tab-sale"
           onClick={() => setTab("sale")}
         >
-          Venta
+          <ShoppingCart size={18} aria-hidden="true" />
+          <span>Venta</span>
         </button>
         <button
           className={tab === "arqueo" ? "active" : ""}
           data-testid="tab-arqueo"
           onClick={() => setTab("arqueo")}
         >
-          Caja
+          <Wallet size={18} aria-hidden="true" />
+          <span>Caja</span>
         </button>
         <button
           className={tab === "tickets" ? "active" : ""}
           data-testid="tab-tickets"
           onClick={() => setTab("tickets")}
         >
-          Tickets
+          <Receipt size={18} aria-hidden="true" />
+          <span>Tickets</span>
         </button>
         <button
           className={tab === "catalog" ? "active" : ""}
           data-testid="tab-catalog"
           onClick={() => setTab("catalog")}
         >
-          Catálogo
+          <LayoutGrid size={18} aria-hidden="true" />
+          <span>Catálogo</span>
         </button>
         <button
           className={tab === "dashboard" ? "active" : ""}
           data-testid="tab-dashboard"
           onClick={() => setTab("dashboard")}
         >
-          Panel
+          <LayoutDashboard size={18} aria-hidden="true" />
+          <span>Panel</span>
         </button>
         <button
           className={tab === "reports" ? "active" : ""}
           data-testid="tab-reports"
           onClick={() => setTab("reports")}
         >
-          Reportes
+          <BarChart3 size={18} aria-hidden="true" />
+          <span>Reportes</span>
         </button>
       </nav>
 

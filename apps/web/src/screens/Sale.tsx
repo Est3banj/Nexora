@@ -14,6 +14,28 @@ const cop = (n: number) =>
 /** Colombian bills for one-tap cash entry. */
 const BILLS = [1000, 2000, 5000, 10000, 20000, 50000] as const;
 
+/**
+ * Flat avatar palette for products without photo — deterministic hash so
+ * the same product always gets the same color (all pass ≥3:1 vs white
+ * for the bold initial, which is large-scale text).
+ */
+const AVATAR_COLORS = [
+  "#3d7dff",
+  "#0284c7",
+  "#0d9488",
+  "#8b5cf6",
+  "#f43f5e",
+  "#d97706",
+  "#64748b",
+  "#ec4899",
+] as const;
+
+function avatarColor(name: string): string {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return AVATAR_COLORS[h % AVATAR_COLORS.length];
+}
+
 type Props = {
   db: PGlite;
   tenantId: string;
@@ -469,7 +491,14 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
                   {item.photo ? (
                     <img className="tile-photo" src={item.photo} alt="" />
                   ) : (
-                    <span className="tile-photo placeholder" aria-hidden>
+                    <span
+                      className="tile-photo placeholder"
+                      aria-hidden
+                      style={{
+                        background: avatarColor(item.product_name),
+                        color: "#fff",
+                      }}
+                    >
                       {item.product_name.charAt(0)}
                     </span>
                   )}
@@ -655,7 +684,14 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
               {item.photo ? (
                 <img className="tile-photo" src={item.photo} alt="" />
               ) : (
-                <span className="tile-photo placeholder" aria-hidden>
+                <span
+                  className="tile-photo placeholder"
+                  aria-hidden
+                  style={{
+                    background: avatarColor(item.product_name),
+                    color: "#fff",
+                  }}
+                >
                   {item.product_name.charAt(0)}
                 </span>
               )}
