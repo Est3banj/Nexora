@@ -43,6 +43,9 @@ type Props = {
   refreshToken: number;
   showToast: (msg: string) => void;
   onCommitted: () => void;
+  /** Set by the command palette → add this product to the cart on mount/focus. */
+  pendingProduct: SaleItem | null;
+  onPendingProductUsed: () => void;
 };
 
 type View = "browse" | "checkout" | "success";
@@ -131,7 +134,15 @@ function CashSection({
   );
 }
 
-export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Props) {
+export function Sale({
+  db,
+  tenantId,
+  refreshToken,
+  showToast,
+  onCommitted,
+  pendingProduct,
+  onPendingProductUsed,
+}: Props) {
   const [items, setItems] = useState<SaleItem[]>([]);
   const [view, setView] = useState<View>("browse");
   const [tendered, setTendered] = useState("");
@@ -153,6 +164,13 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
   const [scanCode, setScanCode] = useState("");
   const [scanMessage, setScanMessage] = useState("");
   const [payMethod, setPayMethod] = useState<"cash" | "transfer">("cash");
+
+  /* Command palette hand-off: product picked → land in the cart. */
+  useEffect(() => {
+    if (!pendingProduct) return;
+    sale.addItem(pendingProduct);
+    onPendingProductUsed();
+  }, [pendingProduct, sale.addItem, onPendingProductUsed]);
 
   /* ── Batch B: quick annul + keyboard shortcuts ─────────────────────
      All hooks live here, BEFORE the success/checkout early returns

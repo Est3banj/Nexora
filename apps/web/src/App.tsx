@@ -15,7 +15,9 @@ import { getLocalDb, planBoot, switchToCurrentDatadir } from "./db/instance";
 import {
   clearLocalBusinessData,
   isLocalCacheEmpty,
+  type SaleItem,
 } from "./db/local";
+import { CommandPalette } from "./components/CommandPalette";
 import {
   retryPoison,
   stopSync,
@@ -74,6 +76,47 @@ export default function App() {
 
   const tenantId = activeOrgId(session);
   const sessionKey = session && tenantId ? `${session.session.id}:${tenantId}` : null;
+
+  /* ── Command palette (Batch C) — Ctrl/Cmd+K or "/" ───────────────── */
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [pendingProduct, setPendingProduct] = useState<SaleItem | null>(null);
+  const [pendingTicketId, setPendingTicketId] = useState<string | null>(null);
+  const consumeProduct = useCallback(() => setPendingProduct(null), []);
+  const consumeTicket = useCallback(() => setPendingTicketId(null), []);
+  const paletteReady = Boolean(
+    local && tenantId && ready === sessionKey && transition.phase === "idle",
+  );
+
+  useEffect(() => {
+    if (!paletteReady) {
+      setPaletteOpen(false);
+      return;
+    }
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+        return;
+      }
+      if (e.key === "/" && !e.shiftKey) {
+        const t = e.target as HTMLElement | null;
+        const tag = t?.tagName;
+        if (
+          tag === "INPUT" ||
+          tag === "TEXTAREA" ||
+          tag === "SELECT" ||
+          t?.isContentEditable
+        )
+          return;
+        if (t?.closest("dialog") || document.querySelector("dialog[open]"))
+          return;
+        e.preventDefault();
+        setPaletteOpen(true);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [paletteReady]);
 
   // Sync engine: crash recovery (in_flight→pending), live status, and the
   // boot/reconnect auto-push. Re-runs after a datadir switch too (D2-5).
@@ -446,6 +489,8 @@ export default function App() {
             refreshToken={refreshToken}
             showToast={showToast}
             onCommitted={onMutated}
+            pendingProduct={pendingProduct}
+            onPendingProductUsed={consumeProduct}
           />
         )}
         {tab === "catalog" && (
@@ -465,6 +510,8 @@ export default function App() {
             tenantName={tenantName}
             showToast={showToast}
             onMutated={onMutated}
+            pendingTicketId={pendingTicketId}
+            onPendingTicketUsed={consumeTicket}
           />
         )}
         {tab === "arqueo" && (
@@ -485,6 +532,23 @@ export default function App() {
         )}
         </main>
       </div>
+
+      {paletteOpen && (
+        <CommandPalette
+          db={local.db}
+          tenantId={tenantId}
+          onClose={() => setPaletteOpen(false)}
+          onNavigate={(t) => setTab(t)}
+          onPickProduct={(item) => {
+            setPendingProduct(item);
+            setTab("sale");
+          }}
+          onPickTicket={(t) => {
+            setPendingTicketId(t.id);
+            setTab("tickets");
+          }}
+        />
+      )}
 
       <nav className="tabbar">
         {/* Priority order: sell first, then daily cash ops, then lookups,

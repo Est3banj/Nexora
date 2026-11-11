@@ -31,6 +31,9 @@ type Props = {
   tenantName?: string;
   showToast?: (msg: string) => void;
   onMutated?: () => void;
+  /** Set by the command palette → open this ticket on mount. */
+  pendingTicketId: string | null;
+  onPendingTicketUsed: () => void;
 };
 
 type TicketDetail = Awaited<ReturnType<typeof getLocalTicket>>;
@@ -42,6 +45,8 @@ export function Tickets({
   tenantName,
   showToast,
   onMutated,
+  pendingTicketId,
+  onPendingTicketUsed,
 }: Props) {
   const [tickets, setTickets] = useState<LocalTicketRow[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -57,6 +62,13 @@ export function Tickets({
      Mobile: accordion — detail renders right under the tapped row.
      MUST sit with the other hooks (before the empty-state early return). */
   const isWide = useMediaQuery("(min-width: 1024px)");
+
+  /* Command palette hand-off: ticket picked → open it here. */
+  useEffect(() => {
+    if (!pendingTicketId) return;
+    setOpenId(pendingTicketId);
+    onPendingTicketUsed();
+  }, [pendingTicketId, onPendingTicketUsed]);
 
   async function annul() {
     if (!detail) return;
