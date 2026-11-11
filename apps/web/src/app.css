@@ -1539,3 +1539,36 @@ select {
     color: #000 !important;
   }
 }
+
+/* ── catalog accordion (#2) ─────────────────────────────── */
+
+.product-card-head.expandable {
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.product-card-head.expandable:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.cat-summary {
+  display: block;
+  font-size: 0.8rem;
+}
+
+.expand-chevron {
+  color: var(--muted);
+  font-size: 1rem;
+  flex-shrink: 0;
+  padding: 4px;
+}
+
+.product-card .variant-row {
+  animation: none;
+}

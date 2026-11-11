@@ -39,6 +39,8 @@ for (const width of [375, 1440]) {
     await expect(page.getByTestId("pending-badge")).toContainText("sinc.");
     await page.reload();
     await page.getByTestId("tab-catalog").click();
+    // Accordion resets on reload — expand before reading editors
+    await product.getByTestId("toggle-expand").click();
     await expect(v330.getByTestId("code-input")).toHaveValue("0000330");
     await page.getByTestId("catalog-search").fill("000600");
     await expect(product).toBeVisible();
@@ -101,6 +103,7 @@ for (const width of [375, 1440]) {
     expect(dbOne("SELECT code || ':' || cost || ':' || stock FROM product_variants WHERE name='330 ml'")).toBe("0000330:2000:9");
     await page.reload();
     await page.getByTestId("tab-catalog").click();
+    await product.getByTestId("toggle-expand").click();
     await expect(v330.getByTestId("code-input")).toHaveValue("0000330");
   });
 }

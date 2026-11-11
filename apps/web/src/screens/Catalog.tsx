@@ -59,6 +59,8 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
   const [extraVariant, setExtraVariant] = useState<
     Record<string, { name: string; price: string; stock: string; code?: string }>
   >({});
+  /** Accordion: only one product expanded at a time (null = all collapsed). */
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const [rows, cats] = await Promise.all([
@@ -118,7 +120,7 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
       return;
     }
     try {
-      await createLocalProduct(db, tenantId, {
+      const created = await createLocalProduct(db, tenantId, {
         name: parsed.data.name,
         category_id: parsed.data.category_id ?? null,
         photo: parsed.data.photo ?? null,
@@ -137,6 +139,8 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
       setCost("");
       setStock("");
       setPhoto(null);
+      // Accordion: open the product just created so its editors are ready.
+      setExpandedId(created.id);
       await refresh();
       onMutated();
       showToast("Producto creado (pendiente de sync)");
@@ -464,7 +468,24 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
             className={`card product-card ${product.active ? "" : "inactive"}`}
             data-testid="product-item"
           >
-            <div className="product-card-head">
+            <div
+              className="product-card-head expandable"
+              role="button"
+              tabIndex={0}
+              aria-expanded={expandedId === product.id}
+              data-testid="toggle-expand"
+              onClick={() =>
+                setExpandedId((prev) => (prev === product.id ? null : product.id))
+              }
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setExpandedId((prev) =>
+                    prev === product.id ? null : product.id,
+                  );
+                }
+              }}
+            >
               {product.photo ? (
                 <img
                   className="product-thumb"
@@ -480,17 +501,38 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
               <div className="product-card-title">
                 <strong>{product.name}</strong>
                 <span className="muted cat-label">{catName(product.category_id)}</span>
+                {expandedId !== product.id && (
+                  <span className="muted cat-summary" data-testid="product-summary">
+                    {product.variants.length} variante
+                    {product.variants.length === 1 ? "" : "s"} ·{" "}
+                    {cop(Math.min(...product.variants.map((v) => v.price)))}
+                    {product.variants.length > 1
+                      ? ` – ${cop(Math.max(...product.variants.map((v) => v.price)))}`
+                      : ""}
+                  </span>
+                )}
               </div>
               <button
                 className={`btn small ${product.active ? "danger" : "ghost"}`}
                 data-testid="toggle-active"
-                onClick={() => toggleActive(product)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleActive(product);
+                }}
               >
                 {product.active ? "Desactivar" : "Reactivar"}
               </button>
+              <span
+                className="expand-chevron"
+                aria-hidden
+                data-testid="expand-chevron"
+              >
+                {expandedId === product.id ? "▾" : "▸"}
+              </span>
             </div>
 
-            {product.variants.map((v) => (
+            {expandedId === product.id &&
+              product.variants.map((v) => (
               <div key={v.id} className="variant-row" data-testid="variant-row">
                 <div className="row gap">
                   <input aria-label={`Código ${product.name} ${v.name}`} data-testid="code-input"
@@ -621,6 +663,7 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
               </div>
             ))}
 
+            {expandedId === product.id && (
             <form
               className="extra-variant"
               onSubmit={(e) => submitExtraVariant(e, product.id)}
@@ -673,6 +716,7 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated }: Pr
                 </button>
               </div>
             </form>
+            )}
           </div>
         ))}
       </div>
