@@ -1090,7 +1090,6 @@ button {
   }
 
   /* reading screens: cap width so 1440 doesn't feel hollow */
-  .tickets,
   .arqueo,
   .dashboard,
   .catalog {
@@ -1100,6 +1099,28 @@ button {
   /* reports is data-dense: tables deserve more canvas */
   .reports {
     max-width: 1200px;
+  }
+
+  /* tickets: master-detail (list | side panel) needs the extra canvas */
+  .tickets {
+    max-width: 1200px;
+  }
+
+  .tickets-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+    align-items: start;
+  }
+
+  .tickets-layout.with-detail {
+    grid-template-columns: minmax(0, 1fr) 440px;
+  }
+
+  .ticket-side {
+    position: sticky;
+    top: 16px;
+    min-width: 0;
   }
 
   .sale-grid {

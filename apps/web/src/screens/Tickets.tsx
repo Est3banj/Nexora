@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type { PGlite } from "@electric-sql/pglite";
 import {
   confirmLocalPayment,
@@ -6,6 +6,7 @@ import {
   listLocalTickets,
   type LocalTicketRow,
 } from "../db/local";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 import "./ticket-print.css";
 import { mirrorVoidedSale, type VoidSnapshot } from "../db/void-sale";
 import { pushNow } from "../sync/queue";
@@ -53,6 +54,10 @@ export function Tickets({
   const [reason, setReason] = useState("");
   const [voiding, setVoiding] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
+  /* Desktop: master-detail (list | sticky side panel).
+     Mobile: accordion — detail renders right under the tapped row.
+     MUST sit with the other hooks (before the empty-state early return). */
+  const isWide = useMediaQuery("(min-width: 1024px)");
 
   async function annul() {
     if (!detail) return;
@@ -181,6 +186,108 @@ export function Tickets({
     return when(t.created_at).toLowerCase().includes(q);
   });
 
+  const detailCard = detail ? (
+    <div className="card ticket-detail" data-testid="ticket-detail">
+      {tenantName && (
+        <p className="ticket-tenant" data-testid="ticket-tenant">
+          {tenantName}
+        </p>
+      )}
+      <h3>
+        Ticket #{detail.ticket.ticket_no}{" "}
+        <span className="muted">({when(detail.ticket.created_at)})</span>
+      </h3>
+      {detail.ticket.status === "voided" && <div role="status" data-testid="ticket-voided"><p>ANULADA · excluida de ventas y caja. Los importes y pagos siguientes son los originales.</p><p>Motivo: {detail.ticket.void_reason ?? "Consultá la auditoría del servidor"}{detail.ticket.voided_at ? ` · ${when(detail.ticket.voided_at)}` : ""}</p></div>}
+      <p className="muted ticket-uuid" data-testid="ticket-uuid">
+        {detail.ticket.id.slice(0, 8)}
+      </p>
+
+      {detail.lines.map((l) => {
+        const name = [l.product_name, l.variant_name].filter(Boolean).join(" ");
+        return (
+          <div className="row space-between line" key={l.id}>
+            <span>
+              {l.qty} × {name || cop(l.unit_price)}
+              {name && <span className="muted"> · {cop(l.unit_price)}</span>}
+            </span>
+            <span>{cop(l.subtotal)}</span>
+          </div>
+        );
+      })}
+
+      <div className="row space-between total-row">
+        <span>Total</span>
+        <strong>{cop(detail.ticket.total)}</strong>
+      </div>
+
+      <div className="row space-between" data-testid="ticket-pay-info">
+        <span className="muted">Método</span>
+        <span>
+          {methodName(detail.ticket.method)}
+          {detail.ticket.pay_status === "pending" ? " · pendiente" : " · confirmado"}
+        </span>
+      </div>
+      {detail.ticket.method === "cash" && (
+        <>
+          <div className="row space-between" data-testid="ticket-tendered">
+            <span className="muted">Recibido</span>
+            <span>{cop(detail.ticket.tendered ?? 0)}</span>
+          </div>
+          <div className="row space-between" data-testid="ticket-vuelto">
+            <span className="muted">Vuelto</span>
+            <span>{cop(detail.ticket.vuelto ?? 0)}</span>
+          </div>
+        </>
+      )}
+
+      {confirmErr && (
+        <p className="error" data-testid="confirm-error" role="alert">
+          {confirmErr}
+        </p>
+      )}
+
+      <div className="row gap ticket-actions">
+        {detail.ticket.method === "transfer" &&
+          detail.ticket.status !== "voided" &&
+          detail.ticket.pay_status === "pending" && (
+            <button
+              className="btn primary"
+              data-testid="confirm-transfer"
+              disabled={
+                confirming || !online || !detail.payment_synced
+              }
+              title={
+                !online
+                  ? "Se necesita conexión"
+                  : !detail.payment_synced
+                    ? "Esperando sincronización"
+                    : undefined
+              }
+              onClick={() =>
+                detail.payment_id && void confirmTransfer(detail.payment_id)
+              }
+            >
+              {confirming ? "Confirmando…" : "Confirmar transferencia"}
+            </button>
+          )}
+        {detail.ticket.status !== "voided" && <button className="btn danger" data-testid="void-sale"
+          disabled={!online || !detail.payment_synced || confirming}
+          onClick={() => { setReason(""); setConfirmErr(null); dialog.current?.showModal(); }}>
+          Anular venta completa
+        </button>}
+        <button
+          className="btn ghost"
+          data-testid="ticket-print"
+          onClick={() => window.print()}
+        >
+          Imprimir
+        </button>
+      </div>
+      {!online && <p className="muted">La anulación necesita conexión. Podés seguir vendiendo offline.</p>}
+      <p className="muted">Solo el dueño puede anular ventas sincronizadas de un turno abierto. Las cajas cerradas no se modifican.</p>
+    </div>
+  ) : null;
+
   return (
     <div className="screen tickets">
       <div className="tickets-toolbar">
@@ -226,153 +333,63 @@ export function Tickets({
         </div>
       )}
 
-      <div className="ticket-list">
-      {visible.map((t) => (
-        <button
-          key={t.id}
-          className={`ticket-row${openId === t.id ? " open" : ""}${t.status === "voided" ? " voided" : ""}`}
-          data-testid="ticket-item"
-          onClick={() => setOpenId(openId === t.id ? null : t.id)}
-        >
-          <span className="ticket-row-no" data-testid="ticket-no">
-            #{t.ticket_no}
-          </span>
-          <span className="ticket-row-meta">
-            <span className="muted">{when(t.created_at)}</span>
-            <span className="ticket-row-items">{t.items ?? ""}</span>
-          </span>
-          <span className="ticket-row-right">
-            <strong>{cop(t.total)}</strong>
-            <span className={`ticket-badge b-${t.status === "voided" ? "void" : t.method === "transfer" ? "transfer" : "cash"}`}>
-              {t.status === "voided"
-                ? "Anulada"
-                : t.method === "transfer"
-                  ? t.pay_status === "pending"
-                    ? "Transf. pend."
-                    : "Transferencia"
-                  : "Efectivo"}
-            </span>
-          </span>
-        </button>
-      ))}
+      <div className={`tickets-layout${isWide && detailCard ? " with-detail" : ""}`}>
+        <div className="ticket-list">
+          {visible.map((t) => (
+            <Fragment key={t.id}>
+              <button
+                className={`ticket-row${openId === t.id ? " open" : ""}${t.status === "voided" ? " voided" : ""}`}
+                data-testid="ticket-item"
+                onClick={() => setOpenId(openId === t.id ? null : t.id)}
+              >
+                <span className="ticket-row-no" data-testid="ticket-no">
+                  #{t.ticket_no}
+                </span>
+                <span className="ticket-row-meta">
+                  <span className="muted">{when(t.created_at)}</span>
+                  <span className="ticket-row-items">{t.items ?? ""}</span>
+                </span>
+                <span className="ticket-row-right">
+                  <strong>{cop(t.total)}</strong>
+                  <span className={`ticket-badge b-${t.status === "voided" ? "void" : t.method === "transfer" ? "transfer" : "cash"}`}>
+                    {t.status === "voided"
+                      ? "Anulada"
+                      : t.method === "transfer"
+                        ? t.pay_status === "pending"
+                          ? "Transf. pend."
+                          : "Transferencia"
+                        : "Efectivo"}
+                  </span>
+                </span>
+              </button>
+              {!isWide && openId === t.id && detailCard}
+            </Fragment>
+          ))}
+        </div>
+
+        {isWide && detailCard && <aside className="ticket-side">{detailCard}</aside>}
       </div>
 
+      {/* Void dialog lives OUTSIDE detailCard: the card moves between the
+          inline (mobile) and side-panel (desktop) positions when the
+          breakpoint flips, and a remount would silently close the dialog. */}
       {detail && (
-        <div className="card ticket-detail" data-testid="ticket-detail">
-          {tenantName && (
-            <p className="ticket-tenant" data-testid="ticket-tenant">
-              {tenantName}
-            </p>
-          )}
-          <h3>
-            Ticket #{detail.ticket.ticket_no}{" "}
-            <span className="muted">({when(detail.ticket.created_at)})</span>
-          </h3>
-          {detail.ticket.status === "voided" && <div role="status" data-testid="ticket-voided"><p>ANULADA · excluida de ventas y caja. Los importes y pagos siguientes son los originales.</p><p>Motivo: {detail.ticket.void_reason ?? "Consultá la auditoría del servidor"}{detail.ticket.voided_at ? ` · ${when(detail.ticket.voided_at)}` : ""}</p></div>}
-          <p className="muted ticket-uuid" data-testid="ticket-uuid">
-            {detail.ticket.id.slice(0, 8)}
-          </p>
-
-          {detail.lines.map((l) => {
-            const name = [l.product_name, l.variant_name].filter(Boolean).join(" ");
-            return (
-              <div className="row space-between line" key={l.id}>
-                <span>
-                  {l.qty} × {name || cop(l.unit_price)}
-                  {name && <span className="muted"> · {cop(l.unit_price)}</span>}
-                </span>
-                <span>{cop(l.subtotal)}</span>
-              </div>
-            );
-          })}
-
-          <div className="row space-between total-row">
-            <span>Total</span>
-            <strong>{cop(detail.ticket.total)}</strong>
-          </div>
-
-          <div className="row space-between" data-testid="ticket-pay-info">
-            <span className="muted">Método</span>
-            <span>
-              {methodName(detail.ticket.method)}
-              {detail.ticket.pay_status === "pending" ? " · pendiente" : " · confirmado"}
-            </span>
-          </div>
-          {detail.ticket.method === "cash" && (
-            <>
-              <div className="row space-between" data-testid="ticket-tendered">
-                <span className="muted">Recibido</span>
-                <span>{cop(detail.ticket.tendered ?? 0)}</span>
-              </div>
-              <div className="row space-between" data-testid="ticket-vuelto">
-                <span className="muted">Vuelto</span>
-                <span>{cop(detail.ticket.vuelto ?? 0)}</span>
-              </div>
-            </>
-          )}
-
-          {confirmErr && (
-            <p className="error" data-testid="confirm-error" role="alert">
-              {confirmErr}
-            </p>
-          )}
-
-          <div className="row gap ticket-actions">
-            {detail.ticket.method === "transfer" &&
-              detail.ticket.status !== "voided" &&
-              detail.ticket.pay_status === "pending" && (
-                <button
-                  className="btn primary"
-                  data-testid="confirm-transfer"
-                  disabled={
-                    confirming || !online || !detail.payment_synced
-                  }
-                  title={
-                    !online
-                      ? "Se necesita conexión"
-                      : !detail.payment_synced
-                        ? "Esperando sincronización"
-                        : undefined
-                  }
-                  onClick={() =>
-                    detail.payment_id && void confirmTransfer(detail.payment_id)
-                  }
-                >
-                  {confirming ? "Confirmando…" : "Confirmar transferencia"}
-                </button>
-              )}
-            {detail.ticket.status !== "voided" && <button className="btn danger" data-testid="void-sale"
-              disabled={!online || !detail.payment_synced || confirming}
-              onClick={() => { setReason(""); setConfirmErr(null); dialog.current?.showModal(); }}>
-              Anular venta completa
-            </button>}
-            <button
-              className="btn ghost"
-              data-testid="ticket-print"
-              onClick={() => window.print()}
-            >
-              Imprimir
-            </button>
-          </div>
-          {!online && <p className="muted">La anulación necesita conexión. Podés seguir vendiendo offline.</p>}
-          <p className="muted">Solo el dueño puede anular ventas sincronizadas de un turno abierto. Las cajas cerradas no se modifican.</p>
-          <dialog ref={dialog} aria-labelledby="void-title" aria-describedby="void-description" onCancel={e => { if (voiding) e.preventDefault(); }}>
-            <form onSubmit={e => { e.preventDefault(); void annul(); }}>
-              <h3 id="void-title">Anular venta #{detail.ticket.ticket_no}</h3>
-              <p id="void-description">Se anula toda la venta y se restituye el stock una sola vez. El historial se conserva. No realiza un reintegro bancario ni de efectivo.</p>
-              <label htmlFor="void-reason">Motivo obligatorio</label>
-              <textarea id="void-reason" data-testid="void-reason" autoFocus required minLength={3} maxLength={500}
-                value={reason} onChange={e => setReason(e.target.value)} disabled={voiding} />
-              {confirmErr && <p role="alert" data-testid="void-error">{confirmErr}</p>}
-              <div className="row gap">
-                <button type="button" className="btn ghost" disabled={voiding} onClick={() => dialog.current?.close()}>Cancelar</button>
-                <button type="submit" className="btn danger" data-testid="void-confirm" disabled={voiding || !online || reason.trim().length < 3}>
-                  {voiding ? "Anulando…" : "Confirmar anulación total"}
-                </button>
-              </div>
-            </form>
-          </dialog>
-        </div>
+        <dialog ref={dialog} aria-labelledby="void-title" aria-describedby="void-description" onCancel={e => { if (voiding) e.preventDefault(); }}>
+          <form onSubmit={e => { e.preventDefault(); void annul(); }}>
+            <h3 id="void-title">Anular venta #{detail.ticket.ticket_no}</h3>
+            <p id="void-description">Se anula toda la venta y se restituye el stock una sola vez. El historial se conserva. No realiza un reintegro bancario ni de efectivo.</p>
+            <label htmlFor="void-reason">Motivo obligatorio</label>
+            <textarea id="void-reason" data-testid="void-reason" autoFocus required minLength={3} maxLength={500}
+              value={reason} onChange={e => setReason(e.target.value)} disabled={voiding} />
+            {confirmErr && <p role="alert" data-testid="void-error">{confirmErr}</p>}
+            <div className="row gap">
+              <button type="button" className="btn ghost" disabled={voiding} onClick={() => dialog.current?.close()}>Cancelar</button>
+              <button type="submit" className="btn danger" data-testid="void-confirm" disabled={voiding || !online || reason.trim().length < 3}>
+                {voiding ? "Anulando…" : "Confirmar anulación total"}
+              </button>
+            </div>
+          </form>
+        </dialog>
       )}
     </div>
   );
