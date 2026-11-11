@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PGlite } from "@electric-sql/pglite";
 import { listSaleItems, type SaleItem } from "../db/local";
 import { useSale } from "../hooks/useSale";
@@ -46,6 +46,14 @@ function CashSection({
     setTendered(String(received + n));
   }
 
+  // Nothing entered yet → no scary "Falta $total"; only show shortfall
+  // once the cashier started typing an amount.
+  const changeLabel =
+    received === 0 ? "Ingresado" : change < 0 ? "Falta" : "Vuelto";
+  const changeValue = received === 0 ? "—" : cop(Math.abs(change));
+  const changeClass =
+    received === 0 ? "" : change < 0 ? " short" : " due";
+
   return (
     <div className={`cash-section${compact ? " compact" : ""}`}>
       <div className="row space-between cash-total-row">
@@ -89,12 +97,12 @@ function CashSection({
       </div>
 
       <div
-        className={`change-display${change < 0 ? " short" : change > 0 ? " due" : ""}`}
+        className={`change-display${changeClass}`}
         data-testid="change-display"
         aria-live="polite"
       >
-        <span className="muted">{change < 0 ? "Falta" : "Vuelto"}</span>
-        <strong>{cop(Math.abs(change))}</strong>
+        <span className="muted">{changeLabel}</span>
+        <strong>{changeValue}</strong>
       </div>
     </div>
   );
@@ -120,6 +128,19 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
   const [search, setSearch] = useState("");
   const [scanCode, setScanCode] = useState("");
   const [scanMessage, setScanMessage] = useState("");
+  const [payMethod, setPayMethod] = useState<"cash" | "transfer">("cash");
+  const tenderedTouched = useRef(false);
+
+  // Auto-follow total while the cashier has not typed a custom amount
+  // (desktop panel starts with empty tendered → used to show "Falta").
+  useEffect(() => {
+    if (payMethod !== "cash" || tenderedTouched.current) return;
+    if (sale.lines.length === 0) {
+      setTendered("");
+      return;
+    }
+    setTendered(String(sale.total));
+  }, [sale.total, payMethod, sale.lines.length]);
 
   useEffect(() => {
     let alive = true;
@@ -176,6 +197,8 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
       return;
     }
     setError(null);
+    tenderedTouched.current = false;
+    setPayMethod("cash");
     setTendered(String(sale.total));
     setView("checkout");
   }
@@ -271,17 +294,28 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
             </strong>
           </div>
         </div>
-        <button
-          className="btn primary"
-          data-testid="new-sale"
-          onClick={() => {
-            setLastSale(null);
-            setTendered("");
-            setView("browse");
-          }}
-        >
-          Nueva venta
-        </button>
+        <div className="row gap" style={{ justifyContent: "center" }}>
+          <button
+            className="btn primary"
+            data-testid="new-sale"
+            onClick={() => {
+              setLastSale(null);
+              setTendered("");
+              tenderedTouched.current = false;
+              setPayMethod("cash");
+              setView("browse");
+            }}
+          >
+            Nueva venta
+          </button>
+          <button
+            className="btn"
+            data-testid="print-sale"
+            onClick={() => window.print()}
+          >
+            Imprimir
+          </button>
+        </div>
       </div>
     );
   }
@@ -311,9 +345,52 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
           ))}
         </div>
 
-        <div className="card">
-          <CashSection total={sale.total} tendered={tendered} setTendered={setTendered} />
+        <div className="seg pay-method" role="tablist" aria-label="Método de pago">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={payMethod === "cash"}
+            className={payMethod === "cash" ? "active" : ""}
+            data-testid="pay-cash"
+            onClick={() => setPayMethod("cash")}
+          >
+            Efectivo
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={payMethod === "transfer"}
+            className={payMethod === "transfer" ? "active" : ""}
+            data-testid="pay-transfer"
+            onClick={() => setPayMethod("transfer")}
+          >
+            Transferencia
+          </button>
         </div>
+
+        {payMethod === "cash" ? (
+          <div className="card">
+            <CashSection
+              total={sale.total}
+              tendered={tendered}
+              setTendered={(v) => {
+                tenderedTouched.current = true;
+                setTendered(v);
+              }}
+            />
+          </div>
+        ) : (
+          <div className="card transfer-note" data-testid="transfer-note">
+            <p>
+              Se registra la venta por <strong>{cop(sale.total)}</strong> como
+              transferencia <strong>pendiente de confirmar</strong>.
+            </p>
+            <p className="muted">
+              El dueño la confirma desde <strong>Tickets</strong> cuando vea el
+              pago en el banco. No hay efectivo ni vuelto en este paso.
+            </p>
+          </div>
+        )}
 
         {error && (
           <p className="error" data-testid="cart-error" role="alert">
@@ -321,20 +398,23 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
           </p>
         )}
 
-        <button
-          className="btn primary big"
-          data-testid="checkout-confirm"
-          onClick={confirmCash}
-        >
-          Efectivo
-        </button>
-        <button
-          className="btn big"
-          data-testid="checkout-transfer"
-          onClick={confirmTransfer}
-        >
-          Transferencia
-        </button>
+        {payMethod === "cash" ? (
+          <button
+            className="btn primary big"
+            data-testid="checkout-confirm"
+            onClick={confirmCash}
+          >
+            Cobrar en efectivo
+          </button>
+        ) : (
+          <button
+            className="btn primary big"
+            data-testid="checkout-transfer"
+            onClick={confirmTransfer}
+          >
+            Registrar transferencia
+          </button>
+        )}
         <button
           className="btn ghost"
           data-testid="checkout-cancel"
@@ -395,7 +475,10 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
                   data-testid="sale-item"
                   onClick={() => {
                     setError(null);
-                    if (sale.lines.length === 0) setTendered("");
+                    if (sale.lines.length === 0) {
+                      tenderedTouched.current = false;
+                      setTendered("");
+                    }
                     sale.addItem(item);
                   }}
                 >
@@ -474,12 +557,50 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
             <strong>{cop(sale.total)}</strong>
           </div>
 
-          <CashSection
-            total={sale.total}
-            tendered={tendered}
-            setTendered={setTendered}
-            compact
-          />
+          <div className="seg pay-method" role="tablist" aria-label="Método de pago">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={payMethod === "cash"}
+              className={payMethod === "cash" ? "active" : ""}
+              data-testid="pay-cash"
+              onClick={() => setPayMethod("cash")}
+            >
+              Efectivo
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={payMethod === "transfer"}
+              className={payMethod === "transfer" ? "active" : ""}
+              data-testid="pay-transfer"
+              onClick={() => setPayMethod("transfer")}
+            >
+              Transferencia
+            </button>
+          </div>
+
+          {payMethod === "cash" ? (
+            <CashSection
+              total={sale.total}
+              tendered={tendered}
+              setTendered={(v) => {
+                tenderedTouched.current = true;
+                setTendered(v);
+              }}
+              compact
+            />
+          ) : (
+            <div className="transfer-note" data-testid="transfer-note">
+              <p>
+                Venta por <strong>{cop(sale.total)}</strong> como transferencia{" "}
+                <strong>pendiente</strong>.
+              </p>
+              <p className="muted">
+                El dueño la confirma desde Tickets. Sin efectivo ni vuelto.
+              </p>
+            </div>
+          )}
 
           {error && (
             <p className="error" data-testid="cart-error" role="alert">
@@ -487,22 +608,25 @@ export function Sale({ db, tenantId, refreshToken, showToast, onCommitted }: Pro
             </p>
           )}
 
-          <button
-            className="btn primary big"
-            data-testid="checkout-confirm"
-            disabled={sale.lines.length === 0}
-            onClick={confirmCash}
-          >
-            Cobrar en efectivo
-          </button>
-          <button
-            className="btn big"
-            data-testid="checkout-transfer"
-            disabled={sale.lines.length === 0}
-            onClick={confirmTransfer}
-          >
-            Transferencia
-          </button>
+          {payMethod === "cash" ? (
+            <button
+              className="btn primary big"
+              data-testid="checkout-confirm"
+              disabled={sale.lines.length === 0}
+              onClick={confirmCash}
+            >
+              Cobrar en efectivo
+            </button>
+          ) : (
+            <button
+              className="btn primary big"
+              data-testid="checkout-transfer"
+              disabled={sale.lines.length === 0}
+              onClick={confirmTransfer}
+            >
+              Registrar transferencia
+            </button>
+          )}
         </aside>
       </div>
     );

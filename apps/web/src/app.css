@@ -1497,3 +1497,45 @@ select {
     grid-template-columns: repeat(3, 1fr);
   }
 }
+
+/* ── payment method + transfer note (UX fix #1) ───────────── */
+
+.seg.pay-method {
+  grid-template-columns: 1fr 1fr;
+}
+
+.transfer-note {
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+}
+
+.transfer-note p {
+  margin: 0 0 8px;
+}
+
+.transfer-note p:last-child {
+  margin-bottom: 0;
+}
+
+/* print: sale-success receipt */
+@media print {
+  .sale-success {
+    position: static;
+    max-width: 480px;
+    margin: 0 auto;
+    text-align: left;
+    padding: 0;
+  }
+
+  .sale-success .success-icon {
+    background: #fff !important;
+    color: #000 !important;
+    border: 2px solid #000;
+  }
+
+  .sale-success .card {
+    border: 1px solid #000;
+    background: #fff !important;
+    color: #000 !important;
+  }
+}
