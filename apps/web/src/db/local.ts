@@ -676,30 +676,8 @@ export async function commitLocalSale(
 
     const lines: CommittedSale["lines"] = [];
     for (const line of input.lines) {
-      const lineId = newId();
-      const subtotal = lineSubtotal(line.unit_price, line.qty);
-      await tx.query(
-        `INSERT INTO ticket_lines
-           (id, tenant_id, client_uuid, ticket_id, variant_id, qty, unit_price, subtotal, created_at)
-         VALUES ($1, $2, $1, $3, $4, $5, $6, $7, $8)`,
-        [lineId, tenantId, ticketId, line.variant_id, line.qty, line.unit_price, subtotal, createdAt],
-      );
-      lines.push({
-        id: lineId,
-        qty: line.qty,
-        unit_price: line.unit_price,
-        subtotal,
-      });
-      await enqueueMutation(tx, tenantId, "ticket_line", lineId, {
-        ticket_id: ticketId,
-        variant_id: line.variant_id,
-        qty: line.qty,
-        unit_price: line.unit_price,
-        subtotal,
-        created_at: createdAt,
-      });
-
-      /* ---- D3-1: stock movement for THIS sale line, same local tx ---- */
+      /* Cost is captured HERE, at sale time — historical COGS never follows
+         later edits to the variant's cost (audit: historical costs). */
       const vRes = await tx.query<{
         product_id: string;
         name: string;
@@ -715,6 +693,33 @@ export async function commitLocalSale(
         [tenantId, line.variant_id],
       );
       const variant = vRes.rows[0];
+      const unitCost = variant?.cost ?? null;
+
+      const lineId = newId();
+      const subtotal = lineSubtotal(line.unit_price, line.qty);
+      await tx.query(
+        `INSERT INTO ticket_lines
+           (id, tenant_id, client_uuid, ticket_id, variant_id, qty, unit_price, subtotal, unit_cost, created_at)
+         VALUES ($1, $2, $1, $3, $4, $5, $6, $7, $8, $9)`,
+        [lineId, tenantId, ticketId, line.variant_id, line.qty, line.unit_price, subtotal, unitCost, createdAt],
+      );
+      lines.push({
+        id: lineId,
+        qty: line.qty,
+        unit_price: line.unit_price,
+        subtotal,
+      });
+      await enqueueMutation(tx, tenantId, "ticket_line", lineId, {
+        ticket_id: ticketId,
+        variant_id: line.variant_id,
+        qty: line.qty,
+        unit_price: line.unit_price,
+        subtotal,
+        unit_cost: unitCost,
+        created_at: createdAt,
+      });
+
+      /* ---- D3-1: stock movement for THIS sale line, same local tx ---- */
       if (variant) {
         const nextStock = variant.stock - line.qty;
         const diaryId = newId();

@@ -66,8 +66,11 @@ export function Dashboard({ db, tenantId, refreshToken }: Props) {
   const gross = summary ? summary.revenue - summary.cogs : 0;
   const avgTicket =
     summary && summary.tickets > 0 ? Math.round(summary.revenue / summary.tickets) : 0;
+  // Honest margin: only when we actually captured costs on sale lines.
+  const costed = summary?.costed_lines ?? 0;
+  const hasCostData = costed > 0;
   const marginPct =
-    summary && summary.revenue > 0
+    hasCostData && summary && summary.revenue > 0
       ? Math.round((gross / summary.revenue) * 100)
       : null;
 
@@ -77,7 +80,7 @@ export function Dashboard({ db, tenantId, refreshToken }: Props) {
   return (
     <div className="screen dashboard">
       <div className="dash-head">
-        <h2>Números</h2>
+        <h2>Panel</h2>
         <div className="seg" role="tablist" aria-label="Período">
           <button
             className={period === "today" ? "active" : ""}
@@ -136,8 +139,11 @@ export function Dashboard({ db, tenantId, refreshToken }: Props) {
                 {cop(gross)}
               </strong>
               <span className="kpi-sub muted">
-                {marginPct !== null ? `${marginPct}% margen` : "Sin costo cargado"}
-                {summary.cogs > 0 ? ` · costo ${cop(summary.cogs)}` : ""}
+                {!hasCostData
+                  ? "Sin costo en las ventas del período"
+                  : marginPct !== null
+                    ? `${marginPct}% margen · costo ${cop(summary.cogs)}`
+                    : "Costos registrados · sin ingresos"}
               </span>
             </div>
             <div className="card kpi" data-testid="kpi-cash">

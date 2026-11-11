@@ -59,6 +59,8 @@ const ticketLinePayloadSchema = z.object({
   qty: z.number().int().positive(),
   unit_price: money,
   subtotal: money,
+  /** Cost at sale time — optional so legacy queue rows stay valid. */
+  unit_cost: money.nullable().optional(),
   created_at: isoDate.optional(),
 });
 

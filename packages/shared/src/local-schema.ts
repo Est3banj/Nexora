@@ -19,6 +19,22 @@ DO $$ BEGIN
 END $$;
 `;
 
+/**
+ * Historical cost per sale line (additive). Backfills existing lines from
+ * the variant's current cost once; new sales write cost at commit time.
+ * Changing a product's cost later never rewrites past COGS.
+ */
+export const TICKET_LINE_COST_MIGRATION_SQL = /* sql */ `
+ALTER TABLE ticket_lines ADD COLUMN IF NOT EXISTS unit_cost integer;
+UPDATE ticket_lines l
+SET unit_cost = v.cost
+FROM product_variants v
+WHERE v.id = l.variant_id
+  AND v.tenant_id = l.tenant_id
+  AND l.unit_cost IS NULL
+  AND v.cost IS NOT NULL;
+`;
+
 export const LOCAL_SCHEMA_SQL = /* sql */ `
 CREATE TABLE IF NOT EXISTS categories (
   id uuid PRIMARY KEY,
@@ -106,11 +122,15 @@ CREATE TABLE IF NOT EXISTS ticket_lines (
   qty integer NOT NULL,
   unit_price integer NOT NULL,
   subtotal integer NOT NULL,
+  unit_cost integer,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ticket_lines_tenant_client_uq ON ticket_lines (tenant_id, client_uuid);
 CREATE INDEX IF NOT EXISTS ticket_lines_ticket_idx ON ticket_lines (ticket_id);
+
+-- Historical cost: additive, after ticket_lines exists; backfill once.
+${TICKET_LINE_COST_MIGRATION_SQL}
 
 CREATE TABLE IF NOT EXISTS payments (
   id uuid PRIMARY KEY,

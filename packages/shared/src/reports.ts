@@ -168,8 +168,10 @@ export function defaultReportRange(now: Date = new Date()): {
 
 /**
  * $1 = tenant_id · $2 = from · $3 = to.
- * Revenue/tickets/cash/transfer from confirmed payments + COGS from
- * ticket_lines joined to variant cost (null cost → 0 contribution).
+ * Revenue/tickets/cash/transfer from confirmed payments.
+ * COGS uses ticket_lines.unit_cost (historical cost captured at sale) —
+ * changing a product's current cost NEVER rewrites past margins.
+ * costed_lines counts lines that carry a known cost (for honest margin UI).
  */
 export const DASHBOARD_SUMMARY_SQL = /* sql */ `
 SELECT
@@ -179,15 +181,24 @@ SELECT
   COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'confirmed' AND p.method = 'transfer'), 0) AS transfer,
   COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'pending'), 0) AS pending,
   COALESCE((
-    SELECT SUM(l.qty * COALESCE(v.cost, 0))
+    SELECT SUM(l.qty * COALESCE(l.unit_cost, 0))
     FROM ticket_lines l
     JOIN tickets tk ON tk.id = l.ticket_id AND tk.tenant_id = l.tenant_id
-    JOIN product_variants v ON v.id = l.variant_id AND v.tenant_id = l.tenant_id
     WHERE l.tenant_id = $1
       AND (tk.created_at AT TIME ZONE 'America/Bogota')::date >= $2::date
       AND (tk.created_at AT TIME ZONE 'America/Bogota')::date <= $3::date
       AND tk.status IN ('completed', 'transfer_pending')
-  ), 0) AS cogs
+  ), 0) AS cogs,
+  COALESCE((
+    SELECT COUNT(*)
+    FROM ticket_lines l
+    JOIN tickets tk ON tk.id = l.ticket_id AND tk.tenant_id = l.tenant_id
+    WHERE l.tenant_id = $1
+      AND l.unit_cost IS NOT NULL
+      AND (tk.created_at AT TIME ZONE 'America/Bogota')::date >= $2::date
+      AND (tk.created_at AT TIME ZONE 'America/Bogota')::date <= $3::date
+      AND tk.status IN ('completed', 'transfer_pending')
+  ), 0) AS costed_lines
 FROM payments p
 WHERE p.tenant_id = $1
   AND NOT EXISTS (SELECT 1 FROM tickets tk WHERE tk.tenant_id=p.tenant_id AND tk.id=p.ticket_id AND tk.status='voided')
@@ -215,6 +226,8 @@ export type DashboardSummaryRow = {
   transfer: number;
   pending: number;
   cogs: number;
+  /** Lines with a known historical cost — gates honest margin display. */
+  costed_lines: number;
 };
 
 export type InventoryValueRow = {
@@ -233,6 +246,7 @@ export function parseDashboardSummary(rows: RawRow[]): DashboardSummaryRow {
     transfer: num(r.transfer),
     pending: num(r.pending),
     cogs: num(r.cogs),
+    costed_lines: num(r.costed_lines),
   };
 }
 

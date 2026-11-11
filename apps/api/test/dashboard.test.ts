@@ -83,6 +83,7 @@ async function seedDash(actor: Actor, scale = 1): Promise<void> {
       qty: 2 * scale,
       unit_price: 5000 * scale,
       subtotal: 10000 * scale,
+      unit_cost: 2000 * scale,
     },
   ]);
   await repo.payments.upsert({
@@ -214,8 +215,8 @@ describe("dashboard summary (exact numbers)", () => {
         [tId, tid],
       );
       await local.query(
-        `INSERT INTO ticket_lines (id, tenant_id, client_uuid, ticket_id, variant_id, qty, unit_price, subtotal)
-         VALUES ($1,$2,$1,$3,$4,2,5000,10000)`,
+        `INSERT INTO ticket_lines (id, tenant_id, client_uuid, ticket_id, variant_id, qty, unit_price, subtotal, unit_cost)
+         VALUES ($1,$2,$1,$3,$4,2,5000,10000,2000)`,
         [randomUUID(), tid, tId, vId],
       );
       await local.query(

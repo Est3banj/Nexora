@@ -367,6 +367,7 @@ async function upsertEntity(
           qty: p.qty,
           unit_price: p.unit_price,
           subtotal: p.subtotal,
+          unit_cost: p.unit_cost ?? null,
           ...(p.created_at ? { created_at: new Date(p.created_at) } : {}),
         })
         .onConflictDoUpdate({
@@ -377,6 +378,8 @@ async function upsertEntity(
             qty: p.qty,
             unit_price: p.unit_price,
             subtotal: p.subtotal,
+            // legacy payloads omit unit_cost — never wipe a stored historical cost
+            unit_cost: sql`COALESCE(${t.ticketLines.unit_cost}, EXCLUDED.unit_cost)`,
             updated_at: now,
           },
         });

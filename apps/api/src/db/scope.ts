@@ -712,6 +712,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
           qty: number;
           unit_price: number;
           subtotal: number;
+          unit_cost?: number | null;
         }>,
       ) {
         if (lines.length === 0) return [];
@@ -727,6 +728,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
               qty: l.qty,
               unit_price: l.unit_price,
               subtotal: l.subtotal,
+              unit_cost: l.unit_cost ?? null,
             })),
           )
           .onConflictDoNothing()

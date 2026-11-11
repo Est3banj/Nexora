@@ -194,6 +194,8 @@ export const ticketLines = pgTable(
     qty: integer("qty").notNull(),
     unit_price: integer("unit_price").notNull(),
     subtotal: integer("subtotal").notNull(),
+    /** Cost captured at sale time — historical COGS, never rewritten. */
+    unit_cost: integer("unit_cost"),
     created_at: createdAt(),
     updated_at: updatedAt(),
   },

@@ -33,7 +33,7 @@ export default function App() {
   const [local, setLocal] = useState<LocalHandle | null>(null);
   const [secondTab, setSecondTab] = useState(false);
   const [bootError, setBootError] = useState(false);
-  const [tab, setTab] = useState<Tab>("dashboard");
+  const [tab, setTab] = useState<Tab>("sale");
   const [toast, setToast] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState(0);
   const [tenantName, setTenantName] = useState<string>();
@@ -478,13 +478,8 @@ export default function App() {
       </div>
 
       <nav className="tabbar">
-        <button
-          className={tab === "dashboard" ? "active" : ""}
-          data-testid="tab-dashboard"
-          onClick={() => setTab("dashboard")}
-        >
-          Números
-        </button>
+        {/* Priority order: sell first, then daily cash ops, then lookups,
+            catalog upkeep, overview last (deep reports at the end). */}
         <button
           className={tab === "sale" ? "active" : ""}
           data-testid="tab-sale"
@@ -493,11 +488,11 @@ export default function App() {
           Venta
         </button>
         <button
-          className={tab === "catalog" ? "active" : ""}
-          data-testid="tab-catalog"
-          onClick={() => setTab("catalog")}
+          className={tab === "arqueo" ? "active" : ""}
+          data-testid="tab-arqueo"
+          onClick={() => setTab("arqueo")}
         >
-          Catálogo
+          Caja
         </button>
         <button
           className={tab === "tickets" ? "active" : ""}
@@ -507,11 +502,18 @@ export default function App() {
           Tickets
         </button>
         <button
-          className={tab === "arqueo" ? "active" : ""}
-          data-testid="tab-arqueo"
-          onClick={() => setTab("arqueo")}
+          className={tab === "catalog" ? "active" : ""}
+          data-testid="tab-catalog"
+          onClick={() => setTab("catalog")}
         >
-          Caja
+          Catálogo
+        </button>
+        <button
+          className={tab === "dashboard" ? "active" : ""}
+          data-testid="tab-dashboard"
+          onClick={() => setTab("dashboard")}
+        >
+          Panel
         </button>
         <button
           className={tab === "reports" ? "active" : ""}
