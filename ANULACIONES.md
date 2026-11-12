@@ -16,6 +16,10 @@
 Owner del tenant de sesión; miembro → 403, ticket ajeno/inexistente → 404, motivo inválido → 400.
 Venta sin turno abierto, turno cerrado o arqueo ya persistido → 409 `shift_closed`.
 Venta parcialmente sincronizada/inconsistente → 409 `incomplete_sale`.
+**Cliente con abonos (enmienda fiado 2026-11-11):** si el ticket tiene `customer_id` y ese cliente tiene **cualquier** fila en `credit_abonos` (vinculada al ticket o `ticket_id NULL`), la anulación responde **409 `abonos_exist`** sin tocar filas. Regla **a nivel de cliente** (no solo vinculada): anular una venta de crédito de un cliente que ya cobró podría dejar el saldo derivado `Σ creditos − Σ abonos` en negativo. Los tickets sin `customer_id` (venta solo-efectivo/transferencia) nunca coinciden y siguen siendo anulables. Los abonos no son pagos: la anulación no los modifica ni los cuenta como evidencia de venta.
+
+**Precedencia exacta de errores** (en `apps/api/src/db/void-sale.ts`, código → ruta):
+`not_found` → `shift_closed` → `abonos_exist` → `incomplete_sale`. La ruta `sales.ts` mapea todos los no-`not_found` a HTTP 409 con el `error` correspondiente.
 
 Una transacción bloquea ticket y turno; verifica líneas, subtotales, pagos y movimientos de venta persistidos. No usa un total/estado/cantidad enviados como orden de reversión. Marca ticket `voided`, conserva total/líneas/pagos originales, agrega `audit_log` (`sale.void`, actor de sesión, fecha, motivo, estado/total originales). Por variante agrega un movimiento `sale_void`, con UUID estable derivado de tenant/ticket/variante y conflicto único; recalcula stock desde el diario. No borra ni edita movimientos originales. Dos anulaciones concurrentes/reintentos conservan la primera auditoría y la misma compensación. Un reintento de una anulación ya realizada también responde después del cierre sin tocarlo.
 

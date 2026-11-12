@@ -4,6 +4,48 @@ import { buildApp } from "../src/app";
 import { ensureAuthTables } from "../src/db/bootstrap";
 import type { FastifyInstance } from "fastify";
 import { migrateSaleStage } from "../src/db/sale-stage";
+import { randomUUID } from "node:crypto";
+import { mutationEnvelopeSchema, type MutationEnvelope } from "@pos/shared";
+
+export function creditMutation(entity: string, payload: unknown, id = randomUUID(), ts = Date.now()): MutationEnvelope {
+  return mutationEnvelopeSchema.parse({ entity, payload, client_uuid: id, client_ts: ts });
+}
+let creditTicketNo = 1000;
+export async function pushMutations(app: FastifyInstance, actor: Actor, mutations: MutationEnvelope[]) {
+  const res = await app.inject({ method: "POST", url: "/api/sync/mutations", headers: authHeaders(actor), payload: { mutations } });
+  if (res.statusCode !== 200) throw new Error(res.body);
+  return res.json().results as Array<{ client_uuid: string; status: string; reason?: string }>;
+}
+export async function seedCustomer(app: FastifyInstance, actor: Actor, fields: Record<string, unknown> = {}) {
+  const mutation = creditMutation("customer", { name: "Doña María", credit_limit: 100000, ...fields });
+  const results = await pushMutations(app, actor, [mutation]);
+  if (results[0].status !== "applied") throw new Error(JSON.stringify(results));
+  return mutation.client_uuid;
+}
+export async function pushMixedSale(app: FastifyInstance, actor: Actor, opts: {
+  customer: string; cash: number; credit: number; shift: string; created_at?: string; variant?: string;
+}) {
+  const ticket = randomUUID(), variant = opts.variant ?? randomUUID(), total = opts.cash + opts.credit;
+  const common = { created_at: opts.created_at ?? new Date().toISOString() };
+  const mutations = [
+    creditMutation("ticket", { shift_id: opts.shift, customer_id: opts.customer, ticket_no: creditTicketNo++, total, status: "completed", ...common }, ticket),
+    creditMutation("ticket_line", { ticket_id: ticket, variant_id: variant, qty: 1, unit_price: total, subtotal: total, unit_cost: 4000, ...common }),
+    creditMutation("stockdiary", { variant_id: variant, delta: -1, reason: "sale", ref_ticket_id: ticket, ...common }),
+    ...(opts.cash ? [creditMutation("payment", { ticket_id: ticket, shift_id: opts.shift, method: "cash", amount: opts.cash, tendered: opts.cash, vuelto: 0, status: "confirmed", ...common })] : []),
+    creditMutation("payment", { ticket_id: ticket, shift_id: opts.shift, method: "credit", amount: opts.credit, tendered: null, vuelto: null, status: "confirmed", ...common }),
+  ];
+  return { ticket, mutations, results: await pushMutations(app, actor, mutations) };
+}
+export function pushCreditSale(app: FastifyInstance, actor: Actor, opts: { customer: string; amount: number; shift: string; created_at?: string; variant?: string }) {
+  return pushMixedSale(app, actor, { ...opts, cash: 0, credit: opts.amount });
+}
+export async function pushAbono(app: FastifyInstance, actor: Actor, opts: {
+  customer: string; amount: number; method: "cash" | "transfer"; shift: string; ticket?: string | null; created_at?: string;
+}) {
+  const mutation = creditMutation("credit_abono", { customer_id: opts.customer, amount: opts.amount, method: opts.method,
+    shift_id: opts.shift, ticket_id: opts.ticket ?? null, created_at: opts.created_at ?? new Date().toISOString() });
+  return { mutation, results: await pushMutations(app, actor, [mutation]) };
+}
 
 export async function buildTestApp(): Promise<FastifyInstance> {
   await ensureAuthTables();

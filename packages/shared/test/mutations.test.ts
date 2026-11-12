@@ -16,6 +16,63 @@ import {
  */
 
 describe("mutation envelope", () => {
+  it("catalog icon allowlist accepts optional/null/known keys and rejects arbitrary content", () => {
+    for (const entity of ["category", "product"]) {
+      const env = { client_uuid: randomUUID(), client_ts: 1, entity };
+      for (const fields of [{}, { icon_key: null }, { icon_key: "coffee" }, { icon_key: "bottle-water" }]) {
+        expect(mutationEnvelopeSchema.parse({ ...env, payload: { name: "Café", ...fields } }).payload).toEqual({ name: "Café", active: true, ...fields });
+      }
+      for (const icon_key of ["unknown", "<svg>", "https://cdn.test/icon.svg", 1]) expect(mutationEnvelopeSchema.safeParse({ ...env, payload: { name: "Café", icon_key } }).success).toBe(false);
+    }
+  });
+  it("legacy shift/close payloads retain omitted policy fields and v2 opening/notes parse", () => {
+    const env = { client_uuid: randomUUID(), client_ts: 1 };
+    expect(mutationEnvelopeSchema.parse({ ...env, entity: "shift", payload: { status: "open" } }).payload).toEqual({ status: "open" });
+    const close = { shift_id: randomUUID(), expected: 1000, counted: 900, diff: -100 };
+    expect(mutationEnvelopeSchema.parse({ ...env, entity: "closedcash", payload: close }).payload).toEqual(close);
+    expect(mutationEnvelopeSchema.safeParse({ ...env, entity: "shift", payload: { status: "open", opening_cash: 10000, calculation_version: "drawer_cash_v2" } }).success).toBe(true);
+    for (const opening_cash of [-1,0.5,2147483648]) expect(mutationEnvelopeSchema.safeParse({ ...env, entity: "shift", payload: { status: "open", opening_cash } }).success).toBe(false);
+    expect(mutationEnvelopeSchema.safeParse({ ...env, entity: "closedcash", payload: { ...close, closing_note: "x".repeat(501) } }).success).toBe(false);
+  });
+  it("cash movements validate integer COP/reason/direction/text limits and strip forged tenant", () => {
+    const env = { client_uuid: randomUUID(), client_ts: 1, entity: "cash_movement" };
+    const payload = { shift_id: randomUUID(), direction: "in", amount: 1000, reason: "Base", tenant_id: randomUUID() };
+    expect(mutationEnvelopeSchema.parse({ ...env, payload }).payload).not.toHaveProperty("tenant_id");
+    for (const change of [{ amount: 0 }, { amount: -1 }, { amount: 0.5 }, { amount: 2147483648 }, { reason: " " }, { reason: "x".repeat(121) }, { note: "x".repeat(501) }, { direction: "transfer" }, { shift_id: null }]) {
+      expect(mutationEnvelopeSchema.safeParse({ ...env, payload: { ...payload, ...change } }).success).toBe(false);
+    }
+  });
+  it("accepts credit and own-table abonos, strips forged tenant and rejects unknown methods/fractional amounts", () => {
+    const env = { client_uuid: randomUUID(), client_ts: 1 };
+    const payload = { customer_id: randomUUID(), shift_id: randomUUID(), amount: 100, method: "cash", tenant_id: randomUUID() };
+    const abono = mutationEnvelopeSchema.parse({ ...env, entity: "credit_abono", payload });
+    expect(abono.payload).not.toHaveProperty("tenant_id");
+    for (const amount of [0,-1,0.5,2147483648]) expect(mutationEnvelopeSchema.safeParse({ ...env, entity:"credit_abono",payload:{...payload,amount} }).success).toBe(false);
+    const payment = {ticket_id:randomUUID(),shift_id:null,method:"credit",amount:100,tendered:null,vuelto:null,status:"confirmed"};
+    expect(mutationEnvelopeSchema.safeParse({...env,entity:"payment",payload:payment}).success).toBe(true);
+    expect(mutationEnvelopeSchema.safeParse({...env,entity:"payment",payload:{...payment,method:"unknown"}}).success).toBe(false);
+  });
+  it.each([{}, { credit_limit: null }, { credit_limit: 0 }, { credit_limit: 2147483647 }])("preserves compatible customer limit %j", fields => {
+    const parsed = mutationEnvelopeSchema.parse({
+      client_uuid: randomUUID(), client_ts: 1, entity: "customer",
+      payload: { name: "María", ...fields, tenant_id: randomUUID() },
+    });
+    expect(parsed.payload).toEqual({ name: "María", active: true, ...fields });
+  });
+
+  it.each([-1, 0.5, 2147483648])("rejects invalid credit limit %s", credit_limit => {
+    expect(mutationEnvelopeSchema.safeParse({
+      client_uuid: randomUUID(), client_ts: 1, entity: "customer", payload: { name: "María", credit_limit },
+    }).success).toBe(false);
+  });
+
+  it("keeps legacy tickets without customer_id valid", () => {
+    const parsed = mutationEnvelopeSchema.parse({
+      client_uuid: randomUUID(), client_ts: 1, entity: "ticket",
+      payload: { shift_id: null, ticket_no: 1, total: 100, status: "completed" },
+    });
+    expect(parsed.payload).not.toHaveProperty("customer_id");
+  });
   it("accepts a valid product mutation (D1 enqueue shape)", () => {
     const parsed = mutationEnvelopeSchema.parse({
       client_uuid: randomUUID(),

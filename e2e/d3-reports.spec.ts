@@ -55,6 +55,7 @@ test.describe("D3-5 — reports UI + offline staleness", () => {
 
     /* ---------------- baseline: drain the queue ---------------- */
     await page.getByTestId("tab-catalog").click();
+    await page.getByTestId("product-new").click();
     await page.getByTestId("product-name").fill("Reporte E2E");
     await page.getByTestId("variant-name").fill("Único");
     await page.getByTestId("variant-price").fill(String(PRICE));
@@ -100,6 +101,7 @@ test.describe("D3-5 — reports UI + offline staleness", () => {
     await page.getByTestId("quick-cash-exact").click();
     await page.getByTestId("checkout-confirm").click();
     await expect(page.getByTestId("sale-success")).toBeVisible();
+    await page.getByTestId("receipt-close").click();
 
     /* report renders from LOCAL data with a visible staleness banner */
     await page.getByTestId("tab-reports").click();

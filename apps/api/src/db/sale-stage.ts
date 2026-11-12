@@ -114,9 +114,10 @@ export async function finalizeSale(tenant: string, actor: string, operation: str
     const ticket = items.find(m => m.entity === "ticket")!;
     if (ticket.entity !== "ticket" || !ticket.payload.shift_id) fail("sale_shift_required", 400);
     const [shift] = await tx.select().from(t.shifts).where(and(eq(t.shifts.tenant_id, tenant), eq(t.shifts.id, ticket.payload.shift_id))).for("update");
-    const [closed] = await tx.select().from(t.closedcash).where(and(eq(t.closedcash.tenant_id, tenant), eq(t.closedcash.shift_id, ticket.payload.shift_id)));
     if (!shift) fail("not_found", 404);
-    if (shift.status !== "open" || closed) fail("shift_closed");
+    // A delivered offline sale remains evidence even after another device
+    // closes. applyMutationGroups freezes existing closed-sale rows; new
+    // evidence can land, but never recomputes the immutable closed snapshot.
     const results = await applyMutationGroups(tx as unknown as Db, tenant, actor, items, manifest.ticket_id);
     if (results.some(r => r.status === "rejected")) fail(`sale_rejected:${results.find(r => r.status === "rejected")?.reason}`);
     await tx.execute(sql`UPDATE sync_sale_operations SET results=${JSON.stringify(results)}::jsonb WHERE tenant_id=${tenant} AND operation_id=${operation}`);

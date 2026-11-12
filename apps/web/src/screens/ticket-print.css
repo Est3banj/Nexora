@@ -65,3 +65,66 @@
     margin-top: -6px;
   }
 }
+
+/**
+ * M5 · Thermal receipt print (task 12.3).
+ * The receipt dialog is portaled to <body>, so print media can hide the
+ * ENTIRE app (including any open dialogs inside #root) and keep only the
+ * paper. Widths: 80mm default, 58mm when data-print-width="58" — the
+ * footer toggle flips the attribute, so both thermal rolls really work.
+ * No @page size override: the browser print dialog picks the roll, the
+ * paper box constrains the content (same approach as the corte print).
+ */
+@media print {
+  body:has(> dialog.receipt-dialog[open]) > *:not(dialog.receipt-dialog) {
+    display: none !important;
+  }
+
+  body:has(> dialog.receipt-dialog[open]) > dialog.receipt-dialog {
+    position: static !important;
+    display: block !important;
+    margin: 0 auto !important;
+    padding: 0 !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    max-height: none !important;
+    width: auto !important;
+    background: #fff !important;
+    border-radius: 0 !important;
+  }
+
+  body:has(> dialog.receipt-dialog[open]) dialog.receipt-dialog::backdrop {
+    display: none !important;
+  }
+
+  .receipt-dialog .receipt-widths,
+  .receipt-dialog .receipt-actions,
+  .receipt-dialog .receipt-buttons {
+    display: none !important;
+  }
+
+  .receipt-dialog .receipt-paper {
+    width: 80mm !important;
+    max-width: 80mm !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    background: #fff !important;
+    color: #000 !important;
+    font-size: 11px !important;
+  }
+
+  .receipt-dialog .receipt-paper[data-print-width="58"] {
+    width: 58mm !important;
+    max-width: 58mm !important;
+  }
+
+  .receipt-dialog .receipt-meta,
+  .receipt-dialog .receipt-items,
+  .receipt-dialog .receipt-totals,
+  .receipt-dialog .receipt-head,
+  .receipt-dialog .receipt-foot {
+    border-color: #000 !important;
+  }
+}

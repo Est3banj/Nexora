@@ -28,6 +28,7 @@ test.describe("Batch C — command palette", () => {
 
     /* seed a product + one sale for ticket search */
     await page.getByTestId("tab-catalog").click();
+    await page.getByTestId("product-new").click();
     await page.getByTestId("product-name").fill("Paleta E2E");
     await page.getByTestId("variant-name").fill("Único");
     await page.getByTestId("variant-price").fill("3000");
@@ -46,6 +47,7 @@ test.describe("Batch C — command palette", () => {
     await expect(page.getByTestId("checkout-confirm")).toBeFocused();
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("sale-success")).toBeVisible();
+    await page.getByTestId("receipt-close").click();
     await page.getByTestId("new-sale").click();
 
     /* ── product search → cart ── */
@@ -63,8 +65,22 @@ test.describe("Batch C — command palette", () => {
     /* ── section navigation ── */
     await page.keyboard.press("Control+k");
     await page.getByTestId("palette-input").fill("reportes");
+    /* wait for the re-render before Enter — under load a premature Enter
+     * would act on the stale (empty-query) entries and pick the first NAV */
+    await expect(
+      page.getByTestId("palette-item").filter({ hasText: "Reportes" }),
+    ).toBeVisible();
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("tab-reports")).toHaveClass(/active/);
+
+    /* ── 7th nav entry: Clientes & Fiados (M4 shell / old 5.9 + 5.11) ── */
+    await page.keyboard.press("Control+k");
+    await page.getByTestId("palette-input").fill("fiado");
+    await expect(
+      page.getByTestId("palette-item").filter({ hasText: "Clientes & Fiados" }),
+    ).toBeVisible();
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("tab-credito")).toHaveClass(/active/);
 
     /* ── "/" opens from body, Esc closes ── */
     await page.locator("body").click({ position: { x: 5, y: 5 } });
@@ -78,7 +94,7 @@ test.describe("Batch C — command palette", () => {
     await page.getByTestId("sale-search").fill("/");
     await expect(page.getByTestId("palette-input")).toHaveCount(0);
 
-    /* ── ticket search → detail ── */
+    /* ── ticket search → shared receipt preview ── */
     await page.keyboard.press("Control+k");
     await page.getByTestId("palette-input").fill("1");
     const ticketEntry = page
@@ -88,5 +104,6 @@ test.describe("Batch C — command palette", () => {
     await ticketEntry.click();
     await expect(page.getByTestId("tab-tickets")).toHaveClass(/active/);
     await expect(page.getByTestId("ticket-detail")).toContainText("#1");
+    await page.getByTestId("receipt-close").click();
   });
 });

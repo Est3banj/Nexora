@@ -73,7 +73,7 @@ it("55 mutations upload out of order without business effects, finalize response
   expect((await pool.query("SELECT count(*)::int AS n FROM sync_sale_parts")).rows[0].n).toBe(0);
 });
 
-it.each(["part", "manifest", "count", "total", "movement", "mixed", "void"])("rejects altered %s without any business effects", async kind => {
+it.each(["part", "manifest", "count", "total", "movement", "mixed", "customer", "void"])("rejects altered %s without any business effects", async kind => {
   let s = await fixture();
   if (kind === "part") {
     s.parts[0][0].client_ts++;
@@ -83,6 +83,7 @@ it.each(["part", "manifest", "count", "total", "movement", "mixed", "void"])("re
     if (kind === "movement") { const m = s.items.find(m => m.entity === "stockdiary")!; if(m.entity === "stockdiary") m.payload.delta = -2; }
     if (kind === "void") { const m = s.items.find(m => m.entity === "stockdiary")!; if(m.entity === "stockdiary") m.payload.reason = "sale_void"; }
     if (kind === "mixed") s.items.push(mutationEnvelopeSchema.parse({ client_uuid: randomUUID(),client_ts: Date.now(),entity:"product",payload:{name:"Injected",active:true} }));
+    if (kind === "customer") s.items.push(mutationEnvelopeSchema.parse({ client_uuid: randomUUID(),client_ts: Date.now(),entity:"customer",payload:{name:"Injected",credit_limit:100000} }));
     s = { ...s, ...await plan(s.items,s.ticket) };
     if (kind === "manifest") s.manifest.hash = "0".repeat(64);
     if (kind === "count") s.manifest.count++;
@@ -131,11 +132,13 @@ it("member cannot manufacture void through staging; applied sale stays voided on
   expect((await finalize(attack,member)).statusCode).toBe(400);
 });
 
-it("closed shift rejects uncommitted uploads, acknowledged receipts survive close and TTL cleanup", async () => {
+it("late offline upload survives shift close without rewriting the financial snapshot", async () => {
   const s=await fixture(); await stage(s);
   await closeShift({tenantId:owner.orgId,shiftId:s.shift.id,counted:0});
-  expect((await finalize(s)).json()).toEqual({error:"shift_closed"});
-  await untouched(s);
+  const before = await repo.closedcash.byShift(s.shift.id);
+  expect((await finalize(s)).statusCode).toBe(200);
+  expect(await repo.closedcash.byShift(s.shift.id)).toEqual(before);
+  expect(await repo.stock.recount(s.variant.id)).toBe(74);
 });
 
 it("applied receipt survives close and TTL; expired uncommitted upload can resume safely", async () => {
@@ -195,7 +198,13 @@ it("bounds count, part size/index and tenant pending quota with explicit errors"
 it("race with cash close freezes one coherent expected amount",async()=>{
   const s=await fixture();await stage(s);
   const [commit,closed]=await Promise.all([finalize(s),closeShift({tenantId:owner.orgId,shiftId:s.shift.id,counted:2600})]);
-  expect([200,409]).toContain(commit.statusCode);
-  expect(closed).toMatchObject({closedcash:{expected:commit.statusCode===200?2600:0}});
-  expect(await repo.stock.recount(s.variant.id)).toBe(commit.statusCode===200?74:100);
+  expect(commit.statusCode).toBe(200);
+  if ("error" in closed) throw new Error(closed.error);
+  // Whoever acquires the shift lock first chooses the snapshot boundary:
+  // all 26 lines or none, never a partial sale. Late acceptance is now valid.
+  expect([0,2600]).toContain(closed.closedcash.expected);
+  expect(closed.closedcash.diff).toBe(2600-closed.closedcash.expected);
+  expect(await repo.closedcash.byShift(s.shift.id)).toMatchObject(closed.closedcash);
+  expect(await repo.stock.recount(s.variant.id)).toBe(74);
+  expect((await repo.shifts.expected(s.shift.id)).expected).toBe(2600);
 });

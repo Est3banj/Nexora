@@ -38,6 +38,8 @@ export type ClosedCashRow = {
   counted: number;
   diff: number;
   closed_by: string | null;
+  closing_note: string | null;
+  calculation_version: string;
 };
 
 export type CloseShiftResult =
@@ -73,6 +75,7 @@ async function readShift(
  * every money figure is derived server-side (never from the UI).
  */
 export async function closeShift(input: {
+  closingNote?: string | null;
   tenantId: string;
   shiftId: string;
   counted: number;
@@ -104,10 +107,10 @@ export async function closeShift(input: {
 
     const inserted = await client.query<ClosedCashRow>(
       `INSERT INTO closedcash
-         (id, tenant_id, client_uuid, shift_id, expected, counted, diff, closed_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         (id, tenant_id, client_uuid, shift_id, expected, counted, diff, closed_by, closing_note, calculation_version)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, (SELECT calculation_version FROM shifts WHERE tenant_id=$2 AND id=$4))
        ON CONFLICT (tenant_id, shift_id) DO NOTHING
-       RETURNING id, tenant_id, client_uuid, shift_id, expected, counted, diff, closed_by`,
+       RETURNING *`,
       [
         id,
         input.tenantId,
@@ -117,6 +120,7 @@ export async function closeShift(input: {
         input.counted,
         diff,
         input.closedBy ?? null,
+        input.closingNote ?? null,
       ],
     );
     if (inserted.rows.length === 0) {

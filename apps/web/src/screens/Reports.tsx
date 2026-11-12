@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import type { PGlite } from "@electric-sql/pglite";
 import {
@@ -14,6 +14,7 @@ import {
 } from "../db/local-reports";
 import { useSync } from "../hooks/useSync";
 import { downloadXlsx } from "../lib/excel";
+import { validReportRange } from "../lib/analytical-periods";
 
 const cop = (n: number) =>
   new Intl.NumberFormat("es-CO", {
@@ -46,36 +47,58 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
   const sync = useSync();
   const [view, setView] = useState<View>("sales");
   const [range, setRange] = useState(() => defaultReportRange());
+  const [draft, setDraft] = useState(range);
+  const [requested, setRequested] = useState(range);
+  const [validation, setValidation] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const [sales, setSales] = useState<SalesByDayRow[]>([]);
   const [top, setTop] = useState<TopProductRow[]>([]);
   const [low, setLow] = useState<LowStockRow[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    async function refresh() {
     try {
       const [s, t, l] = await Promise.all([
-        localSalesByDay(db, tenantId, range),
-        localTopProducts(db, tenantId, range),
+        localSalesByDay(db, tenantId, requested),
+        localTopProducts(db, tenantId, requested),
         localLowStock(db, tenantId),
       ]);
+      if (!active) return;
+      setRange(requested);
       setSales(s);
       setTop(t);
       setLow(l);
       setError(null);
     } catch {
-      setError("No se pudieron calcular los reportes");
+      if (active) setError("No se pudieron calcular los reportes. El rango aplicado se conserva; volvé a aplicar para reintentar.");
+    } finally {
+      if (active) setLoading(false);
     }
-  }, [db, tenantId, range]);
-
-  useEffect(() => {
+    }
     void refresh();
-  }, [refresh, refreshToken]);
+    return () => { active = false; };
+  }, [db, tenantId, requested, refreshToken]);
 
-  const stale = sync.pending > 0;
+  function applyRange(event: React.FormEvent) {
+    event.preventDefault();
+    if (!validReportRange(draft)) {
+      setValidation("Ingresá fechas válidas; Desde debe ser anterior o igual a Hasta.");
+      return;
+    }
+    setValidation(null);
+    setRequested({ ...draft });
+  }
+
+  const stale = !sync.online || sync.pending > 0;
   const totalRevenue = sales.reduce((acc, r) => acc + r.revenue, 0);
   const totalPending = sales.reduce((acc, r) => acc + r.pending, 0);
   const totalCash = sales.reduce((acc, r) => acc + r.cash, 0);
   const totalTransfer = sales.reduce((acc, r) => acc + r.transfer, 0);
+  const totalCredit = sales.reduce((acc, r) => acc + r.credit, 0);
+  const totalAbonos = sales.reduce((acc, r) => acc + r.abonos, 0);
   const totalQty = top.reduce((acc, r) => acc + r.qty, 0);
 
   function exportExcel() {
@@ -83,12 +106,14 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
       downloadXlsx(
         `nexora-ventas-${range.from}_${range.to}.xlsx`,
         "Ventas",
-        ["Fecha", "Tickets", "Efectivo", "Transferencia", "Pendiente", "Ingresos"],
+        ["Fecha", "Tickets", "Efectivo", "Transferencia", "Crédito", "Abonos (cobros)", "Pendiente", "Ingresos"],
         sales.map((r) => [
           r.day,
           num(r.tickets),
           num(r.cash),
           num(r.transfer),
+          num(r.credit),
+          num(r.abonos),
           num(r.pending),
           num(r.revenue),
         ]),
@@ -97,6 +122,8 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
           sales.reduce((a, r) => a + r.tickets, 0),
           num(totalCash),
           num(totalTransfer),
+          num(totalCredit),
+          num(totalAbonos),
           num(totalPending),
           num(totalRevenue),
         ],
@@ -163,6 +190,13 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
         <span>{cop(totalTransfer)}</span>
       </div>
       <div className="pc-row">
+        <span>Crédito</span><span>{cop(totalCredit)}</span>
+      </div>
+      <div className="pc-row">
+        <span>Abonos (cobros)</span><span>{cop(totalAbonos)}</span>
+      </div>
+      <p>Abonos: cobros de deuda, no nuevas ventas. Ingresos = efectivo + transferencia + crédito confirmados.</p>
+      <div className="pc-row">
         <span>Pendiente</span>
         <span>{cop(totalPending)}</span>
       </div>
@@ -178,17 +212,23 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
             <th>T</th>
             <th>Efect.</th>
             <th>Transf.</th>
+            <th>Crédito</th>
+            <th>Abonos</th>
+            <th>Pend.</th>
             <th>Ingresos</th>
           </tr>
         </thead>
         <tbody>
           {sales.map((r) => (
             <tr key={r.day}>
-              <td>{fmtDay(r.day)}</td>
-              <td>{r.tickets}</td>
-              <td>{cop(r.cash)}</td>
-              <td>{cop(r.transfer)}</td>
-              <td>{cop(r.revenue)}</td>
+              <td data-label="Fecha">{fmtDay(r.day)}</td>
+              <td data-label="Tickets">{r.tickets}</td>
+              <td data-label="Efectivo">{cop(r.cash)}</td>
+              <td data-label="Transferencia">{cop(r.transfer)}</td>
+              <td data-label="Crédito">{cop(r.credit)}</td>
+              <td data-label="Abonos (cobros)">{cop(r.abonos)}</td>
+              <td data-label="Pendiente">{cop(r.pending)}</td>
+              <td data-label="Ingresos">{cop(r.revenue)}</td>
             </tr>
           ))}
         </tbody>
@@ -210,35 +250,7 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
 
   return (
     <>
-      <div className="screen reports">
-      <div className="row space-between" style={{ marginBottom: 12 }}>
-        <h2 style={{ margin: 0 }}>Reportes</h2>
-        <div className="row" style={{ gap: 8 }}>
-          <button
-            className="btn small"
-            data-testid="corte-print"
-            onClick={printCorte}
-            disabled={sales.length === 0}
-            title="Se abre el diálogo de impresión — elegí la térmica 58/80mm o Guardar como PDF"
-          >
-            Corte de caja
-          </button>
-          <button
-            className="btn small"
-            data-testid="export-excel"
-            onClick={exportExcel}
-            disabled={!hasData}
-          >
-            Exportar Excel
-          </button>
-        </div>
-      </div>
-
-      <p className="muted">
-        Ventas y productos excluyen tickets anulados; stock incluye su restitución.
-        Los montos en las planillas son pesos enteros (sin símbolo).
-      </p>
-
+       <div className="screen reports" aria-busy={loading}>
       {stale && (
         <div className="warn-banner" data-testid="reports-staleness" role="status">
           Los datos pueden estar incompletos — sincronizá para ver el estado
@@ -251,27 +263,41 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
         </div>
       )}
 
-      <div className="reports-toolbar">
-        <div className="range-row">
+       <div className="card reports-toolbar">
+         <form onSubmit={applyRange} noValidate>
+         <div className="range-row">
+           <div>
           <label htmlFor="rep-from">Desde</label>
           <input
             id="rep-from"
             data-testid="report-from"
             type="date"
-            value={range.from}
-            onChange={(e) => setRange((r) => ({ ...r, from: e.target.value || r.from }))}
-          />
+             value={draft.from}
+             aria-invalid={!!validation}
+             aria-describedby={validation ? "report-range-error" : undefined}
+             onChange={(e) => setDraft((r) => ({ ...r, from: e.target.value }))}
+           />
+           </div><div>
           <label htmlFor="rep-to">Hasta</label>
           <input
             id="rep-to"
             data-testid="report-to"
             type="date"
-            value={range.to}
-            onChange={(e) => setRange((r) => ({ ...r, to: e.target.value || r.to }))}
-          />
+             value={draft.to}
+             aria-invalid={!!validation}
+             aria-describedby={validation ? "report-range-error" : undefined}
+             onChange={(e) => setDraft((r) => ({ ...r, to: e.target.value }))}
+           />
+           </div>
+           <button className="btn" data-testid="report-apply" disabled={loading} aria-busy={loading}>{loading ? "Calculando…" : "Aplicar Filtro"}</button>
+         </div>
+          </form>
+          <div className="report-actions">
+            <button className="btn" data-testid="corte-print" onClick={printCorte} disabled={loading || !!error || sales.length === 0} title="Imprimir en térmica o Guardar como PDF">Corte de caja</button>
+            <button className="btn report-export" data-testid="export-excel" onClick={exportExcel} disabled={loading || !!error || !hasData}>Exportar a Excel</button>
+          </div>
         </div>
-
-        <div className="seg" role="tablist">
+        <div className="seg report-views" role="group" aria-label="Tipo de reporte">
           <button
             className={view === "sales" ? "active" : ""}
             data-testid="tab-report-sales"
@@ -293,8 +319,15 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
           >
             Stock bajo
           </button>
-        </div>
-      </div>
+       </div>
+       {validation && <p className="error" id="report-range-error" role="alert">{validation}</p>}
+       <p className="muted" data-testid="report-applied">Rango aplicado: {range.from} — {range.to} (Bogotá). {view === "low" ? "Stock actual; no depende del rango." : ""}</p>
+       {(draft.from !== range.from || draft.to !== range.to) && <p className="muted" data-testid="report-draft">Cambios sin aplicar. La tabla y las exportaciones conservan el rango aplicado.</p>}
+       {loading && <p role="status" data-testid="report-loading">Calculando reportes…</p>}
+       <div className="report-description">
+         <p className="muted">Ingresos = efectivo + transferencia + crédito confirmados. Abonos (cobros) son deuda cobrada, no nuevas ventas.</p>
+         <p className="muted">Ventas y productos excluyen tickets anulados; stock incluye su restitución. Planillas en pesos enteros.</p>
+       </div>
 
       {error && (
         <p className="error" data-testid="reports-error" role="alert">
@@ -302,21 +335,24 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
         </p>
       )}
 
-      {view === "sales" && (
-        <div className="card report-card" data-testid="report-sales">
+       {view === "sales" && (
+         <div className="card report-card" data-testid="report-sales">
+           <div className="report-table-heading"><h3>Resumen Consolidado de Ventas por Día</h3><span data-testid="report-count">{sales.length} registros</span></div>
           {sales.length === 0 ? (
             <div className="empty-state" data-testid="empty-sales">
               <p>Sin ventas en este período.</p>
             </div>
           ) : (
             <>
-              <table className="rpt-table" data-testid="sales-table">
+              <div className="table-scroll"><table className="rpt-table" data-testid="sales-table">
                 <thead>
                   <tr>
                     <th>Fecha</th>
                     <th className="n">Tickets</th>
                     <th className="n">Efectivo</th>
-                    <th className="n">Transferencia</th>
+                     <th className="n">Transferencia</th>
+                     <th className="n">Crédito</th>
+                     <th className="n">Abonos (cobros)</th>
                     <th className="n">Pendiente</th>
                     <th className="n">Ingresos</th>
                   </tr>
@@ -327,7 +363,9 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
                       <td>{r.day}</td>
                       <td className="n">{r.tickets}</td>
                       <td className="n">{cop(r.cash)}</td>
-                      <td className="n">{cop(r.transfer)}</td>
+                       <td className="n">{cop(r.transfer)}</td>
+                       <td className="n">{cop(r.credit)}</td>
+                       <td className="n">{cop(r.abonos)}</td>
                       <td className="n">{cop(r.pending)}</td>
                       <td className="n strong">{cop(r.revenue)}</td>
                     </tr>
@@ -338,14 +376,16 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
                     <td>TOTAL</td>
                     <td className="n">{sales.reduce((a, r) => a + r.tickets, 0)}</td>
                     <td className="n">{cop(totalCash)}</td>
-                    <td className="n">{cop(totalTransfer)}</td>
+                     <td className="n">{cop(totalTransfer)}</td>
+                     <td className="n" data-testid="sales-credit-total">{cop(totalCredit)}</td>
+                     <td className="n" data-testid="sales-abonos-total">{cop(totalAbonos)}</td>
                     <td className="n">{cop(totalPending)}</td>
                     <td className="n strong" data-testid="sales-total">
                       {cop(totalRevenue)}
                     </td>
                   </tr>
                 </tfoot>
-              </table>
+              </table></div>
               {totalPending > 0 && (
                 <p className="muted" data-testid="sales-pending-total" style={{ margin: "8px 0 0" }}>
                   {cop(totalPending)} pendientes de confirmar — no son ingresos todavía.
@@ -356,8 +396,9 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
         </div>
       )}
 
-      {view === "top" && (
-        <div className="card report-card" data-testid="report-top">
+       {view === "top" && (
+         <div className="card report-card" data-testid="report-top">
+           <div className="report-table-heading"><h3>Top productos</h3><span data-testid="report-count">{top.length} registros</span></div>
           {top.length === 0 ? (
             <div className="empty-state" data-testid="empty-top">
               <p>Sin ventas en este período.</p>
@@ -398,8 +439,9 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
         </div>
       )}
 
-      {view === "low" && (
-        <div className="card report-card" data-testid="report-low">
+       {view === "low" && (
+         <div className="card report-card" data-testid="report-low">
+           <div className="report-table-heading"><h3>Stock bajo actual</h3><span data-testid="report-count">{low.length} registros</span></div>
           {low.length === 0 ? (
             <div className="empty-state" data-testid="empty-low">
               <p>Ningún producto está por debajo del mínimo.</p>

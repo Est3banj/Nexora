@@ -38,6 +38,7 @@ test.describe("D3-1 — oversell warning", () => {
 
     /* catalog: a variant with stock 1 */
     await page.getByTestId("tab-catalog").click();
+    await page.getByTestId("product-new").click();
     await page.getByTestId("product-name").fill("Oversell E2E");
     await page.getByTestId("variant-name").fill("Único");
     await page.getByTestId("variant-price").fill("2000");

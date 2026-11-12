@@ -363,7 +363,9 @@ export function parseInventoryValue(rows: RawRow[]): InventoryValueRow {
  * balance customers is noise, and filtering SQL-side keeps the Credito screen
  * dumb (no client-side filtering). ORDER BY balance DESC, name ASC.
  */
-export const CUSTOMER_BALANCES_SQL = /* sql */ `
+// Shared ledger formula: the accounts directory and positive-only report
+// differ only in projection/filter, never in how debt is calculated.
+const CUSTOMER_LEDGER_SQL = /* sql */ `
 SELECT c.id AS customer_id,
        c.name AS name,
        c.phone AS phone,
@@ -387,9 +389,21 @@ LEFT JOIN (
   WHERE tenant_id = $1
   GROUP BY 1
 ) ab ON ab.customer_id = c.id
-WHERE c.tenant_id = $1 AND c.active = TRUE
+WHERE c.tenant_id = $1 AND c.active = TRUE`;
+
+export const CUSTOMER_BALANCES_SQL = `${CUSTOMER_LEDGER_SQL}
   AND COALESCE(cr.credit, 0) - COALESCE(ab.abonos, 0) > 0
 ORDER BY balance DESC, c.name ASC`;
+
+export const CUSTOMER_ACCOUNTS_SQL = `SELECT account.*, c.credit_limit
+FROM (${CUSTOMER_LEDGER_SQL}) account
+JOIN customers c ON c.id = account.customer_id AND c.tenant_id = $1
+ORDER BY account.balance DESC, account.name ASC`;
+
+/** Validation/history lookup includes inactive and zero-balance customers. */
+export const CUSTOMER_ACCOUNT_BY_ID_SQL = `SELECT account.*, c.credit_limit, c.active
+FROM (${CUSTOMER_LEDGER_SQL.replace("AND c.active = TRUE", "AND c.id = $2")}) account
+JOIN customers c ON c.id = account.customer_id AND c.tenant_id = $1`;
 
 export type CustomerBalanceRow = {
   customer_id: string;
@@ -408,5 +422,14 @@ export function parseCustomerBalances(rows: RawRow[]): CustomerBalanceRow[] {
     credit: num(r.credit),
     abonos: num(r.abonos),
     balance: num(r.balance),
+  }));
+}
+
+export type CustomerAccountRow = CustomerBalanceRow & { credit_limit: number | null };
+
+export function parseCustomerAccounts(rows: RawRow[]): CustomerAccountRow[] {
+  return rows.map((r) => ({
+    ...parseCustomerBalances([r])[0],
+    credit_limit: r.credit_limit == null ? null : num(r.credit_limit),
   }));
 }

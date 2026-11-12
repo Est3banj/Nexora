@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -7,6 +8,8 @@ import {
 } from "react";
 import type { PGlite } from "@electric-sql/pglite";
 import { listSaleItems, type SaleItem } from "../db/local";
+import { paymentMethodLabel } from "@pos/shared";
+import { NAVIGATION, type AppTab } from "./navigation";
 
 /**
  * Command palette (Batch C) — Ctrl/Cmd+K or "/" from anywhere:
@@ -15,7 +18,7 @@ import { listSaleItems, type SaleItem } from "../db/local";
  * hundreds-of-times-a-day action — animation would only add latency).
  */
 
-type PaletteTab = "sale" | "arqueo" | "tickets" | "catalog" | "dashboard" | "reports";
+type PaletteTab = AppTab;
 
 type Props = {
   db: PGlite;
@@ -42,14 +45,7 @@ type Entry = {
   run: () => void;
 };
 
-const NAV: Array<{ tab: PaletteTab; label: string }> = [
-  { tab: "sale", label: "Venta" },
-  { tab: "arqueo", label: "Caja" },
-  { tab: "tickets", label: "Tickets" },
-  { tab: "catalog", label: "Catálogo" },
-  { tab: "dashboard", label: "Panel" },
-  { tab: "reports", label: "Reportes" },
-];
+const NAV = NAVIGATION;
 
 const cop = (n: number) =>
   new Intl.NumberFormat("es-CO", {
@@ -68,13 +64,28 @@ export function CommandPalette({
 }: Props) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
+  /* Reset the highlight SYNCHRONOUSLY with the query change (render-phase
+   * adjustment): the old useEffect(setActive(0)) could lose the race to a
+   * fast Enter — entries already narrowed while `active` still pointed at
+   * the previous (longer) list, so entries[active] was undefined and the
+   * keypress silently did nothing. */
+  const [lastQuery, setLastQuery] = useState(query);
+  if (lastQuery !== query) {
+    setLastQuery(query);
+    setActive(0);
+  }
   const [products, setProducts] = useState<SaleItem[]>([]);
   const [tickets, setTickets] = useState<TicketRow[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dialog = dialogRef.current;
+    dialog?.showModal();
     inputRef.current?.focus();
+    return () => { dialog?.close(); if (trigger?.isConnected) trigger.focus(); };
   }, []);
 
   useEffect(() => {
@@ -84,7 +95,7 @@ export function CommandPalette({
       db
         .query<TicketRow>(
           `SELECT t.id, t.ticket_no, t.total, t.status,
-                  (SELECT p.method FROM payments p WHERE p.ticket_id = t.id LIMIT 1) AS method
+                  (SELECT string_agg(DISTINCT p.method, ',' ORDER BY p.method) FROM payments p WHERE p.tenant_id=t.tenant_id AND p.ticket_id = t.id) AS method
            FROM tickets t
            WHERE t.tenant_id = $1
            ORDER BY t.ticket_no DESC
@@ -153,7 +164,7 @@ export function CommandPalette({
           key: `tix:${t.id}`,
           group: "Tickets",
           primary: `#${t.ticket_no}`,
-          secondary: `${cop(t.total)} · ${t.status === "voided" ? "anulada" : t.method === "transfer" ? "transferencia" : "efectivo"}`,
+          secondary: `${cop(t.total)} · ${t.status === "voided" ? "anulada" : paymentMethodLabel(t.method)}`,
           run: () => {
             onPickTicket({ id: t.id, ticket_no: t.ticket_no });
             onClose();
@@ -167,7 +178,7 @@ export function CommandPalette({
           key: `tix:${t.id}`,
           group: "Tickets recientes",
           primary: `#${t.ticket_no}`,
-          secondary: `${cop(t.total)} · ${t.status === "voided" ? "anulada" : t.method === "transfer" ? "transferencia" : "efectivo"}`,
+          secondary: `${cop(t.total)} · ${t.status === "voided" ? "anulada" : paymentMethodLabel(t.method)}`,
           run: () => {
             onPickTicket({ id: t.id, ticket_no: t.ticket_no });
             onClose();
@@ -177,10 +188,6 @@ export function CommandPalette({
     }
     return out;
   }, [q, products, tickets, onNavigate, onPickProduct, onPickTicket, onClose]);
-
-  useEffect(() => {
-    setActive(0);
-  }, [query]);
 
   useEffect(() => {
     itemRefs.current[active]?.scrollIntoView({ block: "nearest" });
@@ -195,7 +202,9 @@ export function CommandPalette({
       setActive((a) => Math.max(a - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      entries[active]?.run();
+      /* clamp: a highlight that outlived its list must fall back to the
+       * first entry instead of silently doing nothing */
+      entries[Math.min(active, entries.length - 1)]?.run();
     } else if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
@@ -206,14 +215,17 @@ export function CommandPalette({
   let lastGroup: string | null = null;
 
   return (
-    <div
+    <dialog
+      ref={dialogRef}
       className="palette-backdrop"
       data-testid="palette-backdrop"
+      aria-label="Buscador rápido"
+      onCancel={(e) => { e.preventDefault(); onClose(); }}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="palette" role="dialog" aria-label="Buscador rápido">
+      <div className="palette">
         <input
           ref={inputRef}
           className="palette-input"
@@ -275,6 +287,6 @@ export function CommandPalette({
           </span>
         </div>
       </div>
-    </div>
+    </dialog>
   );
 }

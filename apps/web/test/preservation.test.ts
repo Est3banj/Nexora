@@ -30,12 +30,27 @@ function ack() {
 async function product(name = "Local") {
   return createLocalProduct(db, A, { name, variant: { name: "Único", price: 100, stock: 100 } });
 }
+async function creditCache() {
+  const customer = crypto.randomUUID(), abono = crypto.randomUUID();
+  const timestamps = { created_at: "2026-11-01T17:00:00.000Z", updated_at: "2026-11-01T17:00:00.000Z" };
+  await applyRehydratePage(db, A, {
+    customers: [{ id: customer, name: "Cliente", active: true, credit_limit: 150000, ...timestamps }],
+    credit_abonos: [{ id: abono, customer_id: customer, amount: 1000, method: "cash", ...timestamps }],
+    cash_movements: [{ id: crypto.randomUUID(), shift_id: crypto.randomUUID(), amount: 2000, direction: "in", reason: "Base adicional", ...timestamps }], next_offset: null,
+  });
+  return { customer, abono };
+}
 function transition(finish = () => clearLocalBusinessData(db)) {
   return safeTransition(db, { flush: () => pushNow(db, A, { force: true }), finish, state: s => { state = s; } });
 }
 
 it("logout waits for real ACK, clears all tables including categories, leaves writes sealed", async () => {
   await product();
+  await creditCache();
+  expect(BUSINESS_TABLES).toHaveLength(15);
+  expect((await db.query("SELECT * FROM cash_movements")).rows).toHaveLength(1);
+  expect((await db.query("SELECT * FROM customers")).rows).toHaveLength(1);
+  expect((await db.query("SELECT * FROM credit_abonos")).rows).toHaveLength(1);
   ack();
   const signOut = vi.fn(async () => {
     expect(await unresolvedWork(db)).toBe(0);
@@ -53,6 +68,9 @@ it("logout waits for real ACK, clears all tables including categories, leaves wr
 
 it.each(["pending", "failed", "poison", "in_flight"])("%s work blocks destructive low-level clear, offline exit, and foreign adoption", async status => {
   await product();
+  const { customer, abono } = await creditCache();
+  await enqueueMutation(db, A, "customer", customer, { name: "Cliente", credit_limit: 150000 });
+  await enqueueMutation(db, A, "credit_abono", abono, { customer_id: customer, amount: 1000, method: "cash", shift_id: null });
   await db.query("UPDATE sync_log SET status=$1", [status]);
   vi.stubGlobal("navigator", { onLine: false });
   const before = (await db.query("SELECT * FROM sync_log ORDER BY id")).rows;
@@ -62,6 +80,8 @@ it.each(["pending", "failed", "poison", "in_flight"])("%s work blocks destructiv
   expect(finish).not.toHaveBeenCalled();
   await expect(clearLocalBusinessData(db)).rejects.toThrow("unacknowledged_local_work");
   await expect(claimLocal(db, B)).rejects.toThrow("otro comercio");
+  expect((await db.query("SELECT credit_limit FROM customers")).rows).toEqual([{ credit_limit: 150000 }]);
+  expect((await db.query("SELECT amount FROM credit_abonos")).rows).toEqual([{ amount: 1000 }]);
   await db.exec(PRESERVATION_SQL); // boot migration must not reset seal/work
   expect((await db.query("SELECT * FROM sync_log ORDER BY id")).rows).toEqual(before);
   expect((await db.query<{ sealed: boolean }>("SELECT sealed FROM local_vault")).rows[0].sealed).toBe(true);
@@ -77,11 +97,14 @@ it.each(["pending", "failed", "poison", "in_flight"])("%s work blocks destructiv
 
 it("snapshot alone blocks wipe even with every queue member apparently synced", async () => {
   await product();
+  await creditCache();
   await saveSaleSnapshot(db, A, (await db.query("SELECT * FROM sync_log")).rows);
   await db.query("UPDATE sync_log SET status='synced'");
   await expect(clearLocalBusinessData(db)).rejects.toThrow("unacknowledged_local_work");
   expect(await unresolvedWork(db)).toBe(1);
   await expect(claimLocal(db, B)).rejects.toThrow("otro comercio");
+  expect((await db.query("SELECT * FROM customers")).rows).toHaveLength(1);
+  expect((await db.query("SELECT * FROM credit_abonos")).rows).toHaveLength(1);
 });
 
 it("lost finalize ACK of a large sale retains snapshot and ticket; retry recovers the same operation before clearing", async () => {
@@ -180,10 +203,14 @@ it.each(["signout", "clear"])("%s failure preserves data and leaves a recoverabl
 
 it("ACKed foreign caches are removed on adoption, while stale hydration and stale enqueue cannot repopulate them", async () => {
   await product(); ack(); await pushNow(db, A);
+  await creditCache();
   await sealLocal(db);
   await claimLocal(db, B);
+  expect((await db.query("SELECT * FROM customers")).rows).toEqual([]);
+  expect((await db.query("SELECT * FROM credit_abonos")).rows).toEqual([]);
   expect(await listProducts(db, A)).toHaveLength(0);
   await expect(applyRehydratePage(db, A, { products: [], next_offset: null })).rejects.toThrow("tenant_mismatch");
+  await expect(creditCache()).rejects.toThrow("tenant_mismatch");
   await expect(product("Stale handler")).rejects.toThrow("tenant_mismatch");
   await expect(mirrorOpenShift(db, A, { id: crypto.randomUUID(), status: "open" })).rejects.toThrow("tenant_mismatch");
   await expect(mirrorVoidedSale(db, A, { ticket_id: crypto.randomUUID(), stockdiary: [] })).rejects.toThrow("tenant_mismatch");

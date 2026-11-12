@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { PGlite } from "@electric-sql/pglite";
-import { defaultReportRange } from "@pos/shared";
+import { CUSTOMER_ACCOUNTS_SQL, CUSTOMER_BALANCES_SQL, parseCustomerAccounts, parseCustomerBalances, defaultReportRange, SALES_BY_DAY_SQL, DASHBOARD_SUMMARY_SQL, parseSalesByDay, parseDashboardSummary } from "@pos/shared";
+import { applyRehydratePage } from "../src/sync/rehydrate";
 import { openLocalDb } from "../src/db/pglite";
 import {
   commitLocalSale,
@@ -39,6 +40,58 @@ afterEach(async () => {
 });
 
 describe("local reports (shared SQL over PGlite)", () => {
+  it("payment and collection day boundaries use Bogotá midnight, not UTC or host date", async () => {
+    const ticket = crypto.randomUUID(), customer = crypto.randomUUID();
+    await db.query(`INSERT INTO tickets(id,tenant_id,client_uuid,ticket_no,status,total) VALUES($1,$2,$1,1,'completed',3000)`, [ticket, TENANT]);
+    for (const [stamp, amount] of [["2027-01-01T04:59:59Z", 1000], ["2027-01-01T05:00:00Z", 2000]] as const) {
+      await db.query(`INSERT INTO payments(id,tenant_id,client_uuid,ticket_id,method,amount,status,created_at) VALUES($1,$2,$1,$3,'credit',$4,'confirmed',$5)`, [crypto.randomUUID(), TENANT, ticket, amount, stamp]);
+      await db.query(`INSERT INTO credit_abonos(id,tenant_id,client_uuid,customer_id,method,amount,created_at) VALUES($1,$2,$1,$3,'cash',$4,$5)`, [crypto.randomUUID(), TENANT, customer, amount / 10, stamp]);
+    }
+    expect(await localSalesByDay(db, TENANT, { from: "2026-12-31", to: "2026-12-31" })).toEqual([{ day: "2026-12-31", tickets: 1, revenue: 1000, cash: 0, transfer: 0, credit: 1000, abonos: 100, pending: 0 }]);
+    expect(await localSalesByDay(db, TENANT, { from: "2027-01-01", to: "2027-01-01" })).toEqual([{ day: "2027-01-01", tickets: 1, revenue: 2000, cash: 0, transfer: 0, credit: 2000, abonos: 200, pending: 0 }]);
+  });
+  it("pinned Day3 reports accrual65000/credit55000/cobros8000 and abono-only day", async () => {
+    const x = crypto.randomUUID(), y = crypto.randomUUID(), tx = crypto.randomUUID(), ty = crypto.randomUUID();
+    const stamp = { created_at: "2026-11-03T15:00:00.000Z", updated_at: "2026-11-03T15:00:00.000Z" };
+    await applyRehydratePage(db, TENANT, {
+      customers: [{ id:x, name:"X", active:true, credit_limit:100000,...stamp },{ id:y,name:"Y",active:true,credit_limit:100000,...stamp }],
+      tickets: [{id:tx,customer_id:x,ticket_no:1,total:35000,status:"completed",...stamp},{id:ty,customer_id:y,ticket_no:2,total:30000,status:"completed",...stamp}],
+      payments: [[tx,"credit",35000],[ty,"cash",10000],[ty,"credit",20000]].map(([ticket_id,method,amount]) => ({id:crypto.randomUUID(),ticket_id,method,amount,status:"confirmed",...stamp})),
+      ticket_lines: [tx,ty].map(ticket_id => ({ id:crypto.randomUUID(),ticket_id,variant_id:crypto.randomUUID(),qty:1,unit_price:ticket_id===tx?35000:30000,subtotal:ticket_id===tx?35000:30000,unit_cost:4000,...stamp })),
+      credit_abonos: [{id:crypto.randomUUID(),customer_id:x,amount:5000,method:"cash",...stamp},{id:crypto.randomUUID(),customer_id:y,amount:3000,method:"transfer",...stamp}], next_offset:null,
+    });
+    const params = [TENANT,"2026-11-03","2026-11-03"];
+    expect(parseSalesByDay((await db.query<Record<string, unknown>>(SALES_BY_DAY_SQL,params)).rows)).toEqual([{day:"2026-11-03",tickets:2,revenue:65000,cash:10000,transfer:0,credit:55000,abonos:8000,pending:0}]);
+    expect(parseDashboardSummary((await db.query<Record<string, unknown>>(DASHBOARD_SUMMARY_SQL,params)).rows)).toMatchObject({revenue:65000,credit:55000,abonos:8000,cogs:8000,pending_count:0});
+    expect(parseCustomerAccounts((await db.query<Record<string, unknown>>(CUSTOMER_ACCOUNTS_SQL,[TENANT])).rows).map(r=>r.balance).sort()).toEqual([17000,30000]);
+    await db.query(`INSERT INTO credit_abonos(id,tenant_id,client_uuid,customer_id,amount,method,created_at)
+      VALUES($1,$2,$1,$3,1000,'transfer','2026-11-04T15:00:00Z')`,[crypto.randomUUID(),TENANT,x]);
+    expect(parseSalesByDay((await db.query<Record<string, unknown>>(SALES_BY_DAY_SQL,[TENANT,"2026-11-04","2026-11-04"])).rows)).toEqual([{day:"2026-11-04",tickets:0,revenue:0,cash:0,transfer:0,credit:0,abonos:1000,pending:0}]);
+  });
+  it("accounts keep zero/null limits and exclude inactive/foreign ledger while Por Cobrar stays positive", async () => {
+    const a = crypto.randomUUID(), b = crypto.randomUUID(), inactive = crypto.randomUUID(), ticket = crypto.randomUUID();
+    const stamp = { created_at: "2026-11-01T17:00:00.000Z", updated_at: "2026-11-01T17:00:00.000Z" };
+    await applyRehydratePage(db, TENANT, {
+      customers: [{ id: a, name: "A", credit_limit: 100000, active: true, ...stamp }, { id: b, name: "B", active: true, ...stamp },
+        { id: inactive, name: "Inactivo", credit_limit: 0, active: false, ...stamp }],
+      tickets: [{ id: ticket, ticket_no: 1, customer_id: a, total: 53000, status: "completed", ...stamp }],
+      payments: [{ id: crypto.randomUUID(), ticket_id: ticket, method: "credit", amount: 53000, status: "confirmed", ...stamp }],
+      credit_abonos: [{ id: crypto.randomUUID(), customer_id: a, amount: 15000, method: "cash", ...stamp }], next_offset: null,
+    });
+    const foreign = "11111111-1111-4111-8111-111111111111";
+    // Deliberately forged cross-tenant links must not pollute A's ledger.
+    await db.query(`INSERT INTO credit_abonos(id,tenant_id,client_uuid,customer_id,amount,method)
+      VALUES($1,$2,$1,$3,9000,'cash')`, [crypto.randomUUID(), foreign, a]);
+    const rows = parseCustomerAccounts((await db.query<Record<string, unknown>>(CUSTOMER_ACCOUNTS_SQL, [TENANT])).rows);
+    expect(rows).toEqual([
+      { customer_id: a, name: "A", phone: null, credit_limit: 100000, credit: 53000, abonos: 15000, balance: 38000 },
+      { customer_id: b, name: "B", phone: null, credit_limit: null, credit: 0, abonos: 0, balance: 0 },
+    ]);
+    expect(parseCustomerBalances((await db.query<Record<string, unknown>>(CUSTOMER_BALANCES_SQL, [TENANT])).rows)).toEqual([
+      { customer_id: a, name: "A", phone: null, credit: 53000, abonos: 15000, balance: 38000 },
+    ]);
+    expect(parseCustomerAccounts((await db.query<Record<string, unknown>>(CUSTOMER_ACCOUNTS_SQL, [foreign])).rows)).toEqual([]);
+  });
   it("offline sale shows up in sales-by-day + top products with exact numbers", async () => {
     const product = await createLocalProduct(db, TENANT, {
       name: "Granizado",

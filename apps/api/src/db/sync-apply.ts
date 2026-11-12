@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import {
   contentHash,
+  CUSTOMER_ACCOUNT_BY_ID_SQL,
   EXPECTED_FROM_PAYMENTS_SQL,
   parseExpectedRow,
   type MutationEnvelope,
@@ -154,6 +155,7 @@ export async function applyMutationGroups(
         // Lock both claimed and stored parents. A forged parent must not let an
         // existing payment/line/movement of a voided sale escape the freeze.
         const ticketIds = new Set<string>();
+        const customerIds = new Set<string>();
         for (const { m } of group) {
           const p = m.payload as Record<string, unknown>;
           if (m.entity === "ticket") ticketIds.add(m.client_uuid);
@@ -177,7 +179,13 @@ export async function applyMutationGroups(
           const [ticket] = await tx.select().from(t.tickets)
             .where(and(eq(t.tickets.tenant_id, tenantId), eq(t.tickets.id, id))).for("update");
           if (ticket?.status === "voided") voidedId = id;
+          if (ticket?.customer_id) customerIds.add(ticket.customer_id);
         }
+        // Ticket locks FIRST, matching staging and void. Never acquire this
+        // lock for shift/close groups: staging already holds its shift lock.
+        // The tenant key also serializes two unlinked first-insert abonos.
+        if (group.some(({ m }) => ["ticket", "payment", "credit_abono", "customer"].includes(m.entity)))
+          await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`credit:${tenantId}`}, 0))`);
         if (voidedId) {
           // ACK identical old envelopes without applying ANY member of the group.
           // Include canonical state so a stale cache cannot report a live sale.
@@ -199,6 +207,17 @@ export async function applyMutationGroups(
         const execution = group.map((item, i) => ({ ...item, i })).sort((a,b) => rank(a.m) - rank(b.m));
         for (const { m, i } of execution)
           inner[i] = await applyOne(tx, tenantId, actor, m, dirtyVariants);
+        for (const id of ticketIds) {
+          const [ticket] = await tx.select().from(t.tickets).where(and(eq(t.tickets.tenant_id, tenantId), eq(t.tickets.id, id)));
+          if (ticket?.customer_id) customerIds.add(ticket.customer_id);
+        }
+        // A later payment/ticket LWW edit cannot remove debt already collected.
+        // Limits are deliberately local-only; nonnegative ledger is universal.
+        for (const id of customerIds) {
+          const query = sql.join(CUSTOMER_ACCOUNT_BY_ID_SQL.split(/(\$[12])/).map(part =>
+            part === "$1" ? sql`${tenantId}` : part === "$2" ? sql`${id}` : sql.raw(part)), sql.raw(""));
+          if (Number((await tx.execute(query)).rows[0]?.balance ?? 0) < 0) throw new InvalidSync();
+        }
         // last step of the group: movement log → balance (D3-1 invariant)
         await recomputeStock(tx, tenantId, dirtyVariants);
         for (let i = 0; i < group.length; i++) {
@@ -206,7 +225,8 @@ export async function applyMutationGroups(
           if (m.entity !== "closedcash" || inner[i].status === "rejected") continue;
           const [closed] = await tx.select().from(t.closedcash)
             .where(and(eq(t.closedcash.tenant_id, tenantId), eq(t.closedcash.shift_id, m.payload.shift_id)));
-          if (closed) inner[i].closedcash = { shift_id: closed.shift_id, expected: closed.expected, counted: closed.counted, diff: closed.diff };
+          if (closed) inner[i].closedcash = { shift_id: closed.shift_id, expected: closed.expected, counted: closed.counted, diff: closed.diff,
+            calculation_version: closed.calculation_version as "legacy_v1" | "drawer_cash_v2", closing_note: closed.closing_note };
         }
         return inner;
       });
@@ -244,6 +264,35 @@ async function applyOne(
     .for("update");
   const stored = ledgerRows[0];
   if (stored && stored.entity !== m.entity) throw new InvalidSync();
+  if (m.entity === "cash_movement") {
+    const [row] = await tx.select().from(t.cashMovements)
+      .where(and(eq(t.cashMovements.tenant_id, tenantId), eq(t.cashMovements.client_uuid, m.client_uuid)));
+    if (row) {
+      const p = m.payload;
+      if (row.shift_id !== p.shift_id || row.amount !== p.amount || row.direction !== p.direction
+        || row.reason !== p.reason || row.note !== (p.note ?? null)
+        || (p.created_at && row.created_at.getTime() !== new Date(p.created_at).getTime())
+        || (stored && contentHash(stored.payload) !== contentHash(p))) throw new InvalidSync();
+      return { client_uuid: m.client_uuid, status: "duplicate" };
+    }
+    if (stored) throw new InvalidSync();
+  }
+
+  if (m.entity === "credit_abono") {
+    const [row] = await tx.select().from(t.creditAbonos)
+      .where(and(eq(t.creditAbonos.tenant_id, tenantId), eq(t.creditAbonos.client_uuid, m.client_uuid)));
+    if (row) {
+      const p = m.payload;
+      const identical = row.customer_id === p.customer_id && row.amount === p.amount
+        && row.method === p.method && row.shift_id === p.shift_id
+        && row.ticket_id === (p.ticket_id ?? null) && row.note === (p.note ?? null)
+        && (!p.created_at || row.created_at.getTime() === new Date(p.created_at).getTime());
+      // Do not advance ledger/hash/timestamps, including a missing ledger.
+      if (!identical || (stored && contentHash(stored.payload) !== contentHash(p))) throw new InvalidSync();
+      return { client_uuid: m.client_uuid, status: "duplicate" };
+    }
+    if (stored) throw new InvalidSync();
+  }
 
   if (stored) {
     if (contentHash(stored.payload) === contentHash(m.payload)) {
@@ -326,6 +375,21 @@ async function upsertEntity(
 ): Promise<void> {
   const now = new Date();
   const cu = m.client_uuid;
+
+  // Freeze previously stored sale evidence of closed shifts. New rows from
+  // disconnected devices remain admissible; bank confirmation has its own endpoint.
+  if (["ticket", "payment", "ticket_line"].includes(m.entity)) {
+    const table = m.entity === "ticket" ? t.tickets : m.entity === "payment" ? t.payments : t.ticketLines;
+    const [old] = await tx.select().from(table).where(and(eq(table.tenant_id, tenantId), eq(table.id, cu)));
+    if (old) {
+      const ticketId = "ticket_id" in old ? old.ticket_id : old.id;
+      const [ticket] = await tx.select().from(t.tickets).where(and(eq(t.tickets.tenant_id, tenantId), eq(t.tickets.id, ticketId)));
+      if (ticket?.shift_id) {
+        const [closed] = await tx.select().from(t.closedcash).where(and(eq(t.closedcash.tenant_id, tenantId), eq(t.closedcash.shift_id, ticket.shift_id)));
+        if (closed) throw new InvalidSync();
+      }
+    }
+  }
 
   switch (m.entity) {
     case "ticket": {
@@ -488,11 +552,12 @@ async function upsertEntity(
           tenant_id: tenantId,
           client_uuid: cu,
           name: p.name,
+          icon_key: p.icon_key ?? null,
           active: p.active,
         })
         .onConflictDoUpdate({
           target: [t.categories.tenant_id, t.categories.client_uuid],
-          set: { name: p.name, active: p.active, updated_at: now },
+          set: { name: p.name, ...(p.icon_key !== undefined ? { icon_key: p.icon_key } : {}), active: p.active, updated_at: now },
         });
       return;
     }
@@ -510,6 +575,7 @@ async function upsertEntity(
           tenant_id: tenantId,
           client_uuid: cu,
           name: p.name,
+          icon_key: p.icon_key ?? null,
           category_id: p.category_id ?? null,
           photo: p.photo ?? null,
           active: p.active,
@@ -518,6 +584,7 @@ async function upsertEntity(
           target: [t.products.tenant_id, t.products.client_uuid],
           set: {
             name: p.name,
+            ...(p.icon_key !== undefined ? { icon_key: p.icon_key } : {}),
             ...(p.category_id !== undefined ? { category_id: p.category_id } : {}),
             ...(p.photo !== undefined ? { photo: p.photo } : {}),
             active: p.active,
@@ -580,7 +647,11 @@ async function upsertEntity(
     }
     case "closedcash": {
       const p = m.payload;
-      await tx.select().from(t.shifts).where(and(eq(t.shifts.tenant_id, tenantId), eq(t.shifts.id, p.shift_id))).for("update");
+      const [original] = await tx.select().from(t.closedcash)
+        .where(and(eq(t.closedcash.tenant_id, tenantId), eq(t.closedcash.client_uuid, cu)));
+      if (original && original.shift_id !== p.shift_id) throw new InvalidSync();
+      const [shift] = await tx.select().from(t.shifts).where(and(eq(t.shifts.tenant_id, tenantId), eq(t.shifts.id, p.shift_id))).for("update");
+      if (!shift) throw new InvalidSync();
       // Offline counted is user input; expected and diff remain server-owned.
       const query = sql.join(EXPECTED_FROM_PAYMENTS_SQL.split(/(\$[12])/).map(part =>
         part === "$1" ? sql`${tenantId}` : part === "$2" ? sql`${p.shift_id}` : sql.raw(part)), sql.raw(""));
@@ -600,12 +671,21 @@ async function upsertEntity(
           counted: p.counted,
           diff: p.counted - expected,
           closed_by: p.closed_by ?? null,
+          closing_note: p.closing_note ?? null,
+          calculation_version: shift.calculation_version,
         })
         .onConflictDoNothing();
+      await tx.update(t.shifts).set({ status: "closed", closed_at: now, updated_at: now })
+        .where(and(eq(t.shifts.tenant_id, tenantId), eq(t.shifts.id, p.shift_id), eq(t.shifts.status, "open")));
       return;
     }
     case "shift": {
       const p = m.payload;
+      const [existing] = await tx.select().from(t.shifts).where(and(eq(t.shifts.tenant_id, tenantId), eq(t.shifts.id, cu)));
+      if (existing && ((p.opening_cash !== undefined && p.opening_cash !== existing.opening_cash)
+        || (p.calculation_version !== undefined && p.calculation_version !== existing.calculation_version)
+        || (p.opened_by !== undefined && p.opened_by !== existing.opened_by))) throw new InvalidSync();
+      if (existing?.status === "closed") return;
       const [closed] = await tx.select().from(t.closedcash).where(and(eq(t.closedcash.tenant_id, tenantId), eq(t.closedcash.shift_id, cu)));
       if (closed && p.status === "open") return;
       await tx
@@ -615,6 +695,9 @@ async function upsertEntity(
           tenant_id: tenantId,
           client_uuid: cu,
           status: p.status,
+          opening_cash: p.opening_cash ?? 0,
+          opened_by: p.opened_by ?? null,
+          calculation_version: p.calculation_version ?? "legacy_v1",
           ...(p.opened_at ? { opened_at: new Date(p.opened_at) } : {}),
           closed_at: p.closed_at ? new Date(p.closed_at) : null,
         })
@@ -622,6 +705,17 @@ async function upsertEntity(
           target: [t.shifts.tenant_id, t.shifts.client_uuid],
           set: { status: p.status, closed_at: p.closed_at ? new Date(p.closed_at) : null, updated_at: now },
         });
+      return;
+    }
+    case "cash_movement": {
+      const p = m.payload;
+      const [shift] = await tx.select().from(t.shifts)
+        .where(and(eq(t.shifts.tenant_id, tenantId), eq(t.shifts.id, p.shift_id))).for("update");
+      if (!shift) throw new InvalidSync();
+      // Legitimate late offline evidence is retained without touching snapshots.
+      await tx.insert(t.cashMovements).values({ id: cu, client_uuid: cu, tenant_id: tenantId,
+        shift_id: p.shift_id, direction: p.direction, amount: p.amount, reason: p.reason, note: p.note ?? null,
+        ...(p.created_at ? { created_at: new Date(p.created_at) } : {}) });
       return;
     }
     case "customer": {
@@ -636,6 +730,7 @@ async function upsertEntity(
           tenant_id: tenantId,
           client_uuid: cu,
           name: p.name,
+          credit_limit: p.credit_limit ?? null,
           phone: p.phone ?? null,
           notes: p.notes ?? null,
           active: p.active,
@@ -645,6 +740,7 @@ async function upsertEntity(
           target: [t.customers.tenant_id, t.customers.client_uuid],
           set: {
             name: p.name,
+            ...(p.credit_limit !== undefined ? { credit_limit: p.credit_limit } : {}),
             // legacy payloads may omit phone/notes — never wipe stored data
             ...(p.phone !== undefined ? { phone: p.phone } : {}),
             ...(p.notes !== undefined ? { notes: p.notes } : {}),
@@ -662,6 +758,16 @@ async function upsertEntity(
       const [customer] = await tx.select({ id: t.customers.id }).from(t.customers)
         .where(and(eq(t.customers.tenant_id, tenantId), eq(t.customers.id, p.customer_id)));
       if (!customer) throw new InvalidSync();
+      if (!p.shift_id) throw new InvalidSync();
+      // Late offline evidence may belong to an already-closed shift; never
+      // re-open it or mutate its snapshot. Attribution must still be in-tenant.
+      const [shift] = await tx.select().from(t.shifts)
+        .where(and(eq(t.shifts.tenant_id, tenantId), eq(t.shifts.id, p.shift_id)));
+      if (!shift) throw new InvalidSync();
+      const query = sql.join(CUSTOMER_ACCOUNT_BY_ID_SQL.split(/(\$[12])/).map(part =>
+        part === "$1" ? sql`${tenantId}` : part === "$2" ? sql`${p.customer_id}` : sql.raw(part)), sql.raw(""));
+      const balance = Number((await tx.execute(query)).rows[0]?.balance ?? 0);
+      if (p.amount > balance) throw new InvalidSync();
       // (2) optional linkage (D2): the ticket must exist in-tenant AND either
       // carry no customer (legacy/unattributed) or carry the SAME customer —
       // an abono can never pay down someone else's debt.
@@ -670,10 +776,7 @@ async function upsertEntity(
           .where(and(eq(t.tickets.tenant_id, tenantId), eq(t.tickets.id, p.ticket_id)));
         if (!ticket || (ticket.customer_id !== null && ticket.customer_id !== p.customer_id)) throw new InvalidSync();
       }
-      // (3) LWW upsert on (tenant_id, client_uuid) — NEVER a second row.
-      // A replay with different content and an older/equal client_ts never
-      // reaches here (applyOne → conflict_hash_mismatch); a NEWER one is the
-      // legitimate last-write-wins update.
+      // (3) Append-only: replay checks precede LWW in applyOne.
       await tx
         .insert(t.creditAbonos)
         .values({
@@ -688,18 +791,7 @@ async function upsertEntity(
           note: p.note ?? null,
           ...(p.created_at ? { created_at: new Date(p.created_at) } : {}),
         })
-        .onConflictDoUpdate({
-          target: [t.creditAbonos.tenant_id, t.creditAbonos.client_uuid],
-          set: {
-            customer_id: p.customer_id,
-            amount: p.amount,
-            method: p.method,
-            shift_id: p.shift_id,
-            ticket_id: p.ticket_id ?? null,
-            note: p.note ?? null,
-            updated_at: now,
-          },
-        });
+        .onConflictDoNothing();
       return;
     }
   }

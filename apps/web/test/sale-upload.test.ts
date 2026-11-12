@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { PGlite } from "@electric-sql/pglite";
 import { openLocalDb } from "../src/db/pglite";
-import { commitLocalSale, createLocalProduct, enqueueMutation, openLocalShift } from "../src/db/local";
+import { commitLocalSale, createLocalCustomer, createLocalProduct, enqueueMutation, openLocalShift, closeLocalShift, registerLocalAbono, registerLocalCashMovement } from "../src/db/local";
 import { pushNow, resetInFlight } from "../src/sync/queue";
 import type { MutationEnvelope } from "@pos/shared";
 import { SALE_OUTBOX_MIGRATION_SQL } from "@pos/shared";
@@ -21,6 +21,35 @@ beforeEach(async()=>{
   await commitLocalSale(db,tenant,{lines:Array.from({length:26},()=>({variant_id:variant,qty:1,unit_price:100})),tendered:2600});
 });
 afterEach(async()=>{vi.unstubAllGlobals();await db.close();});
+
+it("never-synced offline opening and all shift evidence ACK before close despite timestamp skew", async () => {
+  await db.query("UPDATE sync_log SET status='synced'");
+  await closeLocalShift(db, tenant, { counted: 2600 });
+  await db.query("UPDATE sync_log SET status='synced'");
+  const shift = await openLocalShift(db, tenant, { opening_cash: 10000 });
+  const customer = await createLocalCustomer(db,tenant,{name:"Cliente",credit_limit:50000});
+  await commitLocalSale(db,tenant,{lines:[{variant_id:variant,qty:1,unit_price:100}],method:"credit",customerId:customer.id,cashAmount:0});
+  await registerLocalAbono(db,tenant,{customer_id:customer.id,amount:50,method:"cash"});
+  await registerLocalCashMovement(db,tenant,{direction:"in",amount:1000,reason:"Ingreso"});
+  await closeLocalShift(db,tenant,{counted:11050,closingNote:"Offline"});
+  await db.query("UPDATE sync_log SET client_ts=1 WHERE entity='closedcash' AND payload->>'shift_id'=$1",[shift.id]);
+  const seen:string[]=[];
+  vi.stubGlobal("fetch",vi.fn(async(_url:string,init:RequestInit)=>{
+    const {mutations}=JSON.parse(init.body as string) as {mutations:MutationEnvelope[]};
+    for(const m of mutations) {
+      if(m.entity==="closedcash") {
+        expect(seen).toContain("shift"); expect(seen).toContain("ticket");
+        expect(seen).toContain("credit_abono"); expect(seen).toContain("cash_movement");
+      }
+      seen.push(m.entity);
+    }
+    return Response.json({results:mutations.map(m=>({client_uuid:m.client_uuid,status:"applied"}))});
+  }));
+  await pushNow(db,tenant,{force:true});
+  expect(seen[0]).toBe("shift");
+  expect(seen.at(-1)).toBe("closedcash");
+  expect((await db.query("SELECT * FROM sync_log WHERE status<>'synced'")).rows).toEqual([]);
+});
 
 function server(opts:{cut?:number;loseFinalize?:boolean;onFinalize?:()=>Promise<void>}={}) {
   const parts=new Map<number,MutationEnvelope[]>();
@@ -135,4 +164,36 @@ it("orders catalog/shift/variant dependencies across upsert-latest sale groups a
     row("p","product",{}),row("shift","shift",{status:"open"}),
   ]);
   expect(groups.map(g=>g.map(r=>r.id))).toEqual([["shift"],["p"],["initial","late","v"],["early","early-line"]]);
+});
+
+it("customer-before-sale ordering", async () => {
+  await db.query("UPDATE sync_log SET status='synced'");
+  const customer = await createLocalCustomer(db, tenant, { name: "Offline", credit_limit: 10000 });
+  await commitLocalSale(db, tenant, { method: "credit", customerId: customer.id, cashAmount: 0,
+    lines: Array.from({ length: 26 }, () => ({ variant_id: variant, qty: 1, unit_price: 100 })) });
+  const rows = (await db.query<{ id:string;client_uuid:string;entity:string;payload:unknown }>("SELECT * FROM sync_log WHERE status='pending' ORDER BY client_ts")).rows;
+  const groups = groupQueue(rows);
+  expect(groups[0].map(r => r.entity)).toEqual(["customer"]);
+  expect(groups[1].length).toBeGreaterThan(50);
+  expect(groups[1].some(r => r.entity === "customer")).toBe(false);
+  let customerApplied = false, parts = 0;
+  vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+    const body = JSON.parse(init.body as string);
+    if (url.endsWith("/mutations")) {
+      expect(body.mutations.map((m: MutationEnvelope) => m.entity)).toEqual(["customer"]);
+      customerApplied = true;
+      return Response.json({ results: body.mutations.map((m: MutationEnvelope) => ({ client_uuid: m.client_uuid, status: "applied" })) });
+    }
+    expect(customerApplied).toBe(true);
+    if (url.endsWith("/parts")) {
+      parts++;
+      expect(body.mutations.some((m: MutationEnvelope) => m.entity === "customer")).toBe(false);
+      return Response.json({ staged: true });
+    }
+    const snapshot = (await db.query<{rows: Array<{client_uuid:string}>}>("SELECT rows FROM sync_sale_outbox")).rows[0].rows;
+    return Response.json({ results: snapshot.map(m => ({ client_uuid: m.client_uuid, status: "applied" })) });
+  });
+  await pushNow(db, tenant, { force: true });
+  expect(parts).toBe(2);
+  expect((await db.query("SELECT * FROM sync_log WHERE status<>'synced'")).rows).toEqual([]);
 });

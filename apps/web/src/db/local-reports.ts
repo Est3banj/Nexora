@@ -32,6 +32,16 @@ import type { LocalQueryable } from "./pglite";
 
 type Q = LocalQueryable | PGlite;
 
+/** One row per actionable payment, not one row per ticket or a fixed badge. */
+export async function localPendingTransfers(db: Q, tenantId: string) {
+  const result = await db.query<{ id: string; ticket_id: string; ticket_no: number; amount: number }>(
+    `SELECT p.id, p.ticket_id, t.ticket_no, p.amount FROM payments p
+     JOIN tickets t ON t.id=p.ticket_id AND t.tenant_id=p.tenant_id
+     WHERE p.tenant_id=$1 AND p.method='transfer' AND p.status='pending' AND t.status<>'voided'
+     ORDER BY p.created_at DESC, p.id`, [tenantId]);
+  return result.rows;
+}
+
 export async function localSalesByDay(
   db: Q,
   tenantId: string,

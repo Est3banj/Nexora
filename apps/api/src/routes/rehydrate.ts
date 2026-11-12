@@ -26,17 +26,22 @@ export async function rehydrateRoutes(app: FastifyInstance): Promise<void> {
       const repo = repoFor(req);
 
       const tickets = await repo.tickets.list({ limit, offset });
+      const shifts = await repo.shifts.listRecent({ limit, offset });
+      const closedcash = await repo.closedcash.listRecent({ limit, offset });
+      const cash_movements = await repo.cashMovements.listRecent({ limit, offset });
       const ticketIds = tickets.map((t) => t.id);
-      const [lines, payments, stockdiary] = await Promise.all([
+      const [lines, payments, stockdiary, credit_abonos] = await Promise.all([
         Promise.all(ticketIds.map((id) => repo.ticketLines.listByTicket(id))),
         repo.payments.listByTickets(ticketIds),
         repo.stockdiary.listRecent({ limit, offset }),
+        repo.creditAbonos.listRecent({ limit, offset }),
       ]);
 
       const bootstrap =
         offset === 0
           ? {
               categories: await repo.categories.list(),
+              customers: await repo.customers.list(),
               products: await repo.products.list(),
               variants: await repo.productVariants.list(),
               open_shift: (await repo.shifts.open()) ?? null,
@@ -44,13 +49,15 @@ export async function rehydrateRoutes(app: FastifyInstance): Promise<void> {
             }
           : {};
 
-      const fullPage = tickets.length === limit || stockdiary.length === limit;
+      const fullPage = [tickets, stockdiary, credit_abonos, shifts, closedcash, cash_movements].some(rows => rows.length === limit);
       return {
         ...bootstrap,
+        shifts, closedcash, cash_movements,
         tickets,
         ticket_lines: lines.flat(),
         payments,
         stockdiary,
+        credit_abonos,
         next_offset: fullPage ? offset + limit : null,
       };
     },

@@ -178,9 +178,16 @@ async function drainOnce(
     if (group.some(r => snapshotMembers.has(r.id) || attempted.has(r.id) || !eligible(r, force, now))) continue;
     // A close cannot overtake an unresolved sale (including poison). Other
     // independent catalog/sale groups continue draining normally.
-    if (group.some(r => r.entity === "closedcash" || r.entity === "shift" && (r.payload as { status?: string }).status === "closed")) {
-      const pendingSale = await db.query("SELECT id FROM sync_log WHERE tenant_id=$1 AND entity='ticket' AND status <> 'synced' LIMIT 1", [tenantId]);
-      if (pendingSale.rows.length || snapshots.rows.length) continue;
+    if (group.some(r => r.entity === "closedcash")) {
+      const close = group.find(r => r.entity === "closedcash");
+      if (close) {
+        const shiftId = (close.payload as { shift_id: string }).shift_id;
+        if (snapshots.rows.some(s => s.rows.some(r => (r.payload as { shift_id?: string }).shift_id === shiftId))) continue;
+        const pending = await db.query(`SELECT id FROM sync_log WHERE tenant_id=$1 AND status <> 'synced'
+          AND ((entity IN ('ticket','payment','credit_abono','cash_movement') AND payload->>'shift_id'=$2)
+            OR (entity='shift' AND client_uuid=$2::uuid)) LIMIT 1`, [tenantId, shiftId]);
+        if (pending.rows.length) continue;
+      }
     }
     if (group.length > MUTATION_BATCH_MAX) {
       if (candidates.length) break;
@@ -264,7 +271,10 @@ async function drainOnce(
     if (result.status === "applied" || result.status === "duplicate") {
       if (result.closedcash) {
         const c = result.closedcash;
-        await db.query("UPDATE closedcash SET expected=$3,counted=$4,diff=$5 WHERE tenant_id=$1 AND shift_id=$2", [tenantId, c.shift_id, c.expected, c.counted, c.diff]);
+        await db.query(`UPDATE closedcash SET expected=$3,counted=$4,diff=$5,
+          calculation_version=coalesce($6,calculation_version),closing_note=CASE WHEN $7 THEN $8 ELSE closing_note END
+          WHERE tenant_id=$1 AND shift_id=$2`, [tenantId, c.shift_id, c.expected, c.counted, c.diff, c.calculation_version ?? null,
+          c.closing_note !== undefined, c.closing_note ?? null]);
       }
       // ACK only the version actually sent. An in-flight catalog edit keeps
       // its newer pending payload and will be drained on the next push.

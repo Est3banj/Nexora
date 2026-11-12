@@ -108,7 +108,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
           );
         return rows[0];
       },
-      async create(input: { client_uuid?: string; name: string }) {
+      async create(input: { client_uuid?: string; name: string; icon_key?: string | null }) {
         const id = input.client_uuid ?? randomUUID();
         const rows = await db
           .insert(t.categories)
@@ -117,14 +117,16 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
             tenant_id: tenantId,
             client_uuid: id,
             name: input.name,
+            icon_key: input.icon_key ?? null,
             active: true,
           })
           .returning();
         return rows[0];
       },
-      async update(id: string, patch: { name?: string; active?: boolean }) {
+      async update(id: string, patch: { name?: string; active?: boolean; icon_key?: string | null }) {
         const set: Record<string, unknown> = { updated_at: now() };
         if (patch.name !== undefined) set.name = patch.name;
+        if (patch.icon_key !== undefined) set.icon_key = patch.icon_key;
         if (patch.active !== undefined) set.active = patch.active;
         const rows = await db
           .update(t.categories)
@@ -148,12 +150,13 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
         const conds: SQL[] = [eq(t.customers.tenant_id, tenantId)];
         if (opts.active !== undefined)
           conds.push(eq(t.customers.active, opts.active));
-        return db
+        const query = db
           .select()
           .from(t.customers)
           .where(and(...conds))
-          .orderBy(t.customers.name)
-          .limit(opts.limit ?? 500);
+          .orderBy(t.customers.name, t.customers.id);
+        // Rehydrate needs ALL customers, including inactive and beyond 500.
+        return opts.limit === undefined ? query : query.limit(opts.limit);
       },
       async byUuid(id: string) {
         const rows = await db
@@ -165,6 +168,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
       async upsert(input: {
         client_uuid: string;
         name: string;
+        credit_limit?: number | null;
         phone?: string | null;
         notes?: string | null;
         active?: boolean;
@@ -177,6 +181,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
             tenant_id: tenantId,
             client_uuid: input.client_uuid,
             name: input.name,
+            credit_limit: input.credit_limit ?? null,
             phone: input.phone ?? null,
             notes: input.notes ?? null,
             active: input.active ?? true,
@@ -186,6 +191,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
             target: [t.customers.tenant_id, t.customers.client_uuid],
             set: {
               name: input.name,
+              ...(input.credit_limit !== undefined ? { credit_limit: input.credit_limit } : {}),
               // omitted fields are never wiped (products.upsert pattern)
               ...(input.phone !== undefined ? { phone: input.phone } : {}),
               ...(input.notes !== undefined ? { notes: input.notes } : {}),
@@ -217,6 +223,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
         return rows[0];
       },
       async upsert(input: {
+        icon_key?: string | null;
         client_uuid: string;
         name: string;
         category_id?: string | null;
@@ -233,6 +240,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
             name: input.name,
             category_id: input.category_id ?? null,
             photo: input.photo ?? null,
+            icon_key: input.icon_key ?? null,
             active: input.active ?? true,
           })
           .onConflictDoUpdate({
@@ -241,6 +249,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
               name: input.name,
               ...(input.category_id !== undefined ? { category_id: input.category_id } : {}),
               ...(input.photo !== undefined ? { photo: input.photo } : {}),
+              ...(input.icon_key !== undefined ? { icon_key: input.icon_key } : {}),
               active: input.active ?? true,
               updated_at: now(),
             },
@@ -251,6 +260,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
       async update(
         id: string,
         patch: {
+          icon_key?: string | null;
           name?: string;
           category_id?: string | null;
           photo?: string | null;
@@ -262,6 +272,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
         if (patch.name !== undefined) set.name = patch.name;
         if (patch.category_id !== undefined) set.category_id = patch.category_id;
         if (patch.photo !== undefined) set.photo = patch.photo;
+        if (patch.icon_key !== undefined) set.icon_key = patch.icon_key;
         if (patch.active !== undefined) set.active = patch.active;
         const rows = await db
           .update(t.products)
@@ -603,6 +614,10 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
     },
 
     shifts: {
+      async listRecent({ limit = 100, offset = 0 } = {}) {
+        return db.select().from(t.shifts).where(eq(t.shifts.tenant_id, tenantId))
+          .orderBy(desc(t.shifts.created_at), desc(t.shifts.id)).limit(limit).offset(offset);
+      },
       async open() {
         const rows = await db
           .select()
@@ -613,7 +628,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
           .limit(1);
         return rows[0];
       },
-      async createOpen(input: { client_uuid?: string } = {}) {
+      async createOpen(input: { client_uuid?: string; opening_cash?: number; opened_by?: string | null; calculation_version?: "legacy_v1" | "drawer_cash_v2" } = {}) {
         const id = input.client_uuid ?? randomUUID();
         const rows = await db
           .insert(t.shifts)
@@ -622,6 +637,9 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
             tenant_id: tenantId,
             client_uuid: id,
             status: "open",
+            opening_cash: input.opening_cash ?? 0,
+            opened_by: input.opened_by ?? null,
+            calculation_version: input.calculation_version ?? "legacy_v1",
           })
           .returning();
         return rows[0];
@@ -662,12 +680,14 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
        * ONLY `counted` (cash-close spec §Expected computed from payments).
        */
       async close(input: {
+        closingNote?: string | null;
         shiftId: string;
         counted: number;
         closedBy?: string | null;
         clientUuid?: string;
       }) {
         return arqueoDb.closeShift({
+          closingNote: input.closingNote,
           tenantId,
           shiftId: input.shiftId,
           counted: input.counted,
@@ -959,7 +979,7 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
           .select()
           .from(t.creditAbonos)
           .where(eq(t.creditAbonos.tenant_id, tenantId))
-          .orderBy(desc(t.creditAbonos.created_at))
+          .orderBy(desc(t.creditAbonos.created_at), t.creditAbonos.id)
           .limit(opts.limit ?? 100);
         return opts.offset ? q.offset(opts.offset) : q;
       },
@@ -993,7 +1013,22 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
      * closedcash is IMMUTABLE by construction (cash-close spec): the repo
      * exposes upsert + read only — there is no update() method.
      */
+    cashMovements: {
+      async listRecent({ limit = 100, offset = 0 } = {}) {
+        return db.select().from(t.cashMovements).where(eq(t.cashMovements.tenant_id, tenantId))
+          .orderBy(desc(t.cashMovements.created_at), desc(t.cashMovements.id)).limit(limit).offset(offset);
+      },
+      async listByShift(shiftId: string) {
+        return db.select().from(t.cashMovements)
+          .where(and(eq(t.cashMovements.tenant_id, tenantId), eq(t.cashMovements.shift_id, shiftId)))
+          .orderBy(desc(t.cashMovements.created_at), desc(t.cashMovements.id));
+      },
+    },
     closedcash: {
+      async listRecent({ limit = 100, offset = 0 } = {}) {
+        return db.select().from(t.closedcash).where(eq(t.closedcash.tenant_id, tenantId))
+          .orderBy(desc(t.closedcash.created_at), desc(t.closedcash.id)).limit(limit).offset(offset);
+      },
       async byUuid(id: string) {
         const rows = await db
           .select()
@@ -1128,6 +1163,9 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
       /** Por Cobrar (fiado): Σ confirmed credit − Σ abonos, balance > 0. */
       async customerBalances() {
         return reportsDb.customerBalances(tenantId);
+      },
+      async customerAccounts() {
+        return reportsDb.customerAccounts(tenantId);
       },
     },
 

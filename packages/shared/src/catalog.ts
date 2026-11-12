@@ -1,5 +1,9 @@
 import { z } from "zod";
 
+export const PRODUCT_ICON_KEYS = ["coffee", "bottle-water", "cookie", "package", "milk", "jar", "bread", "bottle"] as const;
+export const productIconKeySchema = z.enum(PRODUCT_ICON_KEYS);
+export type ProductIconKey = z.infer<typeof productIconKeySchema>;
+
 /** Catalog contracts shared by API routes and web forms (task D1-7). */
 
 export const variantNameSchema = z.string().trim().min(1, "required").max(80);
@@ -28,14 +32,17 @@ export const photoSchema = z
 
 export const createCategoryInputSchema = z.object({
   name: categoryNameSchema,
+  icon_key: productIconKeySchema.nullable().optional(),
 });
 
 export const updateCategoryInputSchema = z.object({
+  icon_key: productIconKeySchema.nullable().optional(),
   name: categoryNameSchema.optional(),
   active: z.boolean().optional(),
 });
 
 export const createProductInputSchema = z.object({
+  icon_key: productIconKeySchema.nullable().optional(),
   name: productNameSchema,
   category_id: z.uuid().nullable().optional(),
   photo: photoSchema.nullable().optional(),
@@ -53,6 +60,7 @@ export const createProductInputSchema = z.object({
 
 export const updateProductInputSchema = z
   .object({
+    icon_key: productIconKeySchema.nullable().optional(),
     name: productNameSchema.optional(),
     category_id: z.uuid().nullable().optional(),
     photo: photoSchema.nullable().optional(),
@@ -61,6 +69,7 @@ export const updateProductInputSchema = z
   .refine(
     (v) =>
       v.name !== undefined ||
+      v.icon_key !== undefined ||
       v.category_id !== undefined ||
       v.photo !== undefined ||
       v.active !== undefined,

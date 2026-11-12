@@ -22,6 +22,7 @@ async function login(page: import("@playwright/test").Page) {
 
 async function createProduct(page: import("@playwright/test").Page, name: string, price: string) {
   await page.getByTestId("tab-catalog").click();
+  await page.getByTestId("product-new").click();
   await page.getByTestId("product-name").fill(name);
   await page.getByTestId("variant-name").fill("Único");
   await page.getByTestId("variant-price").fill(price);
@@ -60,6 +61,8 @@ test.describe("Batch B — shortcuts + quick annul", () => {
     await expect
       .poll(() => dbOne("SELECT status FROM payments"), { timeout: 15_000 })
       .toBe("confirmed");
+    /* M5: receipt opened after the durable commit — dismiss before chrome */
+    await page.getByTestId("receipt-close").click();
 
     /* confirmed cash sale → Panel shows the hour-of-day profile */
     await page.getByTestId("tab-dashboard").click();
@@ -108,6 +111,7 @@ test.describe("Batch B — shortcuts + quick annul", () => {
     await expect(page.getByTestId("checkout-confirm")).toBeFocused();
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("sale-success")).toBeVisible();
+    await page.getByTestId("receipt-close").click();
     await page.getByTestId("new-sale").click();
 
     /* the quick-void trigger surfaces the latest non-voided ticket */
@@ -141,6 +145,7 @@ test.describe("Batch B — shortcuts + quick annul", () => {
     await page.getByTestId("quick-cash-exact").click();
     await page.getByTestId("checkout-confirm").click();
     await expect(page.getByTestId("sale-success")).toBeVisible();
+    await page.getByTestId("receipt-close").click();
 
     await page.getByTestId("void-last-sale").click();
     await page.getByTestId("void-quick-reason").fill("Cliente se llevó el producto equivocado");

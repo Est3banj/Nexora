@@ -10,9 +10,10 @@ import {
 } from "./helpers";
 import { closeDb, db } from "../src/db";
 import { scopedRepo } from "../src/db/scope";
+import * as t from "../src/db/schema";
 
 /**
- * D4-3 · Full isolation sweep — ALL 10 business tables [MERGE GATE][CROSS]
+ * D4-3 · Full isolation sweep — 12 original+fiado tables [MERGE GATE][CROSS]
  * AC (tenancy-auth spec):
  *  - §Cross-tenant read: B observes zero A rows on every business table
  *  - §Isolation holds on detail lookup (known uuid → not-found / undefined)
@@ -20,7 +21,7 @@ import { scopedRepo } from "../src/db/scope";
  *  - §Forged tenant_id ignored
  *  - §Isolation sweep passes on every business table (merge gate)
  * Tables: products, product_variants, tickets, ticket_lines, payments,
- *         closedcash, shifts, stockcurrent, stockdiary, sync_log
+ *         closedcash, shifts, stockcurrent, stockdiary, sync_log, customers, credit_abonos
  *
  * Also covers: founder endpoints rejected for tenant owner (founder-control),
  * and reports aggregates never include foreign tenant values.
@@ -31,6 +32,8 @@ let tenantA: Actor;
 let tenantB: Actor;
 
 type Seeded = {
+  customerId: string;
+  abonoId: string;
   productId: string;
   variantId: string;
   ticketId: string;
@@ -89,11 +92,14 @@ async function seedTenantA(): Promise<Seeded> {
   });
 
   const ticketId = randomUUID();
+  const customerId = randomUUID();
+  await repoA.customers.upsert({ client_uuid: customerId, name: "Cliente A", credit_limit: 200000 });
   await repoA.tickets.upsert({
     client_uuid: ticketId,
     shift_id: shiftId,
     ticket_no: 1,
     total: 8000,
+    customer_id: customerId,
   });
 
   const lineId = randomUUID();
@@ -104,6 +110,7 @@ async function seedTenantA(): Promise<Seeded> {
       variant_id: variantId,
       qty: 2,
       unit_price: 4000,
+      unit_cost: 1234,
       subtotal: 8000,
     },
   ]);
@@ -112,7 +119,7 @@ async function seedTenantA(): Promise<Seeded> {
   await repoA.payments.upsert({
     client_uuid: paymentId,
     ticket_id: ticketId,
-    method: "cash",
+    method: "credit",
     amount: 8000,
     tendered: 10000,
     vuelto: 2000,
@@ -121,6 +128,12 @@ async function seedTenantA(): Promise<Seeded> {
   });
 
   const diaryId = randomUUID();
+  const cashId = randomUUID();
+  await db.insert(t.cashMovements).values({ id: cashId, client_uuid: cashId, tenant_id: tenantA.orgId,
+    shift_id: shiftId, direction: "in", amount: 700, reason: "Isolation seed" });
+  const abonoId = randomUUID();
+  await db.insert(t.creditAbonos).values({ id: abonoId, tenant_id: tenantA.orgId, client_uuid: abonoId,
+    customer_id: customerId, ticket_id: ticketId, shift_id: shiftId, amount: 1000, method: "cash" });
   await repoA.stock.adjust({
     client_uuid: diaryId,
     variant_id: variantId,
@@ -143,6 +156,8 @@ async function seedTenantA(): Promise<Seeded> {
   });
 
   return {
+    customerId,
+    abonoId,
     productId,
     variantId,
     ticketId,
@@ -163,7 +178,60 @@ beforeEach(async () => {
   a = await seedTenantA();
 });
 
-describe("D4-3 · cross-tenant read — all 10 tables", () => {
+describe("D4-3 · cross-tenant read — 12 original+fiado tables", () => {
+  it("customers / credit_abonos: populated A, invisible to B by list or known customer/ticket IDs", async () => {
+    const repoA = scopedRepo(db, tenantA.orgId), repoB = scopedRepo(db, tenantB.orgId);
+    expect(await repoA.customers.list()).toHaveLength(1);
+    expect(await repoA.creditAbonos.listRecent()).toHaveLength(1);
+    expect((await repoA.reports.customerAccounts())[0]).toMatchObject({ balance: 7000, credit_limit: 200000 });
+    expect(await repoB.customers.list()).toEqual([]);
+    expect(await repoB.customers.byUuid(a.customerId)).toBeUndefined();
+    expect(await repoB.creditAbonos.listRecent()).toEqual([]);
+    expect(await repoA.cashMovements.listRecent()).toHaveLength(1);
+    expect(await repoB.cashMovements.listRecent()).toEqual([]);
+    expect(await repoB.cashMovements.listByShift(a.shiftId)).toEqual([]);
+    expect(await repoB.creditAbonos.listByCustomer(a.customerId)).toEqual([]);
+    expect(await repoB.creditAbonos.listByTicket(a.ticketId)).toEqual([]);
+    expect(await repoB.reports.customerAccounts()).toEqual([]);
+    expect(await repoB.reports.customerBalances()).toEqual([]);
+  });
+
+  it("A rehydrate includes links/costs/limits/inactive and pages when ONLY abonos fill the page", async () => {
+    const repoA = scopedRepo(db, tenantA.orgId);
+    const inactive = randomUUID();
+    await repoA.customers.upsert({ client_uuid: inactive, name: "Inactivo", active: false, credit_limit: 0 });
+    // Three abonos, only one ticket/diary: page size2 tests abono-specific continuation.
+    for (let i = 0; i < 2; i++) {
+      const id = randomUUID();
+      await db.insert(t.creditAbonos).values({ id, tenant_id: tenantA.orgId, client_uuid: id,
+        customer_id: a.customerId, amount: 100, method: "transfer" });
+    }
+    const first = await app.inject({ method: "GET", url: "/api/rehydrate?limit=2", headers: authHeaders(tenantA) });
+    expect(first.statusCode).toBe(200);
+    const body = first.json();
+    expect(body.customers).toHaveLength(2);
+    expect(body.customers.find((c: { id: string }) => c.id === inactive)).toMatchObject({ active: false, credit_limit: 0 });
+    expect(body.customers.find((c: { id: string }) => c.id === a.customerId)).toMatchObject({ credit_limit: 200000 });
+    expect(body.tickets[0].customer_id).toBe(a.customerId);
+    expect(body.ticket_lines[0].unit_cost).toBe(1234);
+    expect(body.credit_abonos).toHaveLength(2);
+    expect(body.next_offset).toBe(2);
+    const second = (await app.inject({ method: "GET", url: "/api/rehydrate?limit=2&offset=2", headers: authHeaders(tenantA) })).json();
+    expect(second.customers).toBeUndefined();
+    expect(second.credit_abonos).toHaveLength(1);
+    expect(second.next_offset).toBeNull();
+    expect(new Set([...body.credit_abonos, ...second.credit_abonos].map((r: { id: string }) => r.id)).size).toBe(3);
+  });
+
+  it("customer bootstrap is complete beyond the former 500 row cap", async () => {
+    await db.insert(t.customers).values(Array.from({ length: 501 }, (_, i) => {
+      const id = randomUUID();
+      return { id, client_uuid: id, tenant_id: tenantA.orgId, name: `Cliente ${i}`, active: false };
+    }));
+    const res = await app.inject({ method: "GET", url: "/api/rehydrate?limit=1", headers: authHeaders(tenantA) });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().customers).toHaveLength(502);
+  });
   it("products / product_variants: B lists empty, byUuid undefined", async () => {
     const res = await app.inject({
       method: "GET",
@@ -260,10 +328,31 @@ describe("D4-3 · cross-tenant read — all 10 tables", () => {
     expect(body.stockdiary ?? []).toEqual([]);
     expect(body.stock ?? []).toEqual([]);
     expect(body.open_shift ?? null).toBeNull();
+    expect(body.customers).toEqual([]);
+    expect(body.credit_abonos).toEqual([]);
+    expect(body.cash_movements).toEqual([]);
+    expect(body.shifts).toEqual([]);
+    expect(body.closedcash).toEqual([]);
   });
 });
 
 describe("D4-3 · cross-tenant write — zero affected rows", () => {
+  it("B cannot write A customer UUID or attach abono to A; A ledger and closed snapshot stay identical", async () => {
+    const repoA = scopedRepo(db, tenantA.orgId);
+    const before = { customer: await repoA.customers.byUuid(a.customerId), abonos: await repoA.creditAbonos.listRecent(),
+      accounts: await repoA.reports.customerAccounts(), close: await repoA.closedcash.byUuid(a.closedCashId) };
+    const res = await app.inject({ method: "POST", url: "/api/sync/mutations", headers: authHeaders(tenantB), payload: {
+      mutations: [
+        { client_uuid: a.customerId, client_ts: Date.now(), entity: "customer", payload: { name: "HACKED", credit_limit: 1 } },
+        { client_uuid: randomUUID(), client_ts: Date.now(), entity: "credit_abono", payload: { customer_id: a.customerId, amount: 1, method: "cash", shift_id: null } },
+      ],
+    } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().results.map((r: { status: string }) => r.status)).toEqual(["rejected", "rejected"]);
+    expect({ customer: await repoA.customers.byUuid(a.customerId), abonos: await repoA.creditAbonos.listRecent(),
+      accounts: await repoA.reports.customerAccounts(), close: await repoA.closedcash.byUuid(a.closedCashId) }).toEqual(before);
+    expect(await scopedRepo(db, tenantB.orgId).creditAbonos.listRecent()).toEqual([]);
+  });
   it("products / variants / tickets / payments updates affect 0 rows; A unchanged", async () => {
     const repoB = scopedRepo(db, tenantB.orgId);
     expect(await repoB.products.update(a.productId, { name: "HACKED" })).toBe(0);

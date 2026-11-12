@@ -1,0 +1,134 @@
+/* Source: openspec/changes/fiado/design-rules.json (2026-11-11).
+ * Shared primitives + M4 shell. Screen compositions follow in M5–M8. */
+@font-face {
+  font-family: "Plus Jakarta Sans"; font-style: normal; font-weight: 300 800; font-display: swap;
+  src: url('/fonts/plus-jakarta-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+@font-face {
+  font-family: "Plus Jakarta Sans"; font-style: normal; font-weight: 300 800; font-display: swap;
+  src: url('/fonts/plus-jakarta-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C4,U+2113,U+2C60-2C7F,U+A720-A7FF;
+}
+@font-face {
+  font-family: "JetBrains Mono"; font-style: normal; font-weight: 400 600; font-display: swap;
+  src: url('/fonts/jetbrains-mono-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+@font-face {
+  font-family: "JetBrains Mono"; font-style: normal; font-weight: 400 600; font-display: swap;
+  src: url('/fonts/jetbrains-mono-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C4,U+2113,U+2C60-2C7F,U+A720-A7FF;
+}
+:root {
+  --font-sans: "Plus Jakarta Sans", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+  --bg: #f1f5f9; --surface: #fff; --surface-2: #f8fafc; --surface-3: #e2e8f0; --surface-accent: #eef2ff;
+  --border: #e2e8f0; --input-border: #cbd5e1; --text: #0f172a; --body-text: #1e293b; --muted: #64748b;
+  --primary: #4f46e5; --primary-hover: #6366f1; --primary-press: #4338ca;
+  --pay: #4f46e5; --pay-press: #4338ca; --danger: #e11d48; --success: #059669; --warning: #d97706;
+  --info: #0284c7; --radius: 12px; --radius-sm: 8px; --radius-card: 16px; --radius-modal: 24px;
+  --sidebar: 256px; --topbar: 64px; --tap: 44px;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-6: 24px; --space-8: 32px; --space-12: 48px; --space-16: 64px;
+  --text-micro: 9px; --text-meta: 10px; --text-compact: 11px; --text-xs: 12px; --text-sm: 14px; --text-base: 16px; --text-lg: 18px; --text-xl: 20px; --text-2xl: 24px; --text-3xl: 30px;
+  --glass: rgb(255 255 255 / 85%); --glass-nav: rgb(255 255 255 / 95%);
+  --active-nav: linear-gradient(90deg, rgb(99 102 241 / 12%), rgb(99 102 241 / 2%));
+  --ease-out: cubic-bezier(.4,0,.2,1); --dur: 200ms;
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 5%); --shadow: 0 4px 6px -1px rgb(0 0 0 / 5%);
+}
+html { -webkit-text-size-adjust: 100%; -webkit-tap-highlight-color: transparent; overscroll-behavior: none; }
+body { font-family: var(--font-sans); line-height: 1.5; color: var(--body-text); overscroll-behavior: none; }
+button, input, select, textarea { font-family: inherit; }
+button, a, summary, [role="button"] { touch-action: manipulation; }
+button, summary, [role="button"] { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+button:focus-visible, summary:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+input, textarea, select { border-radius: var(--radius); border-color: var(--input-border); background: var(--surface); }
+input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--danger); }
+.btn { padding: 10px 16px; }
+.btn.primary, .btn.pay { color: #fff; }
+.btn:active:not(:disabled), .icon-button:active:not(:disabled) { transform: scale(.98); }
+.card { border-radius: var(--radius-card); background: var(--glass); box-shadow: var(--shadow-sm); }
+dialog { border-radius: var(--radius-modal); box-shadow: 0 25px 50px -12px rgb(0 0 0 / 25%); overscroll-behavior: contain; padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px)); }
+dialog::backdrop { background: rgb(15 23 42 / 40%); backdrop-filter: blur(4px); }
+.table-scroll { overflow-x: auto; max-width: 100%; }
+th { background: var(--bg); color: var(--muted); font: 400 12px/16px var(--font-mono); }
+td, th { padding: 14px 16px; border-bottom: 1px solid var(--border); }
+table { width: 100%; border-collapse: collapse; }
+.nexora-shell { display: flex; flex-direction: column; height: 100dvh; min-height: 0; overflow: hidden; }
+.nexora-shell .shell-sidebar { flex: none; background: var(--glass-nav); backdrop-filter: blur(16px); border-bottom: 1px solid var(--border); padding-top: env(safe-area-inset-top, 0px); }
+.shell-brand { display: none; }
+.nexora-shell .tabbar { position: static; display: flex; overflow-x: auto; width: 100%; max-width: none; transform: none; padding: 6px 12px; gap: 4px; border: 0; background: transparent; scrollbar-width: thin; }
+.nexora-shell .tabbar button { flex: none; display: flex; flex-direction: row; justify-content: flex-start; gap: 12px; margin: 0; padding: 10px 12px; min-height: 44px; border-radius: 12px; border-left: 3px solid transparent; font-size: 14px; font-weight: 500; line-height: 20px; white-space: nowrap; }
+.nexora-shell .tabbar button.active { background: var(--active-nav); border-left-color: var(--primary); color: var(--primary); font-weight: 600; }
+.nexora-shell .app-frame { display: flex; flex: 1; min-height: 0; width: 100%; max-width: none; margin: 0; }
+.nexora-shell .app-header { position: relative; flex: none; min-height: var(--topbar); padding: 10px 16px; background: var(--glass); backdrop-filter: blur(12px); box-shadow: var(--shadow); gap: 12px; z-index: 4; }
+.app-header h1 { margin: 0; font-size: 16px; line-height: 24px; font-weight: 700; letter-spacing: -.025em; min-width: 0; }
+.shell-header-tools { display: flex; align-items: center; gap: 8px; flex: none; }
+.shell-clock { display: none; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 8px; font: 12px/16px var(--font-mono); white-space: nowrap; color: #475569; background: #fff; }
+.shell-clock svg { color: var(--primary); }
+.nexora-shell .net-status { font-size: 10px; }
+.nexora-shell .badge { font: 10px/15px var(--font-mono); padding: 3px 6px; }
+.icon-button { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; background: #fff; border: 1px solid var(--border); border-radius: 12px; color: #475569; }
+.notification-trigger { position: relative; }
+.notification-count { position: absolute; top: -5px; right: -5px; background: var(--danger); color: #fff; border: 2px solid #fff; border-radius: 999px; padding: 0 4px; font: 600 10px/16px var(--font-sans); }
+.notification-popover { position: fixed; inset: 76px 16px auto auto; margin: 0; width: min(400px, calc(100vw - 32px)); max-height: calc(100dvh - 100px); border-radius: 16px; padding: 16px; }
+.notification-popover h2 { margin: 0; font-size: 16px; }
+.notification-list { display: grid; gap: 8px; margin-top: 12px; }
+.notification-action { padding: 12px; text-align: left; background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; overflow-wrap: anywhere; color: var(--text); font-size: 14px; min-height: 44px; }
+.nexora-shell .app-main { min-height: 0; min-width: 0; padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px)); overflow: auto; overscroll-behavior: contain; }
+.nexora-shell .sync-meta { flex: none; font: 10px/15px var(--font-mono); padding: 4px 16px; }
+.nexora-shell .sync-error-row, .nexora-shell .sync-poison-row { flex: none; flex-wrap: wrap; overflow-wrap: anywhere; }
+.mobile-account summary { display: flex; align-items: center; justify-content: center; width: 36px; height: 44px; border-radius: 12px; background: var(--surface-2); font-size: 12px; cursor: pointer; }
+.mobile-account summary::marker { content: ''; }
+.mobile-account .shell-account { position: absolute; right: 16px; top: calc(100% + 8px); width: min(300px, calc(100vw - 32px)); box-shadow: var(--shadow); z-index: 5; }
+.shell-account { padding: 16px; border: 1px solid var(--border); border-radius: 16px; background: var(--glass); font-size: 12px; }
+.shell-identity { display: flex; align-items: center; gap: 12px; }
+.shell-identity > div { min-width: 0; }
+.shell-identity strong { display: block; font-size: 14px; overflow-wrap: anywhere; }
+.shell-identity span:not(.avatar) { display: block; color: var(--muted); font-size: 11px; }
+.avatar { display: grid; place-items: center; flex: none; width: 36px; height: 36px; background: #e2e8f0; border: 1px solid #cbd5e1; border-radius: 50%; color: #334155; font-size: 16px; font-weight: 600; }
+.shell-shift { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px; margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); color: var(--muted); font-size: 10px; }
+.shell-shift strong { font: 600 10px/15px var(--font-mono); color: #334155; }
+.shell-tenant { margin: 8px 0; color: var(--muted); overflow-wrap: anywhere; font-size: 10px; }
+.account-sign-out { display: flex; align-items: center; gap: 8px; min-height: 44px; width: 100%; border: 0; background: transparent; color: var(--muted); font-size: 12px; }
+.toast { display: flex; align-items: center; gap: 10px; position: fixed; inset: auto 20px calc(20px + env(safe-area-inset-bottom, 0px)) auto; width: max-content; max-width: min(460px, calc(100vw - 32px)); border: 0; border-radius: 12px; padding: 14px; font-size: 14px; line-height: 20px; color: #fff; transform: none; background: var(--primary); z-index: 30; transition: opacity 300ms var(--ease-out), transform 300ms var(--ease-out); }
+.toast-success { background: var(--success); } .toast-warning { background: var(--warning); } .toast-error { background: var(--danger); }
+.toast button { border: 0; color: inherit; background: transparent; display: grid; place-items: center; width: 44px; min-height: 44px; flex: none; }
+.toast-exit { opacity: 0; transform: translateY(8px); }
+@media (max-width: 639px) {
+  .nexora-shell .app-header { min-height: 88px; padding-bottom: 28px; }
+  .shell-header-tools .net-status, .shell-header-tools .badge { position: absolute; bottom: 5px; background: var(--surface); }
+  .shell-header-tools .net-status { right: 16px; } .shell-header-tools .badge { right: 94px; }
+}
+/* The legacy checkout bar stays functional until M5; reserve its space in the
+ * new inner scroller so the last tile can never sit behind the fixed control. */
+@media (max-width: 1023px) {
+  .nexora-shell .cart-bar { bottom: env(safe-area-inset-bottom, 0px); }
+  .nexora-shell .app-main:has(.cart-bar) { padding-bottom: calc(112px + env(safe-area-inset-bottom, 0px)); }
+}
+@media (min-width: 640px) { .shell-clock { display: flex; } .app-header h1 { font-size: 20px; line-height: 28px; } }
+@media (min-width: 768px) {
+  .nexora-shell { flex-direction: row; }
+  .nexora-shell .shell-sidebar { display: flex; flex-direction: column; width: var(--sidebar); min-height: 0; border-right: 1px solid rgb(226 232 240 / 80%); border-bottom: 0; }
+  .shell-brand { display: flex; align-items: center; gap: 12px; padding: 22px 20px; }
+  .shell-mark { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; background: linear-gradient(to top right,#4f46e5,#6366f1); color: #fff; font-size: 24px; font-weight: 300; box-shadow: 0 4px 6px rgb(79 70 229 / 20%); }
+  .shell-brand strong { display: block; color: var(--text); font-size: 20px; line-height: 24px; }
+  .shell-brand div > span { display: inline-block; background: #eef2ff; color: #4f46e5; border: 1px solid #e2e8f0; border-radius: 999px; padding: 0 8px; font-size: 10px; letter-spacing: .05em; }
+  .nexora-shell .tabbar { flex-direction: column; overflow: auto; min-height: 0; padding: 0 12px; gap: 4px; }
+  .nexora-shell .tabbar button { padding: 12px 16px; min-height: 52px; }
+  .desktop-account { margin-top: auto; padding: 12px; }
+  .nexora-shell .app-frame { width: calc(100% - var(--sidebar)); }
+  .nexora-shell .app-header { height: 64px; padding: 0 24px; }
+  .nexora-shell .app-main { padding: 24px; }
+}
+@media (pointer: coarse) { input, textarea, select { font-size: 16px; } }
+@media (hover: hover) and (pointer: fine) {
+  input:hover { border-color: #94a3b8; }
+  .btn.primary:hover:not(:disabled) { background: var(--primary-hover); }
+  .icon-button:hover:not(:disabled), .notification-action:hover:not(:disabled), .account-sign-out:hover { background: var(--surface-2); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  .toast-exit, button:active { transform: none !important; }
+}
+@media print { .shell-sidebar, .shell-header-tools { display: none !important; } }

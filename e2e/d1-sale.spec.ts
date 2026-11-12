@@ -41,6 +41,7 @@ test.describe("D1 gate — create → sell → ticket locally", () => {
     await page.getByTestId("tab-catalog").click();
     await expect(page.getByTestId("empty-catalog-note")).toBeVisible();
 
+    await page.getByTestId("product-new").click();
     await page.getByTestId("product-name").fill("Granizado Playwright");
     await page.getByTestId("variant-name").fill("Grande");
     await page.getByTestId("variant-price").fill("3500");
@@ -86,6 +87,14 @@ test.describe("D1 gate — create → sell → ticket locally", () => {
     await expect(page.getByTestId("ticket-no")).toHaveText("#1");
     await expect(page.getByTestId("ticket-vuelto")).toContainText("0");
 
+    /* M5 · receipt opens only after the durable local commit (12.3) */
+    const receipt = page.getByTestId("receipt-preview");
+    await expect(receipt).toBeVisible();
+    await expect(page.getByTestId("ticket-detail")).toContainText("#1");
+    await expect(page.getByTestId("ticket-detail")).toContainText("3.500");
+    await page.getByTestId("receipt-close").click();
+    await expect(receipt).toHaveCount(0);
+
     /* ---------------- ticket visible locally ---------------- */
     await page.getByTestId("tab-tickets").click();
     const firstTicket = page.getByTestId("ticket-item").first();
@@ -115,6 +124,7 @@ test.describe("D1 gate — create → sell → ticket locally", () => {
     await expect(page.getByTestId("tab-sale")).toBeVisible();
 
     await page.getByTestId("tab-catalog").click();
+    await page.getByTestId("product-new").click();
     await page.getByTestId("product-name").fill("Cerveza E2E");
     await page.getByTestId("variant-name").fill("330ml");
     await page.getByTestId("variant-price").fill("4000");
@@ -137,7 +147,9 @@ test.describe("D1 gate — create → sell → ticket locally", () => {
     );
     await expect(page.getByTestId("sale-success")).toBeHidden();
 
-    // no ticket was created
+    // no ticket was created — close the modal (error keeps the order) first
+    await page.getByTestId("checkout-cancel").click();
+    await expect(page.getByTestId("payment-modal")).toBeHidden();
     await page.getByTestId("tab-tickets").click();
     await expect(page.getByTestId("empty-tickets")).toBeVisible();
   });

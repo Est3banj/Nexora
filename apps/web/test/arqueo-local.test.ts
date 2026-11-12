@@ -36,7 +36,7 @@ beforeEach(async () => {
     name: "Granizado",
     variant: { name: "Mediano", price: 1000, stock: 100 },
   });
-  await openLocalShift(db, TENANT);
+  await openLocalShift(db, TENANT, { calculation_version: "legacy_v1" });
 });
 
 afterEach(async () => {

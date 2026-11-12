@@ -11,6 +11,18 @@ import {
   type ExpectedBreakdown,
   type MutationEntity,
   variantCodeSchema,
+  CUSTOMER_ACCOUNT_BY_ID_SQL,
+  CUSTOMER_ACCOUNTS_SQL,
+  CUSTOMER_BALANCES_SQL,
+  parseCustomerAccounts,
+  parseCustomerBalances,
+  customerPayloadSchema,
+  creditAbonoPayloadSchema,
+  cashMovementPayloadSchema,
+  productIconKeySchema,
+  type ProductIconKey,
+  createProductInputSchema,
+  adjustStockInputSchema,
 } from "@pos/shared";
 import { localTx, type LocalQueryable } from "./pglite";
 import { assertWritable, unresolvedWork, BUSINESS_TABLES } from "./preservation";
@@ -29,11 +41,12 @@ import { assertWritable, unresolvedWork, BUSINESS_TABLES } from "./preservation"
 
 type Q = LocalQueryable;
 
-function tenantTx<T>(db: PGlite, tenant: string, fn: (tx: Q) => Promise<T>): Promise<T> {
-  return localTx(db, async tx => {
+function tenantTx<T>(db: PGlite | Q, tenant: string, fn: (tx: Q) => Promise<T>): Promise<T> {
+  const run = async (tx: Q) => {
     await assertWritable(tx, tenant);
     return fn(tx);
-  });
+  };
+  return "transaction" in db ? localTx(db as PGlite, run) : run(db);
 }
 
 async function assertLocalCategory(q: Q, tenantId: string, id?: string | null) {
@@ -123,6 +136,7 @@ export async function unsyncedCount(db: Q, tenantId: string): Promise<number> {
 /* ------------------------------------------------------------------ */
 
 export type LocalCategory = {
+  icon_key?: ProductIconKey | null;
   id: string;
   client_uuid: string;
   name: string;
@@ -130,6 +144,7 @@ export type LocalCategory = {
 };
 
 export type LocalProduct = {
+  icon_key?: ProductIconKey | null;
   id: string;
   client_uuid: string;
   name: string;
@@ -155,6 +170,7 @@ export async function listProducts(
   opts: { active?: boolean } = {},
 ): Promise<LocalProduct[]> {
   const productRes = await db.query<{
+    icon_key: ProductIconKey | null;
     id: string;
     client_uuid: string;
     name: string;
@@ -163,8 +179,8 @@ export async function listProducts(
     active: boolean;
   }>(
     opts.active === undefined
-      ? `SELECT id, client_uuid, name, category_id, photo, active FROM products WHERE tenant_id = $1 ORDER BY name`
-      : `SELECT id, client_uuid, name, category_id, photo, active FROM products WHERE tenant_id = $1 AND active = $2 ORDER BY name`,
+      ? `SELECT id, client_uuid, name, category_id, photo, icon_key, active FROM products WHERE tenant_id = $1 ORDER BY name`
+      : `SELECT id, client_uuid, name, category_id, photo, icon_key, active FROM products WHERE tenant_id = $1 AND active = $2 ORDER BY name`,
     opts.active === undefined ? [tenantId] : [tenantId, opts.active],
   );
   const variantRes = await db.query<{
@@ -189,6 +205,7 @@ export async function listProducts(
     name: p.name,
     category_id: p.category_id,
     photo: p.photo,
+    icon_key: p.icon_key,
     active: p.active,
     variants: variantRes.rows
       .filter((v) => v.product_id === p.id)
@@ -201,7 +218,7 @@ export async function listCategories(
   tenantId: string,
 ): Promise<LocalCategory[]> {
   const res = await db.query<LocalCategory>(
-    `SELECT id, client_uuid, name, active FROM categories
+    `SELECT id, client_uuid, name, icon_key, active FROM categories
      WHERE tenant_id = $1 ORDER BY name`,
     [tenantId],
   );
@@ -211,24 +228,27 @@ export async function listCategories(
 export async function createLocalCategory(
   db: PGlite,
   tenantId: string,
-  input: { name: string },
+  input: { name: string; icon_key?: ProductIconKey | null },
 ): Promise<LocalCategory> {
   return tenantTx(db, tenantId, async (tx) => {
+    const icon = productIconKeySchema.nullable().parse(input.icon_key ?? null);
     const id = newId();
     await tx.query(
-      `INSERT INTO categories (id, tenant_id, client_uuid, name, active)
-       VALUES ($1, $2, $1, $3, TRUE)`,
-      [id, tenantId, input.name],
+      `INSERT INTO categories (id, tenant_id, client_uuid, name, icon_key, active)
+       VALUES ($1, $2, $1, $3, $4, TRUE)`,
+      [id, tenantId, input.name, icon],
     );
     await enqueueMutation(tx, tenantId, "category", id, {
       name: input.name,
+      icon_key: icon,
       active: true,
     });
-    return { id, client_uuid: id, name: input.name, active: true };
+    return { id, client_uuid: id, name: input.name, icon_key: icon, active: true };
   });
 }
 
 export type SaleItem = {
+  icon_key?: ProductIconKey | null;
   code?: string | null;
   id: string;
   product_id: string;
@@ -242,9 +262,23 @@ export type SaleItem = {
   photo: string | null;
 };
 
+export async function updateLocalCategory(db: PGlite, tenantId: string, id: string, patch: { name?: string; active?: boolean; icon_key?: ProductIconKey | null }) {
+  return tenantTx(db, tenantId, async tx => {
+    const current = (await tx.query<LocalCategory>("SELECT id,client_uuid,name,active,icon_key FROM categories WHERE tenant_id=$1 AND id=$2 FOR UPDATE", [tenantId, id])).rows[0];
+    if (!current) return 0;
+    const icon = productIconKeySchema.nullable().parse(patch.icon_key !== undefined ? patch.icon_key : current.icon_key);
+    const name = patch.name ?? current.name;
+    const active = patch.active ?? current.active;
+    await tx.query("UPDATE categories SET name=$3,active=$4,icon_key=$5,updated_at=now() WHERE tenant_id=$1 AND id=$2", [tenantId, id, name, active, icon]);
+    await enqueueMutation(tx, tenantId, "category", current.client_uuid, { name, active, icon_key: icon });
+    return 1;
+  });
+}
+
 /** Sale flow view: active variants of active products (empty catalog → []). */
 export async function listSaleItems(db: Q, tenantId: string): Promise<SaleItem[]> {
   const res = await db.query<{
+    icon_key: ProductIconKey | null;
     id: string;
     product_id: string;
     product_name: string;
@@ -259,7 +293,7 @@ export async function listSaleItems(db: Q, tenantId: string): Promise<SaleItem[]
     photo: string | null;
   }>(
     `SELECT v.id, v.product_id, p.name AS product_name, v.name, v.price, v.cost, v.code, v.stock, v.active,
-            p.active AS product_active, p.category_id, p.photo
+            p.active AS product_active, p.category_id, p.photo, p.icon_key
      FROM product_variants v
      JOIN products p ON p.id = v.product_id AND p.tenant_id = v.tenant_id
      WHERE v.tenant_id = $1 AND v.active = TRUE AND p.active = TRUE
@@ -270,9 +304,10 @@ export async function listSaleItems(db: Q, tenantId: string): Promise<SaleItem[]
 }
 
 export async function createLocalProduct(
-  db: PGlite,
+  db: PGlite | Q,
   tenantId: string,
   input: {
+    icon_key?: ProductIconKey | null;
     name: string;
     category_id?: string | null;
     photo?: string | null;
@@ -281,6 +316,7 @@ export async function createLocalProduct(
 ): Promise<LocalProduct> {
   return tenantTx(db, tenantId, async (tx) => {
     const productId = newId();
+    const icon = productIconKeySchema.nullable().parse(input.icon_key ?? null);
     await assertLocalCategory(tx, tenantId, input.category_id);
     const code = variantCodeSchema.parse(input.variant.code ?? null);
     const variantId = newId();
@@ -288,9 +324,9 @@ export async function createLocalProduct(
     const cost = input.variant.cost ?? null;
 
     await tx.query(
-      `INSERT INTO products (id, tenant_id, client_uuid, name, category_id, photo, active)
-       VALUES ($1, $2, $1, $3, $4, $5, TRUE)`,
-      [productId, tenantId, input.name, input.category_id ?? null, input.photo ?? null],
+      `INSERT INTO products (id, tenant_id, client_uuid, name, category_id, photo, icon_key, active)
+       VALUES ($1, $2, $1, $3, $4, $5, $6, TRUE)`,
+      [productId, tenantId, input.name, input.category_id ?? null, input.photo ?? null, icon],
     );
     await tx.query(
       `INSERT INTO product_variants
@@ -318,6 +354,7 @@ export async function createLocalProduct(
     );
 
     await enqueueMutation(tx, tenantId, "product", productId, {
+      icon_key: icon,
       name: input.name,
       category_id: input.category_id ?? null,
       photo: input.photo ?? null,
@@ -336,6 +373,7 @@ export async function createLocalProduct(
 
     return {
       id: productId,
+      icon_key: icon,
       client_uuid: productId,
       name: input.name,
       category_id: input.category_id ?? null,
@@ -360,7 +398,7 @@ export async function createLocalProduct(
 
 /** Extra size/price on an existing local product (catalog spec §Variants). */
 export async function addLocalVariant(
-  db: PGlite,
+  db: PGlite | Q,
   tenantId: string,
   productId: string,
   variant: { name: string; price: number; code?: string | null; cost?: number | null; stock?: number },
@@ -415,10 +453,11 @@ export async function addLocalVariant(
 }
 
 export async function updateLocalProduct(
-  db: PGlite,
+  db: PGlite | Q,
   tenantId: string,
   productId: string,
   patch: {
+    icon_key?: ProductIconKey | null;
     name?: string;
     category_id?: string | null;
     photo?: string | null;
@@ -428,13 +467,14 @@ export async function updateLocalProduct(
   return tenantTx(db, tenantId, async (tx) => {
     await assertLocalCategory(tx, tenantId, patch.category_id);
     const rows = await tx.query<{
+      icon_key: ProductIconKey | null;
       client_uuid: string;
       name: string;
       category_id: string | null;
       photo: string | null;
       active: boolean;
     }>(
-      `SELECT client_uuid, name, category_id, photo, active FROM products
+      `SELECT client_uuid, name, category_id, photo, icon_key, active FROM products
        WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
       [tenantId, productId],
     );
@@ -446,12 +486,14 @@ export async function updateLocalProduct(
       patch.category_id !== undefined ? patch.category_id : current.category_id;
     const nextPhoto = patch.photo !== undefined ? patch.photo : current.photo;
     const nextActive = patch.active ?? current.active;
+    const icon = productIconKeySchema.nullable().parse(patch.icon_key !== undefined ? patch.icon_key : current.icon_key);
     await tx.query(
-      `UPDATE products SET name = $3, category_id = $4, photo = $5, active = $6, updated_at = now()
+      `UPDATE products SET name = $3, category_id = $4, photo = $5, active = $6, icon_key = $7, updated_at = now()
        WHERE tenant_id = $1 AND id = $2`,
-      [tenantId, productId, nextName, nextCategoryId, nextPhoto, nextActive],
+      [tenantId, productId, nextName, nextCategoryId, nextPhoto, nextActive, icon],
     );
     await enqueueMutation(tx, tenantId, "product", current.client_uuid, {
+      icon_key: icon,
       name: nextName,
       category_id: nextCategoryId,
       photo: nextPhoto,
@@ -462,7 +504,7 @@ export async function updateLocalProduct(
 }
 
 export async function updateLocalVariant(
-  db: PGlite,
+  db: PGlite | Q,
   tenantId: string,
   variantId: string,
   patch: { name?: string; price?: number; code?: string | null; cost?: number | null; active?: boolean },
@@ -514,7 +556,7 @@ export async function updateLocalVariant(
 
 /** Manual stock adjustment: reason + note mandatory, auditable, atomic. */
 export async function adjustLocalStock(
-  db: PGlite,
+  db: PGlite | Q,
   tenantId: string,
   input: {
     variant_id: string;
@@ -573,6 +615,47 @@ export async function adjustLocalStock(
   });
 }
 
+/** One durable modal save: metadata, ALL variant edits and audited deltas, or nothing.
+ * Deltas apply to current stock, never overwrite sales made while the editor was open.
+ * Omitted fields/variants retain their current values and historical ticket costs.
+ */
+export async function saveLocalCatalogProduct(db: PGlite, tenantId: string, input: {
+  id?: string;
+  product: Parameters<typeof updateLocalProduct>[3] & { name: string };
+  variants: Array<{ id?: string; name: string; price: number; cost: number | null; code: string | null; stock: number; reason?: string; note?: string }>;
+}): Promise<string> {
+  if (!input.variants.length) throw new Error("Agregá al menos una variante");
+  if (!input.id && input.variants.some(v => v.id)) throw new Error("Variante no encontrada en este producto");
+  const parsed = input.variants.map(v => ({ ...v, ...createProductInputSchema.shape.variant.parse(v) }));
+  const product = createProductInputSchema.omit({ variant: true }).parse(input.product);
+  return tenantTx(db, tenantId, async tx => {
+    // Query-only facade deliberately reuses this transaction, not nested transactions.
+    const q: Q = { query: tx.query.bind(tx) };
+    let id = input.id;
+    let start = 0;
+    if (id) {
+      if (!await updateLocalProduct(q, tenantId, id, { ...product, active: input.product.active })) throw new Error("Producto no encontrado");
+    } else {
+      id = (await createLocalProduct(q, tenantId, { ...product, variant: parsed[0] })).id;
+      start = 1;
+    }
+    for (const v of parsed.slice(start)) {
+      if (!v.id) {
+        if (!await addLocalVariant(q, tenantId, id, v)) throw new Error("Producto no encontrado");
+      } else {
+        const belongs = await q.query("SELECT id FROM product_variants WHERE tenant_id=$1 AND product_id=$2 AND id=$3", [tenantId, id, v.id]);
+        if (!belongs.rows.length) throw new Error("Variante no encontrada en este producto");
+        await updateLocalVariant(q, tenantId, v.id, { name: v.name, price: v.price, cost: v.cost, code: v.code });
+        if (v.stock !== 0) {
+          const adjustment = adjustStockInputSchema.parse({ delta: v.stock, reason: v.reason, note: v.note });
+          await adjustLocalStock(q, tenantId, { variant_id: v.id, ...adjustment });
+        }
+      }
+    }
+    return id;
+  });
+}
+
 export async function recountLocal(
   db: Q,
   tenantId: string,
@@ -590,6 +673,125 @@ export async function recountLocal(
 /* local sale skeleton (D1-8)                                          */
 /* ------------------------------------------------------------------ */
 
+export type LocalCustomer = {
+  id: string; name: string; phone: string | null; notes: string | null;
+  credit_limit: number | null; active: boolean; created_at: string;
+};
+type CustomerInput = { name: string; phone?: string | null; notes?: string | null; credit_limit: number | null; active?: boolean };
+
+export async function createLocalCustomer(db: PGlite, tenantId: string, input: CustomerInput): Promise<LocalCustomer> {
+  // New credit customers require an explicit limit; legacy rows remain readable.
+  if (input.credit_limit == null) throw new Error("CREDIT_LIMIT_REQUIRED");
+  const p = customerPayloadSchema.parse({ ...input, name: input.name.trim() });
+  return tenantTx(db, tenantId, async tx => {
+    const id = newId(), created_at = new Date().toISOString();
+    const result = await tx.query<LocalCustomer>(`INSERT INTO customers
+      (id,tenant_id,client_uuid,name,phone,notes,credit_limit,active,created_at)
+      VALUES ($1,$2,$1,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    [id, tenantId, p.name, p.phone ?? null, p.notes ?? null, p.credit_limit, p.active, created_at]);
+    await enqueueMutation(tx, tenantId, "customer", id, { ...p, created_at });
+    return result.rows[0];
+  });
+}
+
+export async function updateLocalCustomer(db: PGlite, tenantId: string, id: string, input: Partial<CustomerInput>): Promise<LocalCustomer> {
+  return tenantTx(db, tenantId, async tx => {
+    const old = (await tx.query<LocalCustomer>("SELECT * FROM customers WHERE tenant_id=$1 AND id=$2", [tenantId, id])).rows[0];
+    if (!old) throw new Error("CUSTOMER_NOT_FOUND");
+    const p = customerPayloadSchema.parse({ ...old, ...input, name: (input.name ?? old.name).trim(), created_at: new Date(old.created_at).toISOString() });
+    const result = await tx.query<LocalCustomer>(`UPDATE customers SET name=$3,phone=$4,notes=$5,credit_limit=$6,active=$7,updated_at=now()
+      WHERE tenant_id=$1 AND id=$2 RETURNING *`, [tenantId, id, p.name, p.phone, p.notes, p.credit_limit, p.active]);
+    await enqueueMutation(tx, tenantId, "customer", id, p);
+    return result.rows[0];
+  });
+}
+
+export async function listLocalCustomers(db: Q, tenantId: string, search = ""): Promise<LocalCustomer[]> {
+  const rows = (await db.query<LocalCustomer>("SELECT * FROM customers WHERE tenant_id=$1 AND active=TRUE ORDER BY name ASC,id ASC", [tenantId])).rows;
+  const fold = (s: string) => s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+  const name = fold(search.trim()), digits = search.replace(/\D/g, "");
+  return rows.filter(r => fold(r.name).includes(name) || (digits.length > 0 && (r.phone ?? "").replace(/\D/g, "").includes(digits))).slice(0, 20);
+}
+
+/** Full edit record, not the accounts/report projection (which omits notes). */
+export async function getLocalCustomer(db: Q, tenantId: string, id: string): Promise<LocalCustomer | null> {
+  return (await db.query<LocalCustomer>(
+    "SELECT * FROM customers WHERE tenant_id=$1 AND id=$2", [tenantId, id],
+  )).rows[0] ?? null;
+}
+
+export async function listCustomerAccounts(db: Q, tenantId: string) {
+  return parseCustomerAccounts((await db.query(CUSTOMER_ACCOUNTS_SQL, [tenantId])).rows);
+}
+export async function listCustomerBalances(db: Q, tenantId: string) {
+  return parseCustomerBalances((await db.query(CUSTOMER_BALANCES_SQL, [tenantId])).rows);
+}
+export async function customerAccountById(db: Q, tenantId: string, id: string) {
+  const rows = (await db.query(CUSTOMER_ACCOUNT_BY_ID_SQL, [tenantId, id])).rows;
+  return rows[0] ? { ...parseCustomerAccounts(rows)[0], active: rows[0].active === true } : null;
+}
+export async function listLocalCustomerTickets(db: Q, tenantId: string, id: string) {
+  return (await db.query<LocalTicketRow & { credit_amount: number; attributed_abonos: number }>(`SELECT t.*,
+    (SELECT COALESCE(SUM(p.amount),0)::int FROM payments p WHERE p.tenant_id=t.tenant_id AND p.ticket_id=t.id AND p.method='credit' AND p.status='confirmed') AS credit_amount,
+    (SELECT COALESCE(SUM(a.amount),0)::int FROM credit_abonos a WHERE a.tenant_id=t.tenant_id AND a.customer_id=t.customer_id AND a.ticket_id=t.id) AS attributed_abonos,
+    (SELECT string_agg(DISTINCT p.method, ',' ORDER BY p.method) FROM payments p WHERE p.tenant_id=t.tenant_id AND p.ticket_id=t.id) AS method
+    FROM tickets t WHERE t.tenant_id=$1 AND t.customer_id=$2 ORDER BY t.created_at DESC`, [tenantId, id])).rows;
+}
+
+/**
+ * Soft-deleted customers (active=FALSE). The Clientes management screen
+ * needs them so staff can REACTIVATE (customers spec §soft-delete);
+ * they stay out of the Venta picker and the active accounts grid.
+ */
+export async function listLocalInactiveCustomers(db: Q, tenantId: string): Promise<LocalCustomer[]> {
+  const result = await db.query<LocalCustomer>(
+    "SELECT * FROM customers WHERE tenant_id=$1 AND active=FALSE ORDER BY name ASC, id ASC",
+    [tenantId],
+  );
+  return result.rows;
+}
+
+export type LocalAbonoRow = {
+  id: string;
+  amount: number;
+  method: string;
+  ticket_id: string | null;
+  note: string | null;
+  created_at: string;
+};
+
+/** Customer detail: their abonos — own table, never payments (abonos spec). */
+export async function listLocalCustomerAbonos(db: Q, tenantId: string, customerId: string): Promise<LocalAbonoRow[]> {
+  const result = await db.query<LocalAbonoRow>(
+    `SELECT id, amount, method, ticket_id, note, created_at FROM credit_abonos
+     WHERE tenant_id=$1 AND customer_id=$2 ORDER BY created_at DESC, id`,
+    [tenantId, customerId],
+  );
+  return result.rows;
+}
+
+export async function registerLocalAbono(db: PGlite, tenantId: string, input: {
+  customer_id: string; amount: number; method: "cash" | "transfer"; ticket_id?: string | null; note?: string | null;
+}) {
+  return tenantTx(db, tenantId, async tx => {
+    const shift = await getOpenShiftLocal(tx, tenantId);
+    if (!shift) throw new Error("SHIFT_REQUIRED");
+    const p = creditAbonoPayloadSchema.parse({ ...input, shift_id: shift.id, created_at: new Date().toISOString() });
+    const account = await customerAccountById(tx, tenantId, p.customer_id);
+    if (!account) throw new Error("CUSTOMER_NOT_FOUND");
+    if (p.amount > account.balance) throw new Error(`ABONO_EXCEEDS_BALANCE: ${account.balance}`);
+    if (p.ticket_id) {
+      const ticket = (await tx.query<{ customer_id: string | null }>("SELECT customer_id FROM tickets WHERE tenant_id=$1 AND id=$2", [tenantId, p.ticket_id])).rows[0];
+      if (!ticket || (ticket.customer_id !== null && ticket.customer_id !== p.customer_id)) throw new Error("ABONO_TICKET_MISMATCH");
+    }
+    const id = newId();
+    await tx.query(`INSERT INTO credit_abonos (id,tenant_id,client_uuid,customer_id,amount,method,shift_id,ticket_id,note,created_at)
+      VALUES ($1,$2,$1,$3,$4,$5,$6,$7,$8,$9)`, [id, tenantId, p.customer_id, p.amount, p.method, p.shift_id, p.ticket_id ?? null, p.note ?? null, p.created_at]);
+    await enqueueMutation(tx, tenantId, "credit_abono", id, p);
+    return { id, ...p, balance: account.balance - p.amount };
+  });
+}
+
 export type SaleLineInput = {
   variant_id: string;
   qty: number;
@@ -605,7 +807,7 @@ export type CommittedSale = {
     created_at: string;
   };
   lines: Array<{ id: string; qty: number; unit_price: number; subtotal: number }>;
-  payment: {
+  payments: Array<{
     id: string;
     method: string;
     amount: number;
@@ -613,12 +815,13 @@ export type CommittedSale = {
     vuelto: number | null;
     status: string;
     confirmed_at: string | null;
-  };
+  }>;
 };
 
 export type SaleCommitInput =
   | { lines: SaleLineInput[]; method?: "cash"; tendered: number }
-  | { lines: SaleLineInput[]; method: "transfer" };
+  | { lines: SaleLineInput[]; method: "transfer" }
+  | { lines: SaleLineInput[]; method: "credit"; customerId: string; cashAmount: number };
 
 /**
  * ONE local transaction = ticket + lines + payment + shift lookup +
@@ -642,15 +845,27 @@ export async function commitLocalSale(
   ); // throws EMPTY_CART
 
   const isTransfer = input.method === "transfer";
+  const isCredit = input.method === "credit";
   let tendered: number | null = null;
   let vuelto: number | null = null;
-  if (!isTransfer) {
+  if (!isTransfer && !isCredit) {
     // cash: tendered ≥ total required (throws UNDERPAYMENT)
     vuelto = computeVuelto(total, input.tendered);
     tendered = input.tendered;
   }
 
   return tenantTx(db, tenantId, async (tx) => {
+    let customerId: string | null = null;
+    if (input.method === "credit") {
+      if (!input.customerId) throw new Error("CREDIT_CUSTOMER_REQUIRED");
+      if (!Number.isInteger(input.cashAmount) || input.cashAmount < 0 || input.cashAmount >= total)
+        throw new Error("MIXED_AMOUNT_INVALID");
+      const account = await customerAccountById(tx, tenantId, input.customerId);
+      if (!account?.active) throw new Error("CREDIT_CUSTOMER_REQUIRED");
+      if (account.credit_limit === null) throw new Error("CREDIT_LIMIT_REQUIRED");
+      if (account.balance + total - input.cashAmount > account.credit_limit) throw new Error("CREDIT_LIMIT_EXCEEDED");
+      customerId = input.customerId;
+    }
     const noRes = await tx.query<{ next: string }>(
       `SELECT coalesce(max(ticket_no), 0) + 1 AS next FROM tickets WHERE tenant_id = $1`,
       [tenantId],
@@ -669,9 +884,9 @@ export async function commitLocalSale(
 
     const ticketId = newId();
     await tx.query(
-      `INSERT INTO tickets (id, tenant_id, client_uuid, shift_id, ticket_no, status, total, created_at)
-       VALUES ($1, $2, $1, $3, $4, $5, $6, $7)`,
-      [ticketId, tenantId, shiftId, ticketNo, ticketStatus, total, createdAt],
+      `INSERT INTO tickets (id, tenant_id, client_uuid, shift_id, ticket_no, status, total, created_at, customer_id)
+       VALUES ($1, $2, $1, $3, $4, $5, $6, $7, $8)`,
+      [ticketId, tenantId, shiftId, ticketNo, ticketStatus, total, createdAt, customerId],
     );
 
     const lines: CommittedSale["lines"] = [];
@@ -766,40 +981,43 @@ export async function commitLocalSale(
       }
     }
 
-    const paymentId = newId();
+    const payments: CommittedSale["payments"] = input.method === "credit"
+      ? [
+        ...(input.cashAmount > 0 ? [{ id: newId(), method: "cash", amount: input.cashAmount, tendered: input.cashAmount, vuelto: 0, status: "confirmed", confirmed_at: null }] : []),
+        { id: newId(), method: "credit", amount: total - input.cashAmount, tendered: null, vuelto: null, status: "confirmed", confirmed_at: null },
+      ]
+      : [{ id: newId(), method: isTransfer ? "transfer" : "cash", amount: total, tendered, vuelto, status: paymentStatus, confirmed_at: null }];
+    for (const payment of payments) {
     await tx.query(
       `INSERT INTO payments
          (id, tenant_id, client_uuid, ticket_id, method, amount, tendered, vuelto, status, shift_id, created_at)
        VALUES ($1, $2, $1, $3, $4, $5, $6, $7, $8, $9, $10)`,
       [
-        paymentId,
+        payment.id,
         tenantId,
         ticketId,
-        isTransfer ? "transfer" : "cash",
-        total,
-        tendered,
-        vuelto,
-        paymentStatus,
+        payment.method,
+        payment.amount,
+        payment.tendered,
+        payment.vuelto,
+        payment.status,
         shiftId,
         createdAt,
       ],
     );
+    await enqueueMutation(tx, tenantId, "payment", payment.id, {
+      ticket_id: ticketId, method: payment.method, amount: payment.amount,
+      tendered: payment.tendered, vuelto: payment.vuelto, status: payment.status,
+      shift_id: shiftId, created_at: createdAt,
+    });
+    }
 
     await enqueueMutation(tx, tenantId, "ticket", ticketId, {
       shift_id: shiftId,
       ticket_no: ticketNo,
       status: ticketStatus,
       total,
-      created_at: createdAt,
-    });
-    await enqueueMutation(tx, tenantId, "payment", paymentId, {
-      ticket_id: ticketId,
-      method: isTransfer ? "transfer" : "cash",
-      amount: total,
-      tendered,
-      vuelto,
-      status: paymentStatus,
-      shift_id: shiftId,
+      customer_id: customerId,
       created_at: createdAt,
     });
 
@@ -812,15 +1030,7 @@ export async function commitLocalSale(
         created_at: createdAt,
       },
       lines,
-      payment: {
-        id: paymentId,
-        method: isTransfer ? "transfer" : "cash",
-        amount: total,
-        tendered,
-        vuelto,
-        status: paymentStatus,
-        confirmed_at: null,
-      },
+      payments,
     };
   });
 }
@@ -839,7 +1049,7 @@ export async function confirmLocalPayment(
   tenantId: string,
   paymentId: string,
   confirmedAtIso?: string,
-): Promise<{ payment: CommittedSale["payment"]; confirmed_at: string }> {
+): Promise<{ payment: CommittedSale["payments"][number]; confirmed_at: string }> {
   return tenantTx(db, tenantId, async (tx) => {
     const payRes = await tx.query<{
       id: string;
@@ -932,7 +1142,35 @@ export type LocalTicketRow = {
   voided_at?: string | null;
   /** Product names on the ticket — powers search without opening detail. */
   items?: string;
+  /** Credit customer link (M5): receipt header + Tickets search by client. */
+  customer_id?: string | null;
+  customer_name?: string | null;
 };
+
+const TICKET_PAYMENT_COLUMNS = `
+ (SELECT string_agg(DISTINCT p.method, ',' ORDER BY p.method) FROM payments p WHERE p.tenant_id=t.tenant_id AND p.ticket_id=t.id) AS method,
+ (SELECT p.status FROM payments p WHERE p.tenant_id=t.tenant_id AND p.ticket_id=t.id ORDER BY (p.method='transfer') DESC,p.id LIMIT 1) AS pay_status,
+ (SELECT p.tendered FROM payments p WHERE p.tenant_id=t.tenant_id AND p.ticket_id=t.id AND p.method='cash' LIMIT 1) AS tendered,
+ (SELECT p.vuelto FROM payments p WHERE p.tenant_id=t.tenant_id AND p.ticket_id=t.id AND p.method='cash' LIMIT 1) AS vuelto`;
+
+/* M5: customer link travels with the row — receipt header, "Ver cuenta"
+ * hand-off and Tickets search by client (prototype: buscar por cliente). */
+const TICKET_CUSTOMER_COLUMNS = `
+ t.customer_id,
+ (SELECT c.name FROM customers c WHERE c.tenant_id=t.tenant_id AND c.id=t.customer_id) AS customer_name`;
+
+/* Items as "qty× name" per line, in line order — the Ítems column shows
+ * quantities (prototype) and search still matches product names. */
+const TICKET_ITEMS_COLUMN = `
+ (
+   SELECT string_agg(
+            trim(tl.qty || '× ' || trim(COALESCE(pr.name, '') || ' ' || COALESCE(v.name, ''))),
+            ', ' ORDER BY tl.created_at, tl.id)
+   FROM ticket_lines tl
+   JOIN product_variants v ON v.id = tl.variant_id
+   JOIN products pr ON pr.id = v.product_id
+   WHERE tl.ticket_id = t.id
+ ) AS items`;
 
 export async function listLocalTickets(
   db: Q,
@@ -941,16 +1179,10 @@ export async function listLocalTickets(
 ): Promise<LocalTicketRow[]> {
   const res = await db.query<LocalTicketRow>(
     `SELECT t.id, t.ticket_no, t.total, t.status, t.created_at,
-            p.method, p.status AS pay_status, p.tendered, p.vuelto,
-            (
-              SELECT string_agg(DISTINCT trim(COALESCE(pr.name, '') || ' ' || COALESCE(v.name, '')), ', ')
-              FROM ticket_lines tl
-              JOIN product_variants v ON v.id = tl.variant_id
-              JOIN products pr ON pr.id = v.product_id
-              WHERE tl.ticket_id = t.id
-            ) AS items
+            ${TICKET_PAYMENT_COLUMNS},
+            ${TICKET_CUSTOMER_COLUMNS},
+            ${TICKET_ITEMS_COLUMN}
      FROM tickets t
-     LEFT JOIN payments p ON p.ticket_id = t.id
      WHERE t.tenant_id = $1
      ORDER BY t.created_at DESC
      LIMIT $2`,
@@ -975,16 +1207,18 @@ export async function getLocalTicket(
     product_name: string | null;
   }>;
   payment_id: string | null;
+  payments: CommittedSale["payments"];
   /** false while the payment's queue entry has not synced yet (D2-6 gate). */
   payment_synced: boolean;
 } | null> {
   const ticket = await db.query<LocalTicketRow>(
     `SELECT t.id, t.ticket_no, t.total, t.status, t.created_at,
-            p.id AS payment_id, p.method, p.status AS pay_status, p.tendered, p.vuelto,
+            (SELECT p.id FROM payments p WHERE p.tenant_id=t.tenant_id AND p.ticket_id=t.id AND p.method='transfer' LIMIT 1) AS payment_id,
+            ${TICKET_PAYMENT_COLUMNS},
+            ${TICKET_CUSTOMER_COLUMNS},
             (SELECT note FROM stockdiary d WHERE d.tenant_id=t.tenant_id AND d.ref_ticket_id=t.id AND d.reason='sale_void' ORDER BY created_at LIMIT 1) AS void_reason,
             (SELECT created_at FROM stockdiary d WHERE d.tenant_id=t.tenant_id AND d.ref_ticket_id=t.id AND d.reason='sale_void' ORDER BY created_at LIMIT 1) AS voided_at
      FROM tickets t
-     LEFT JOIN payments p ON p.ticket_id = t.id
      WHERE t.tenant_id = $1 AND t.id = $2`,
     [tenantId, ticketId],
   );
@@ -1021,6 +1255,7 @@ export async function getLocalTicket(
     ticket: ticketRow,
     lines: lines.rows,
     payment_id: paymentId,
+    payments: (await db.query<CommittedSale["payments"][number]>("SELECT id,method,amount,tendered,vuelto,status,confirmed_at FROM payments WHERE tenant_id=$1 AND ticket_id=$2 ORDER BY method,id", [tenantId, ticketId])).rows,
     payment_synced: paymentSynced,
   };
 }
@@ -1030,6 +1265,9 @@ export async function getLocalTicket(
 /* ------------------------------------------------------------------ */
 
 export type LocalShift = {
+  opening_cash: number;
+  opened_by: string | null;
+  calculation_version: "legacy_v1" | "drawer_cash_v2";
   id: string;
   client_uuid: string;
   status: string;
@@ -1038,6 +1276,9 @@ export type LocalShift = {
 };
 
 export type LocalClosedCash = {
+  sync_pending?: boolean;
+  closing_note: string | null;
+  calculation_version: string;
   id: string;
   shift_id: string;
   expected: number;
@@ -1047,7 +1288,7 @@ export type LocalClosedCash = {
   created_at: string;
 };
 
-const SHIFT_COLS = "id, client_uuid, status, opened_at, closed_at";
+const SHIFT_COLS = "id, client_uuid, status, opened_at, closed_at, opening_cash, opened_by, calculation_version";
 
 export async function getOpenShiftLocal(
   db: Q,
@@ -1065,7 +1306,7 @@ export async function getOpenShiftLocal(
 export async function openLocalShift(
   db: PGlite,
   tenantId: string,
-  opts: { client_uuid?: string } = {},
+  opts: { client_uuid?: string; opening_cash?: number; opened_by?: string | null; calculation_version?: "legacy_v1" | "drawer_cash_v2" } = {},
 ): Promise<LocalShift> {
   return tenantTx(db, tenantId, async (tx) => {
     const open = await tx.query<{ id: string }>(
@@ -1074,16 +1315,22 @@ export async function openLocalShift(
     );
     if (open.rows[0]) throw new Error("SHIFT_ALREADY_OPEN");
     const id = opts.client_uuid ?? newId();
+    const payload = mutationEnvelopeSchema.parse({ entity: "shift", client_uuid: id, client_ts: Date.now(), payload: {
+      status: "open", opened_at: new Date().toISOString(), opening_cash: opts.opening_cash ?? 0,
+      opened_by: opts.opened_by ?? null, calculation_version: opts.calculation_version ?? "drawer_cash_v2",
+    } }).payload as { status: "open"; opened_at: string; opening_cash: number; opened_by: string | null; calculation_version: "legacy_v1" | "drawer_cash_v2" };
     await tx.query(
-      `INSERT INTO shifts (id, tenant_id, client_uuid, status) VALUES ($1, $2, $1, 'open')`,
-      [id, tenantId],
+      `INSERT INTO shifts (id, tenant_id, client_uuid, status, opened_at, opening_cash, opened_by, calculation_version)
+       VALUES ($1, $2, $1, 'open', $3, $4, $5, $6)`,
+      [id, tenantId, payload.opened_at, payload.opening_cash, payload.opened_by, payload.calculation_version],
     );
-    await enqueueMutation(tx, tenantId, "shift", id, { status: "open" });
+    await enqueueMutation(tx, tenantId, "shift", id, payload);
     return {
+      ...payload,
       id,
       client_uuid: id,
       status: "open",
-      opened_at: new Date().toISOString(),
+      opened_at: payload.opened_at,
       closed_at: null,
     };
   });
@@ -1102,6 +1349,9 @@ export async function mirrorOpenShift(
     status?: string;
     opened_at?: string | Date | null;
     closed_at?: string | Date | null;
+    opening_cash?: number;
+    opened_by?: string | null;
+    calculation_version?: string;
   },
 ): Promise<boolean> {
   return tenantTx(db, tenantId, async (tx) => {
@@ -1111,8 +1361,8 @@ export async function mirrorOpenShift(
     );
     if (open.rows[0]) return false;
     await tx.query(
-      `INSERT INTO shifts (id, tenant_id, client_uuid, status, opened_at, closed_at)
-       VALUES ($1, $2, $1, $3, $4, $5)
+      `INSERT INTO shifts (id, tenant_id, client_uuid, status, opened_at, closed_at, opening_cash, opened_by, calculation_version)
+       VALUES ($1, $2, $1, $3, $4, $5, $6, $7, $8)
        ON CONFLICT DO NOTHING`,
       [
         shift.id,
@@ -1120,6 +1370,7 @@ export async function mirrorOpenShift(
         shift.status ?? "open",
         shift.opened_at ? new Date(shift.opened_at).toISOString() : new Date().toISOString(),
         shift.closed_at ? new Date(shift.closed_at).toISOString() : null,
+        shift.opening_cash ?? 0, shift.opened_by ?? null, shift.calculation_version ?? "legacy_v1",
       ],
     );
     return true;
@@ -1143,6 +1394,18 @@ export async function computeLocalExpected(
   return parseExpectedRow(res.rows[0]);
 }
 
+/** The online close must not persist before this device's shift evidence ACKs. */
+export async function hasPendingShiftEvidence(db: Q, tenantId: string, shiftId: string): Promise<boolean> {
+  const result = await db.query<{ pending: boolean }>(`SELECT EXISTS(
+    SELECT 1 FROM sync_log WHERE tenant_id=$1 AND status<>'synced' AND
+      ((entity IN ('ticket','payment','credit_abono','cash_movement') AND payload->>'shift_id'=$2)
+       OR (entity='shift' AND client_uuid=$2::uuid))
+    UNION ALL SELECT 1 FROM sync_sale_outbox o WHERE o.tenant_id=$1 AND EXISTS(
+      SELECT 1 FROM jsonb_array_elements(o.rows) r WHERE r->'payload'->>'shift_id'=$2)
+    ) AS pending`, [tenantId, shiftId]);
+  return result.rows[0].pending;
+}
+
 /**
  * Offline close (D3-2): expected computed from LOCAL payments with the
  * shared SQL, `counted` is the only manual figure, diff derived, closedcash
@@ -1152,7 +1415,7 @@ export async function computeLocalExpected(
 export async function closeLocalShift(
   db: PGlite,
   tenantId: string,
-  input: { counted: number; closedBy?: string | null },
+  input: { counted: number; closedBy?: string | null; closingNote?: string | null },
 ): Promise<{
   closedcash: LocalClosedCash;
   expected: ExpectedBreakdown;
@@ -1160,6 +1423,7 @@ export async function closeLocalShift(
 }> {
   const counted = countedSchema.safeParse(input.counted);
   if (!counted.success) throw new Error("NEGATIVE_COUNTED");
+  if (input.closingNote != null && input.closingNote.length > 500) throw new Error("INVALID_CLOSING_NOTE");
 
   return tenantTx(db, tenantId, async (tx) => {
     const open = await tx.query<LocalShift>(
@@ -1177,11 +1441,11 @@ export async function closeLocalShift(
 
     const inserted = await tx.query<LocalClosedCash>(
       `INSERT INTO closedcash
-         (id, tenant_id, client_uuid, shift_id, expected, counted, diff, closed_by)
-       VALUES ($1, $2, $1, $3, $4, $5, $6, $7)
+         (id, tenant_id, client_uuid, shift_id, expected, counted, diff, closed_by, closing_note, calculation_version)
+       VALUES ($1, $2, $1, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (tenant_id, shift_id) DO NOTHING
        RETURNING id, shift_id, expected, counted, diff, closed_by, created_at`,
-      [id, tenantId, shift.id, expected.expected, counted.data, diff, input.closedBy ?? null],
+       [id, tenantId, shift.id, expected.expected, counted.data, diff, input.closedBy ?? null, input.closingNote ?? null, shift.calculation_version],
     );
     if (!inserted.rows[0]) throw new Error("ALREADY_CLOSED");
 
@@ -1192,6 +1456,8 @@ export async function closeLocalShift(
     );
 
     await enqueueMutation(tx, tenantId, "closedcash", id, {
+      closing_note: input.closingNote ?? null,
+      calculation_version: shift.calculation_version,
       shift_id: shift.id,
       expected: expected.expected,
       counted: counted.data,
@@ -1199,6 +1465,9 @@ export async function closeLocalShift(
       closed_by: input.closedBy ?? null,
     });
     await enqueueMutation(tx, tenantId, "shift", shift.client_uuid, {
+      opening_cash: shift.opening_cash,
+      opened_by: shift.opened_by,
+      calculation_version: shift.calculation_version,
       status: "closed",
       opened_at: new Date(shift.opened_at).toISOString(),
       closed_at: closedAt,
@@ -1206,6 +1475,8 @@ export async function closeLocalShift(
 
     return {
       closedcash: {
+        closing_note: input.closingNote ?? null,
+        calculation_version: shift.calculation_version,
         id,
         shift_id: shift.id,
         expected: expected.expected,
@@ -1235,13 +1506,16 @@ export async function mirrorServerClose(
     counted: number;
     diff: number;
     closed_by?: string | null;
+    closing_note?: string | null;
+    calculation_version?: string;
+    created_at?: string;
   },
 ): Promise<void> {
   await tenantTx(db, tenantId, async (tx) => {
     await tx.query(
       `INSERT INTO closedcash
-         (id, tenant_id, client_uuid, shift_id, expected, counted, diff, closed_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          (id, tenant_id, client_uuid, shift_id, expected, counted, diff, closed_by, closing_note, calculation_version, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11::timestamptz, now()))
        ON CONFLICT DO NOTHING`,
       [
         row.id,
@@ -1252,6 +1526,8 @@ export async function mirrorServerClose(
         row.counted,
         row.diff,
         row.closed_by ?? null,
+        row.closing_note ?? null, row.calculation_version ?? "legacy_v1",
+        row.created_at ?? null,
       ],
     );
     await tx.query(
@@ -1269,12 +1545,48 @@ export async function listLocalClosedCash(
   limit = 20,
 ): Promise<LocalClosedCash[]> {
   const res = await db.query<LocalClosedCash>(
-    `SELECT id, shift_id, expected, counted, diff, closed_by, created_at
-     FROM closedcash WHERE tenant_id = $1
-     ORDER BY created_at DESC LIMIT $2`,
+    `SELECT c.id, c.shift_id, c.expected, c.counted, c.diff, c.closed_by, c.created_at, c.closing_note, c.calculation_version,
+       EXISTS(SELECT 1 FROM sync_log l WHERE l.tenant_id=c.tenant_id AND l.entity='closedcash'
+         AND l.client_uuid=c.client_uuid AND l.status<>'synced') AS sync_pending
+     FROM closedcash c WHERE c.tenant_id = $1
+     ORDER BY c.created_at DESC, c.id DESC LIMIT $2`,
     [tenantId, limit],
   );
   return res.rows;
+}
+
+/** Append-only drawer ledger, committed atomically with its queue entry. */
+export async function registerLocalCashMovement(db: PGlite, tenantId: string, input: {
+  direction: "in" | "out"; amount: number; reason: string; note?: string | null;
+}) {
+  return tenantTx(db, tenantId, async tx => {
+    const shift = await getOpenShiftLocal(tx, tenantId);
+    if (!shift) throw new Error("SHIFT_REQUIRED");
+    const id = newId();
+    const payload = cashMovementPayloadSchema.parse({ ...input, shift_id: shift.id, created_at: new Date().toISOString() });
+    await tx.query(`INSERT INTO cash_movements(id,tenant_id,client_uuid,shift_id,direction,amount,reason,note,created_at)
+      VALUES($1,$2,$1,$3,$4,$5,$6,$7,$8)`,
+    [id, tenantId, shift.id, payload.direction, payload.amount, payload.reason, payload.note ?? null, payload.created_at]);
+    await enqueueMutation(tx, tenantId, "cash_movement", id, payload);
+    return { id, ...payload };
+  });
+}
+
+export type LocalCashMovement = {
+  id: string; direction: "in" | "out"; amount: number; reason: string; note: string | null; created_at: string;
+};
+
+export async function listLocalCashMovements(db: Q, tenantId: string, shiftId: string): Promise<LocalCashMovement[]> {
+  return (await db.query<LocalCashMovement>(`SELECT id,direction,amount,reason,note,created_at FROM cash_movements WHERE tenant_id=$1 AND shift_id=$2 ORDER BY created_at DESC, id DESC`, [tenantId, shiftId])).rows;
+}
+
+/** Bank collections are disclosed separately; never added to drawer expected. */
+export async function localShiftTransferAbonos(db: Q, tenantId: string, shiftId: string): Promise<number> {
+  const result = await db.query<{ amount: string | number }>(
+    `SELECT COALESCE(SUM(amount),0) AS amount FROM credit_abonos WHERE tenant_id=$1 AND shift_id=$2 AND method='transfer'`,
+    [tenantId, shiftId],
+  );
+  return Number(result.rows[0].amount);
 }
 
 /**

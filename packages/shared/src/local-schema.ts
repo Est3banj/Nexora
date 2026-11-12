@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS customers (
 CREATE UNIQUE INDEX IF NOT EXISTS customers_tenant_client_uq ON customers (tenant_id, client_uuid);
 CREATE INDEX IF NOT EXISTS customers_tenant_active_idx ON customers (tenant_id, active);
 CREATE INDEX IF NOT EXISTS customers_tenant_name_idx ON customers (tenant_id, name);   -- picker search (NON-unique)
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS credit_limit integer;
 
 CREATE TABLE IF NOT EXISTS credit_abonos (
   id uuid PRIMARY KEY,
@@ -82,6 +83,25 @@ CREATE INDEX IF NOT EXISTS credit_abonos_tenant_created_idx ON credit_abonos (te
 
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS customer_id uuid;   -- nullable, NO DB FK (business-table precedent)
 CREATE INDEX IF NOT EXISTS tickets_tenant_customer_idx ON tickets (tenant_id, customer_id);
+`;
+
+export const PROTOTYPE_MIGRATION_SQL = /* sql */ `
+ALTER TABLE products ADD COLUMN IF NOT EXISTS icon_key text;
+ALTER TABLE categories ADD COLUMN IF NOT EXISTS icon_key text;
+ALTER TABLE shifts ADD COLUMN IF NOT EXISTS opening_cash integer NOT NULL DEFAULT 0;
+ALTER TABLE shifts ADD COLUMN IF NOT EXISTS opened_by uuid;
+ALTER TABLE shifts ADD COLUMN IF NOT EXISTS calculation_version text NOT NULL DEFAULT 'legacy_v1';
+ALTER TABLE closedcash ADD COLUMN IF NOT EXISTS closing_note text;
+ALTER TABLE closedcash ADD COLUMN IF NOT EXISTS calculation_version text NOT NULL DEFAULT 'legacy_v1';
+CREATE TABLE IF NOT EXISTS cash_movements (
+  id uuid PRIMARY KEY, tenant_id uuid NOT NULL, client_uuid uuid NOT NULL,
+  shift_id uuid NOT NULL, direction text NOT NULL, amount integer NOT NULL,
+  reason text NOT NULL, note text,
+  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS cash_movements_tenant_client_uq ON cash_movements (tenant_id, client_uuid);
+CREATE INDEX IF NOT EXISTS cash_movements_tenant_shift_created_idx ON cash_movements (tenant_id, shift_id, created_at);
+CREATE INDEX IF NOT EXISTS cash_movements_tenant_created_idx ON cash_movements (tenant_id, created_at);
 `;
 
 export const LOCAL_SCHEMA_SQL = /* sql */ `
@@ -217,6 +237,7 @@ CREATE TABLE IF NOT EXISTS closedcash (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS closedcash_tenant_shift_uq ON closedcash (tenant_id, shift_id);
 CREATE UNIQUE INDEX IF NOT EXISTS closedcash_tenant_client_uq ON closedcash (tenant_id, client_uuid);
+${PROTOTYPE_MIGRATION_SQL}
 
 CREATE TABLE IF NOT EXISTS stockcurrent (
   id uuid PRIMARY KEY,

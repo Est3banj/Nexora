@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import { Banknote, ChartNoAxesCombined, CreditCard, Boxes } from "lucide-react";
 import type { PGlite } from "@electric-sql/pglite";
 import {
-  localDate,
   type DashboardSummaryRow,
   type InventoryValueRow,
   type LowStockRow,
@@ -16,6 +16,7 @@ import {
   localTopProducts,
 } from "../db/local-reports";
 import { useSync } from "../hooks/useSync";
+import { dashboardRanges, deltaPct, type DashboardPeriod } from "../lib/analytical-periods";
 
 const cop = (n: number) =>
   new Intl.NumberFormat("es-CO", {
@@ -30,26 +31,6 @@ type Props = {
   refreshToken: number;
   onNavigate?: (tab: "tickets" | "catalog") => void;
 };
-
-type Period = "today" | "7d" | "30d";
-
-function rangeFor(period: Period): { from: string; to: string } {
-  const to = localDate(0);
-  const back = period === "today" ? 0 : period === "7d" ? 6 : 29;
-  return { from: localDate(-back), to };
-}
-
-/** Same-length window immediately before the current one (for deltas). */
-export function prevRangeFor(period: Period): { from: string; to: string } {
-  const len = period === "today" ? 1 : period === "7d" ? 7 : 30;
-  return { from: localDate(-len * 2 + 1), to: localDate(-len) };
-}
-
-/** % change vs previous period; null when there is no prior base. */
-export function deltaPct(current: number, previous: number): number | null {
-  if (previous <= 0) return null;
-  return Math.round(((current - previous) / previous) * 100);
-}
 
 function DeltaChip({ pct }: { pct: number | null }) {
   if (pct === null) {
@@ -78,7 +59,7 @@ function DeltaChip({ pct }: { pct: number | null }) {
  */
 export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
   const sync = useSync();
-  const [period, setPeriod] = useState<Period>("7d");
+  const [period, setPeriod] = useState<DashboardPeriod>("today");
   const [summary, setSummary] = useState<DashboardSummaryRow | null>(null);
   const [prev, setPrev] = useState<DashboardSummaryRow | null>(null);
   const [inventory, setInventory] = useState<InventoryValueRow | null>(null);
@@ -87,17 +68,25 @@ export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
   const [hours, setHours] = useState<SalesByHourRow[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
+  const [loading, setLoading] = useState(true);
+  const ranges = dashboardRanges(period);
+  const { from, to } = ranges.current;
+  const { from: prevFrom, to: prevTo } = ranges.previous;
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    async function refresh() {
     try {
-      const range = rangeFor(period);
+      const range = { from, to };
       const [s, p, inv, t, l, h] = await Promise.all([
         localDashboardSummary(db, tenantId, range),
-        localDashboardSummary(db, tenantId, prevRangeFor(period)),
+        localDashboardSummary(db, tenantId, { from: prevFrom, to: prevTo }),
         localInventoryValue(db, tenantId),
         localTopProducts(db, tenantId, range),
         localLowStock(db, tenantId),
         localSalesByHour(db, tenantId, range),
       ]);
+      if (!active) return;
       setSummary(s);
       setPrev(p);
       setInventory(inv);
@@ -106,13 +95,14 @@ export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
       setHours(h);
       setError(null);
     } catch {
-      setError("No se pudieron calcular los indicadores");
+      if (active) setError("No se pudieron calcular los indicadores");
+    } finally {
+      if (active) setLoading(false);
     }
-  }, [db, tenantId, period]);
-
-  useEffect(() => {
+    }
     void refresh();
-  }, [refresh, refreshToken]);
+    return () => { active = false; };
+  }, [db, tenantId, from, to, prevFrom, prevTo, refreshToken]);
 
   const gross = summary ? summary.revenue - summary.cogs : 0;
   const avgTicket =
@@ -129,7 +119,7 @@ export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
   const ticketDelta = summary && prev ? deltaPct(summary.tickets, prev.tickets) : null;
 
   const periodLabel =
-    period === "today" ? "Hoy" : period === "7d" ? "Últimos 7 días" : "Últimos 30 días";
+    period === "today" ? "Hoy" : period === "7d" ? "Últimos 7 días" : period === "month" ? "Este Mes" : "Últimos 30 días";
 
   const pendingCount = summary?.pending_count ?? 0;
   const needsAttention = pendingCount > 0 || low.length > 0;
@@ -140,13 +130,14 @@ export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
   const peakHour = hours.find((h) => h.revenue === peakRevenue)?.hour;
 
   return (
-    <div className="screen dashboard">
+    <div className="screen dashboard" aria-busy={loading}>
       <div className="dash-head">
-        <h2>Panel</h2>
-        <div className="seg" role="tablist" aria-label="Período">
+        <h2>Resumen de Desempeño</h2>
+        <div className="seg" role="group" aria-label="Período">
           <button
             className={period === "today" ? "active" : ""}
             data-testid="period-today"
+            aria-pressed={period === "today"}
             onClick={() => setPeriod("today")}
           >
             Hoy
@@ -154,10 +145,14 @@ export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
           <button
             className={period === "7d" ? "active" : ""}
             data-testid="period-7d"
+            aria-pressed={period === "7d"}
             onClick={() => setPeriod("7d")}
           >
-            7 días
+            Últimos 7 días
           </button>
+          <button className={period === "month" ? "active" : ""} data-testid="period-month" aria-pressed={period === "month"} onClick={() => setPeriod("month")}>Este Mes</button>
+        </div>
+        <details className="dash-extra-period"><summary>Más períodos</summary>
           <button
             className={period === "30d" ? "active" : ""}
             data-testid="period-30d"
@@ -165,14 +160,16 @@ export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
           >
             30 días
           </button>
-        </div>
+        </details>
       </div>
 
       <p className="muted dash-subtitle" data-testid="period-label">
-        {periodLabel}
+        {periodLabel} · {from} — {to} (Bogotá). Comparación: {prevFrom} — {prevTo}.
+        {period === "month" && " Mes anterior hasta igual día, limitado a su último día."}
       </p>
+      {loading && <p role="status">Calculando indicadores…</p>}
 
-      {sync.pending > 0 && (
+      {(!sync.online || sync.pending > 0) && (
         <div className="warn-banner" data-testid="dash-staleness" role="status">
           Datos posiblemente incompletos — {sync.pending} cambio(s) sin sincronizar.
         </div>
@@ -184,15 +181,16 @@ export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
         </p>
       )}
 
-      {summary && (
+      {summary && !loading && !error && (
         <>
           {/* ── hero: ingresos + delta vs. período anterior ── */}
-          <div className="card kpi-hero" data-testid="kpi-revenue">
+          <div className="dash-metrics">
+          <div className="card kpi kpi-revenue" data-testid="kpi-revenue">
             <div className="kpi-hero-top">
-              <span className="kpi-label">Ingresos · {periodLabel.toLowerCase()}</span>
-              <DeltaChip pct={revDelta} />
+              <span className="kpi-label">Ingresos Totales</span><Banknote size={18} aria-hidden />
             </div>
-            <strong className="kpi-value hero">{cop(summary.revenue)}</strong>
+            <strong className="kpi-value">{cop(summary.revenue)}</strong>
+            <DeltaChip pct={revDelta} />
             <span className="kpi-sub muted">
               {summary.tickets} ventas · {cop(avgTicket)} prom.
               {ticketDelta !== null && (
@@ -210,12 +208,35 @@ export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
             </span>
           </div>
 
+          <div className="card kpi kpi-profit" data-testid="kpi-gross">
+            <span className="kpi-label">Ganancia Bruta <ChartNoAxesCombined size={18} aria-hidden /></span>
+            <strong className={`kpi-value ${gross < 0 ? "neg" : ""}`}>{hasCostData ? cop(gross) : "—"}</strong>
+            <span className="kpi-sub muted">{!hasCostData ? "Sin costo en las ventas del período" : `${marginPct ?? 0}% margen estimado · costo registrado ${cop(summary.cogs)}. Puede haber líneas sin costo.`}</span>
+          </div>
+          <div className="card kpi kpi-methods">
+            <span className="kpi-label">Desglose Métodos <CreditCard size={18} aria-hidden /></span>
+            <dl>
+              <div data-testid="kpi-cash"><dt>Efectivo</dt><dd>{cop(summary.cash)}</dd></div>
+              <div data-testid="kpi-transfer"><dt>Transferencia</dt><dd>{cop(summary.transfer)}</dd></div>
+              <div data-testid="kpi-credit"><dt>Crédito</dt><dd>{cop(summary.credit)}</dd></div>
+              <div className="collection" data-testid="kpi-abonos"><dt>Abonos (cobros)</dt><dd>{cop(summary.abonos)}</dd></div>
+            </dl>
+            <span className="kpi-sub muted">Abonos separados, no son nuevas ventas.</span>
+          </div>
+          <div className="card kpi kpi-stock" data-testid="kpi-inventory">
+            <span className="kpi-label">Valor en Inventario <Boxes size={18} aria-hidden /></span>
+            <strong className="kpi-value">{inventory?.variants_with_cost ? cop(inventory.inventory_cost) : "—"}</strong>
+            <span className="kpi-sub muted">{inventory?.variants_with_cost ? "Costo registrado; variantes sin costo no incluidas" : "Sin costos de inventario"} · venta {cop(inventory?.inventory_retail ?? 0)}</span>
+          </div>
+          </div>
+          <div className="dash-detail-grid">
+
           {/* ── atención: lo que requiere acción del dueño ── */}
-          {needsAttention && (
-            <section className="dash-attention" aria-label="Requiere atención">
-              <h3 className="dash-section-title" data-testid="dash-attention-title">
+            <section className="card dash-attention" aria-label="Requiere atención">
+              <h3 className="dash-section-title" data-testid={needsAttention ? "dash-attention-title" : undefined}>
                 Requiere atención
               </h3>
+              {!needsAttention && <p className="muted">Sin alertas para este período.</p>}
               <div className="attention-grid">
                 {pendingCount > 0 && (
                   <div className="card kpi warn" data-testid="kpi-pending">
@@ -272,43 +293,6 @@ export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
                 )}
               </div>
             </section>
-          )}
-
-          {/* ── KPIs secundarios ── */}
-          <div className="kpi-grid">
-            <div className="card kpi" data-testid="kpi-gross">
-              <span className="kpi-label">Ganancia bruta</span>
-              <strong className={`kpi-value ${gross < 0 ? "neg" : ""}`}>
-                {cop(gross)}
-              </strong>
-              <span className="kpi-sub muted">
-                {!hasCostData
-                  ? "Sin costo en las ventas del período"
-                  : marginPct !== null
-                    ? `${marginPct}% margen · costo ${cop(summary.cogs)}`
-                    : "Costos registrados · sin ingresos"}
-              </span>
-            </div>
-            <div className="card kpi" data-testid="kpi-cash">
-              <span className="kpi-label">Efectivo</span>
-              <strong className="kpi-value">{cop(summary.cash)}</strong>
-              <span className="kpi-sub muted">confirmado</span>
-            </div>
-            <div className="card kpi" data-testid="kpi-transfer">
-              <span className="kpi-label">Transferencias</span>
-              <strong className="kpi-value">{cop(summary.transfer)}</strong>
-              <span className="kpi-sub muted">confirmado</span>
-            </div>
-            {inventory && (
-              <div className="card kpi" data-testid="kpi-inventory">
-                <span className="kpi-label">Inventario (costo)</span>
-                <strong className="kpi-value">{cop(inventory.inventory_cost)}</strong>
-                <span className="kpi-sub muted">
-                  venta {cop(inventory.inventory_retail)}
-                </span>
-              </div>
-            )}
-          </div>
 
           {/* ── horas pico: barras CSS puras, sin lib de gráficos ── */}
           {showHours && (
@@ -352,7 +336,7 @@ export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
             </div>
           )}
 
-          <div className="card">
+          <div className="card dash-ranking">
             <h3>Top productos</h3>
             {top.length === 0 ? (
               <p className="muted" data-testid="dash-empty-top">
@@ -372,6 +356,7 @@ export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
                 ))}
               </ul>
             )}
+          </div>
           </div>
         </>
       )}

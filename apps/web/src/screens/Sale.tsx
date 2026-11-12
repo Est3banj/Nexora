@@ -1,9 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import type { PGlite } from "@electric-sql/pglite";
-import { listSaleItems, type SaleItem } from "../db/local";
+import { paymentMethodLabel } from "@pos/shared";
+import {
+  getLocalTicket,
+  listCategories,
+  listSaleItems,
+  type LocalCategory,
+  type SaleItem,
+} from "../db/local";
 import { annulTicket, AnnulError } from "../db/annul";
+import { ticketHasAbonos } from "../db/void-sale";
+import { useActiveMemberRole } from "../hooks/useActiveMemberRole";
 import { useSale } from "../hooks/useSale";
 import { useMediaQuery } from "../hooks/useMediaQuery";
+import { PaymentModal, type PayMethod } from "../components/PaymentModal";
+import { ReceiptPreview, type ReceiptData } from "../components/ReceiptPreview";
+import { ProductIcon } from "../components/ProductIcon";
 
 const cop = (n: number) =>
   new Intl.NumberFormat("es-CO", {
@@ -12,34 +24,11 @@ const cop = (n: number) =>
     maximumFractionDigits: 0,
   }).format(n);
 
-/** Colombian bills for one-tap cash entry. */
-const BILLS = [1000, 2000, 5000, 10000, 20000, 50000] as const;
-
-/**
- * Flat avatar palette for products without photo — deterministic hash so
- * the same product always gets the same color (all pass ≥3:1 vs white
- * for the bold initial, which is large-scale text).
- */
-const AVATAR_COLORS = [
-  "#3d7dff",
-  "#0284c7",
-  "#0d9488",
-  "#8b5cf6",
-  "#f43f5e",
-  "#d97706",
-  "#64748b",
-  "#ec4899",
-] as const;
-
-function avatarColor(name: string): string {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
-  return AVATAR_COLORS[h % AVATAR_COLORS.length];
-}
-
 type Props = {
   db: PGlite;
   tenantId: string;
+  userId: string;
+  tenantName?: string;
   refreshToken: number;
   showToast: (msg: string) => void;
   onCommitted: () => void;
@@ -48,95 +37,16 @@ type Props = {
   onPendingProductUsed: () => void;
 };
 
-type View = "browse" | "checkout" | "success";
+type View = "browse" | "success";
 
-/**
- * Cash block: recibido + vuelto + bills de un tap.
- * Shared by mobile checkout view and the desktop order panel.
- */
-function CashSection({
-  total,
-  tendered,
-  setTendered,
-  compact = false,
-}: {
-  total: number;
-  tendered: string;
-  setTendered: (v: string) => void;
-  compact?: boolean;
-}) {
-  const received = Number(tendered.replace(/[^\d]/g, "")) || 0;
-  const change = received - total;
-
-  function addBill(n: number) {
-    setTendered(String(received + n));
-  }
-
-  // Nothing entered yet → no scary "Falta $total"; only show shortfall
-  // once the cashier started typing an amount.
-  const changeLabel =
-    received === 0 ? "Ingresado" : change < 0 ? "Falta" : "Vuelto";
-  const changeValue = received === 0 ? "—" : cop(Math.abs(change));
-  const changeClass =
-    received === 0 ? "" : change < 0 ? " short" : " due";
-
-  return (
-    <div className={`cash-section${compact ? " compact" : ""}`}>
-      <div className="row space-between cash-total-row">
-        <span className="muted">Total a pagar</span>
-        <strong className="cash-total" data-testid="checkout-total">
-          {cop(total)}
-        </strong>
-      </div>
-
-      <label htmlFor="tendered">Efectivo recibido</label>
-      <input
-        id="tendered"
-        data-testid="tendered"
-        inputMode="numeric"
-        className="cash-input"
-        value={tendered}
-        onChange={(e) => setTendered(e.target.value.replace(/[^\d]/g, ""))}
-        placeholder="0"
-      />
-
-      <div className="quick-cash" role="group" aria-label="Billetes">
-        <button
-          type="button"
-          className="btn small quick-cash-btn"
-          data-testid="quick-cash-exact"
-          onClick={() => setTendered(String(total))}
-        >
-          Exacto
-        </button>
-        {BILLS.map((b) => (
-          <button
-            key={b}
-            type="button"
-            className="btn small quick-cash-btn"
-            data-testid={`quick-cash-${b}`}
-            onClick={() => addBill(b)}
-          >
-            {b >= 1000 ? `${b / 1000}k` : b}
-          </button>
-        ))}
-      </div>
-
-      <div
-        className={`change-display${changeClass}`}
-        data-testid="change-display"
-        aria-live="polite"
-      >
-        <span className="muted">{changeLabel}</span>
-        <strong>{changeValue}</strong>
-      </div>
-    </div>
-  );
-}
+/** Prototype stock badge threshold (POS card amber when stock ≤ 5). */
+const LOW_STOCK_BADGE = 5;
 
 export function Sale({
   db,
   tenantId,
+  userId,
+  tenantName,
   refreshToken,
   showToast,
   onCommitted,
@@ -144,6 +54,8 @@ export function Sale({
   onPendingProductUsed,
 }: Props) {
   const [items, setItems] = useState<SaleItem[]>([]);
+  const [categories, setCategories] = useState<LocalCategory[]>([]);
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [view, setView] = useState<View>("browse");
   const [tendered, setTendered] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -154,6 +66,8 @@ export function Sale({
     vuelto: number | null;
     method: string;
     status: string;
+    /** Credit part owed — credit-sales spec §Success copy shows it. */
+    credit: number | null;
   } | null>(null);
   const sale = useSale();
   const isWide = useMediaQuery("(min-width: 1024px)");
@@ -163,7 +77,16 @@ export function Sale({
   const [search, setSearch] = useState("");
   const [scanCode, setScanCode] = useState("");
   const [scanMessage, setScanMessage] = useState("");
-  const [payMethod, setPayMethod] = useState<"cash" | "transfer">("cash");
+  /* Single payment modal (M5): one surface for both breakpoints. */
+  const [payOpen, setPayOpen] = useState(false);
+  const [payMethod, setPayMethod] = useState<PayMethod>("cash");
+  /* Busy = one commit in flight — never double-fire (12.2 gate).
+   * The ref is the SYNCHRONOUS guard: two clicks in the same tick never
+   * reach React's re-render, so state alone would let both through. */
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  /* Receipt opens only AFTER the durable local commit (spec). */
+  const [receipt, setReceipt] = useState<ReceiptData | null>(null);
 
   /* Command palette hand-off: product picked → land in the cart. */
   useEffect(() => {
@@ -182,6 +105,7 @@ export function Sale({
     id: string;
     ticket_no: number;
   } | null>(null);
+  const isOwner = useActiveMemberRole(tenantId, userId, online) === "owner";
   const [voidTarget, setVoidTarget] = useState<{
     id: string;
     ticket_no: number;
@@ -207,14 +131,16 @@ export function Sale({
     let alive = true;
     Promise.all([
       listSaleItems(db, tenantId),
+      listCategories(db, tenantId),
       db.query<{ id: string; ticket_no: number }>(
         "SELECT id, ticket_no FROM tickets WHERE tenant_id=$1 AND status<>'voided' ORDER BY ticket_no DESC LIMIT 1",
         [tenantId],
       ),
     ])
-      .then(([rows, last]) => {
+      .then(([rows, cats, last]) => {
         if (!alive) return;
         setItems(rows);
+        setCategories(cats.filter((c) => c.active));
         setLastTicket(last.rows[0] ?? null);
       })
       .catch(() => {
@@ -226,26 +152,29 @@ export function Sale({
   }, [db, tenantId, view, lastSale, refreshToken]);
 
   /* Keyboard shortcuts for peak hours:
-     F1 = efectivo exacto · F2 = transferencia · Enter = cobrar.
-     Deliberately re-attached every render (no deps array) so the closure
-     always sees the fresh tendered/sale state. Skips: buttons (native
-     activation wins — never double-charge), other inputs, open dialogs. */
+     F1 = efectivo exacto · F2 = transferencia · Enter = ir al cobro /
+     cobrar dentro del modal. Deliberately re-attached every render (no
+     deps array) so the closure always sees the fresh state. Skips:
+     buttons (native activation wins — never double-charge), other
+     inputs, and any dialog that is not the payment modal (void/receipt
+     own the keyboard while open). No F3 — Fiado is pointer/tap only. */
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      if (e.defaultPrevented || document.querySelector("dialog[open]:not([data-testid='payment-modal']), [role='dialog']:not([data-testid='payment-modal'])")) return;
       if (e.key === "F1" || e.key === "F2") {
         e.preventDefault();
         if (sale.lines.length === 0) return;
         const cash = e.key === "F1";
         setPayMethod(cash ? "cash" : "transfer");
         if (cash) setTendered(String(sale.total));
-        if (!isWide) {
-          setView("checkout");
-          return;
-        }
+        setError(null);
+        setPayOpen(true);
         requestAnimationFrame(() => {
           document
             .querySelector<HTMLButtonElement>(
-              cash ? '[data-testid="checkout-confirm"]' : '[data-testid="checkout-transfer"]',
+              cash
+                ? '[data-testid="checkout-confirm"]'
+                : '[data-testid="checkout-transfer"]',
             )
             ?.focus();
         });
@@ -257,21 +186,38 @@ export function Sale({
       const tag = t.tagName;
       if (tag === "BUTTON" || tag === "A" || tag === "TEXTAREA" || tag === "SELECT") return;
       if (t.isContentEditable) return;
-      if (t.closest("dialog")) return;
+      if (view === "success") return;
+      const paymentOpen = !!document.querySelector(
+        '[data-testid="payment-modal"][open]',
+      );
+      const otherDialog = document.querySelector(
+        "dialog[open]:not([data-testid='payment-modal'])",
+      );
+      if (otherDialog) return;
       const inTendered = t.getAttribute("data-testid") === "tendered";
       if (tag === "INPUT" && !inTendered) return;
-      if (view === "success") return;
-      if (document.querySelector("dialog[open]")) return;
       e.preventDefault();
+      if (!paymentOpen) {
+        /* Enter from the browse grid = open the shared cobro modal. */
+        if (sale.lines.length === 0) return;
+        openCheckout();
+        return;
+      }
+      /* Inside the modal: Enter commits the active cash/transfer method.
+         Fiado stays pointer-only (credit-sales spec: no keyboard shortcut
+         for the third method) — its confirm button is the only path. */
       if (payMethod === "cash") void confirmCash();
-      else void confirmTransfer();
+      else if (payMethod === "transfer") void confirmTransfer();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
 
   const q = search.trim().toLowerCase();
+  /* Category AND search (prototype filterPOSProducts) — «Todos» resets
+   * the category only, keeping the search text (modernization spec). */
   const filteredItems = items.filter((it) => {
+    if (selectedCategory && it.category_id !== selectedCategory) return false;
     if (!q) return true;
     return (
       it.product_name.toLowerCase().includes(q) ||
@@ -279,6 +225,9 @@ export function Sale({
       it.code?.toLowerCase().includes(q)
     );
   });
+
+  /* countsumqty (tasks 12.1): badge counts UNITS, not distinct lines. */
+  const cartUnits = sale.lines.reduce((acc, l) => acc + l.qty, 0);
 
   const scanner = (
     <form className="card scanner" data-testid="scanner-form" onSubmit={(event) => {
@@ -308,6 +257,102 @@ export function Sale({
     </form>
   );
 
+  const chips = categories.length > 0 && (
+    <div className="pos-chips" role="group" aria-label="Categorías">
+      <button
+        type="button"
+        className={`pos-chip${selectedCategory === null ? " active" : ""}`}
+        data-testid="category-chip-all"
+        aria-pressed={selectedCategory === null}
+        onClick={() => setSelectedCategory(null)}
+      >
+        Todos
+      </button>
+      {categories.map((c) => (
+        <button
+          key={c.id}
+          type="button"
+          className={`pos-chip${selectedCategory === c.id ? " active" : ""}`}
+          data-testid="category-chip"
+          aria-pressed={selectedCategory === c.id}
+          onClick={() => setSelectedCategory(c.id)}
+        >
+          {c.name}
+        </button>
+      ))}
+    </div>
+  );
+
+  const searchRow = (
+    <div className="sale-toolbar pos-toolbar">
+      <input
+        className="search-input"
+        data-testid="sale-search"
+        type="search"
+        placeholder="Buscar por Nombre, SKU o Código…"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        aria-label="Buscar producto"
+      />
+      {chips}
+    </div>
+  );
+
+  const grid = items.length === 0 ? (
+    <div className="empty-state" data-testid="empty-catalog">
+      <h2>Sin productos</h2>
+      <p className="muted">
+        Cargá el catálogo en la pestaña Catálogo para empezar a vender.
+      </p>
+    </div>
+  ) : filteredItems.length === 0 ? (
+    <div className="empty-state" data-testid="empty-sale-search">
+      <p className="muted">
+        {q && selectedCategory
+          ? "No se encontraron productos en esta categoría."
+          : "Ningún producto coincide con la búsqueda."}
+      </p>
+    </div>
+  ) : (
+    <div className="sale-grid" data-testid="sale-grid">
+      {filteredItems.map((item) => (
+        <button
+          key={item.id}
+          className="sale-tile"
+          data-testid="sale-item"
+          onClick={() => {
+            setError(null);
+            sale.addItem(item);
+          }}
+        >
+          <span className="tile-top">
+            {item.photo ? (
+              <img className="tile-photo" src={item.photo} alt="" />
+            ) : (
+              <span className="tile-icon" aria-hidden>
+                <ProductIcon iconKey={item.icon_key} size={18} />
+              </span>
+            )}
+            <span
+              className={`tile-stock${item.stock <= LOW_STOCK_BADGE ? " low" : ""}`}
+            >
+              Stock: {item.stock}
+            </span>
+          </span>
+          <span className="tile-product">{item.product_name}</span>
+          <span className="tile-variant">{item.name}</span>
+          {item.code && <span className="tile-sku">{item.code}</span>}
+          <span className="tile-foot">
+            <span className="tile-price">{cop(item.price)}</span>
+            <span className="tile-add" aria-hidden>
+              +
+            </span>
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+
   function openCheckout() {
     // tap 2 — empty cart must be blocked WITH a message (sales spec)
     if (sale.lines.length === 0) {
@@ -317,7 +362,20 @@ export function Sale({
     setError(null);
     setPayMethod("cash");
     setTendered("");
-    setView("checkout");
+    setPayOpen(true);
+  }
+
+  /* Method switch invalidates the previous method's validation error:
+   * a cash tendered error must not stay visible under Fiado/Transferencia. */
+  function changePayMethod(next: PayMethod) {
+    setPayMethod(next);
+    setError(null);
+  }
+
+  function clearOrder() {
+    sale.clear();
+    setError(null);
+    setPayOpen(false);
   }
 
   function ensureCart(): boolean {
@@ -329,63 +387,118 @@ export function Sale({
     return true;
   }
 
+  /* One post-commit hand-off: close the modal, persist the receipt view
+   * and open the thermal preview ONLY after the local tx succeeded. */
+  async function afterCommit(committed: Awaited<ReturnType<typeof sale.commit>>) {
+    const cashPay = committed.payments.find((p) => p.method === "cash");
+    const creditPay = committed.payments.find((p) => p.method === "credit");
+    const transferPay = committed.payments.find((p) => p.method === "transfer");
+    setLastSale({
+      id: committed.ticket.id,
+      ticketNo: committed.ticket.ticket_no,
+      total: committed.ticket.total,
+      vuelto: cashPay?.vuelto ?? null,
+      method: committed.payments.map((p) => p.method).join(","),
+      status: transferPay?.status ?? cashPay?.status ?? creditPay?.status ?? "confirmed",
+      credit: creditPay?.amount ?? null,
+    });
+    const detail = await getLocalTicket(db, tenantId, committed.ticket.id);
+    setReceipt(detail ? { kind: "sale", detail, tenantName } : null);
+    setPayOpen(false);
+    setView("success");
+    setTendered("");
+    showToast("Venta registrada (pendiente de sync)");
+    onCommitted();
+  }
+
+  function mapCommitError(err: unknown): string {
+    const code = err instanceof Error ? err.message : String(err);
+    if (code === "EMPTY_CART") return "El carrito está vacío";
+    if (code === "UNDERPAYMENT") return "El efectivo recibido es menor al total";
+    if (code === "CREDIT_CUSTOMER_REQUIRED")
+      return "Seleccioná un cliente para vender a crédito";
+    if (code === "CREDIT_LIMIT_REQUIRED")
+      return "Configurá el límite de crédito del cliente";
+    if (code === "CREDIT_LIMIT_EXCEEDED")
+      return "El cliente excede su límite de crédito";
+    if (code === "MIXED_AMOUNT_INVALID")
+      return "El efectivo ahora debe ser menor al total";
+    return "No se pudo registrar la venta";
+  }
+
   async function confirmCash() {
+    if (busyRef.current) return;
     // Cashier must state what was received — no auto-filled total (UX fix).
     if (!ensureCart()) return;
-    const amount = Number(tendered.replace(/[^\d]/g, "")) || 0;
+    if (tendered === "" || tendered === "0") {
+      setError("Ingresá el efectivo recibido o tocá Exacto");
+      return;
+    }
+    if (!/^\d+$/.test(tendered) || Number(tendered) > 2147483647) {
+      setError("El efectivo recibido debe ser un entero COP entre 0 y 2.147.483.647");
+      return;
+    }
+    const amount = Number(tendered);
     if (amount === 0) {
       setError("Ingresá el efectivo recibido o tocá Exacto");
       return;
     }
+    busyRef.current = true;
+    setBusy(true);
     try {
       const committed = await sale.commit(db, tenantId, { method: "cash", tendered: amount });
-      setLastSale({
-        id: committed.ticket.id,
-        ticketNo: committed.ticket.ticket_no,
-        total: committed.payment.amount,
-        vuelto: committed.payment.vuelto,
-        method: committed.payment.method,
-        status: committed.payment.status,
-      });
-      setView("success");
-      setTendered("");
-      showToast("Venta registrada (pendiente de sync)");
-      onCommitted();
+      await afterCommit(committed);
     } catch (err) {
-      const code = err instanceof Error ? err.message : String(err);
-      if (code === "EMPTY_CART") setError("El carrito está vacío");
-      else if (code === "UNDERPAYMENT")
-        setError("El efectivo recibido es menor al total");
-      else setError("No se pudo registrar la venta");
+      setError(mapCommitError(err));
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
     }
   }
 
   async function confirmTransfer() {
-    // tap 3 — bank transfer: payment pending, ticket transfer_pending
+    if (busyRef.current) return;
     if (!ensureCart()) return;
+    busyRef.current = true;
+    setBusy(true);
     try {
       const committed = await sale.commit(db, tenantId, { method: "transfer" });
-      setLastSale({
-        id: committed.ticket.id,
-        ticketNo: committed.ticket.ticket_no,
-        total: committed.payment.amount,
-        vuelto: null,
-        method: committed.payment.method,
-        status: committed.payment.status,
-      });
-      setView("success");
-      setTendered("");
-      showToast("Venta registrada (pendiente de sync)");
-      onCommitted();
+      await afterCommit(committed);
     } catch (err) {
-      const code = err instanceof Error ? err.message : String(err);
-      if (code === "EMPTY_CART") setError("El carrito está vacío");
-      else setError("No se pudo registrar la venta");
+      setError(mapCommitError(err));
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  }
+
+  async function confirmCredit(customerId: string, cashAmount: number) {
+    if (busyRef.current) return;
+    if (!ensureCart()) return;
+    busyRef.current = true;
+    setBusy(true);
+    try {
+      const committed = await sale.commit(db, tenantId, {
+        method: "credit",
+        customerId,
+        cashAmount,
+      });
+      await afterCommit(committed);
+    } catch (err) {
+      setError(mapCommitError(err));
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
     }
   }
 
   /* ── Quick annul (Batch B): same auditable core as Tickets ──────── */
-  function openVoid(t: { id: string; ticket_no: number }) {
+  async function openVoid(t: { id: string; ticket_no: number }) {
+    if (!isOwner) return;
+    if (await ticketHasAbonos(db, tenantId, t.id)) {
+      showToast("No se puede anular: este cliente tiene abonos registrados.");
+      return;
+    }
     setVoidTarget(t);
     setVoidReason("");
     setVoidErr(null);
@@ -401,6 +514,7 @@ export function Sale({
       voidDialog.current?.close();
       showToast("Venta anulada · stock restituido. Registrá por fuera de NEXORA cualquier reintegro de dinero.");
       setLastSale(null);
+      setReceipt(null);
       setView("browse");
       onCommitted();
     } catch (err) {
@@ -502,10 +616,16 @@ export function Sale({
               {lastSale.vuelto === null ? "—" : cop(lastSale.vuelto)}
             </strong>
           </div>
+          {lastSale.credit !== null && (
+            <div className="row space-between">
+              <span>Crédito</span>
+              <strong data-testid="ticket-credit">{cop(lastSale.credit)}</strong>
+            </div>
+          )}
           <div className="row space-between">
             <span>Método</span>
             <strong data-testid="ticket-method">
-              {lastSale.method === "cash" ? "Efectivo" : "Transferencia"}
+              {paymentMethodLabel(lastSale.method)}
               {lastSale.status === "pending" ? " · pendiente de confirmar" : ""}
             </strong>
           </div>
@@ -516,12 +636,25 @@ export function Sale({
             data-testid="new-sale"
             onClick={() => {
               setLastSale(null);
+              setReceipt(null);
               setTendered("");
               setPayMethod("cash");
               setView("browse");
             }}
           >
             Nueva venta
+          </button>
+          <button
+            className="btn"
+            data-testid="view-receipt"
+            onClick={() => {
+              if (receipt) return;
+              void getLocalTicket(db, tenantId, lastSale.id).then((detail) =>
+                setReceipt(detail ? { kind: "sale", detail, tenantName } : null),
+              );
+            }}
+          >
+            Ver comprobante
           </button>
           <button
             className="btn"
@@ -533,203 +666,50 @@ export function Sale({
           <button
             className="btn ghost void-trigger"
             data-testid="void-last-sale"
-            disabled={!online || voidBusy}
-            title={!online ? "Se necesita conexión" : undefined}
+            disabled={!isOwner || !online || voidBusy}
+            title={!isOwner ? "Solo el dueño puede anular" : !online ? "Se necesita conexión" : undefined}
             onClick={() => openVoid({ id: lastSale.id, ticket_no: lastSale.ticketNo })}
           >
             Anular esta venta
           </button>
         </div>
         {voidDialogEl}
+        <ReceiptPreview
+          open={receipt !== null}
+          data={receipt}
+          onClose={() => setReceipt(null)}
+        />
       </div>
     );
   }
 
-  /* ── Mobile: checkout full-screen view (E2E @375px path) ─────────── */
-  if (view === "checkout" && !isWide) {
-    return (
-      <div className="screen checkout">
-        <h2>Cobrar</h2>
-
-        {oversell.length > 0 && (
-          <div className="warn-banner" data-testid="oversell-warning" role="status">
-            Stock insuficiente:{" "}
-            {oversell.map((l) => `${l.label} (quedan ${l.stock})`).join(", ")}
-            . Podés vender igual — el saldo quedará en negativo.
-          </div>
-        )}
-
-        <div className="card" data-testid="checkout-summary">
-          {sale.lines.map((l) => (
-            <div className="row space-between line" key={l.variantId}>
-              <span className="line-label">
-                {l.label} × {l.qty}
-              </span>
-              <span className="line-amount">{cop(l.price * l.qty)}</span>
-            </div>
-          ))}
-        </div>
-
-        <div className="seg pay-method" role="tablist" aria-label="Método de pago">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={payMethod === "cash"}
-            className={payMethod === "cash" ? "active" : ""}
-            data-testid="pay-cash"
-            onClick={() => setPayMethod("cash")}
-          >
-            Efectivo
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={payMethod === "transfer"}
-            className={payMethod === "transfer" ? "active" : ""}
-            data-testid="pay-transfer"
-            onClick={() => setPayMethod("transfer")}
-          >
-            Transferencia
-          </button>
-        </div>
-
-        {payMethod === "cash" ? (
-          <div className="card">
-            <CashSection
-              total={sale.total}
-              tendered={tendered}
-              setTendered={setTendered}
-            />
-          </div>
-        ) : (
-          <div className="card transfer-note" data-testid="transfer-note">
-            <p>
-              Se registra la venta por <strong>{cop(sale.total)}</strong> como
-              transferencia <strong>pendiente de confirmar</strong>.
-            </p>
-            <p className="muted">
-              El dueño la confirma desde <strong>Tickets</strong> cuando vea el
-              pago en el banco. No hay efectivo ni vuelto en este paso.
-            </p>
-          </div>
-        )}
-
-        {error && (
-          <p className="error" data-testid="cart-error" role="alert">
-            {error}
-          </p>
-        )}
-
-        {payMethod === "cash" ? (
-          <button
-            className="btn primary big"
-            data-testid="checkout-confirm"
-            onClick={confirmCash}
-          >
-            Cobrar en efectivo
-          </button>
-        ) : (
-          <button
-            className="btn primary big"
-            data-testid="checkout-transfer"
-            onClick={confirmTransfer}
-          >
-            Registrar transferencia
-          </button>
-        )}
-        <button
-          className="btn ghost"
-          data-testid="checkout-cancel"
-          onClick={() => {
-            setError(null);
-            setView("browse");
-          }}
-        >
-          Seguir vendiendo
-        </button>
-      </div>
-    );
-  }
-
-  /* ── Desktop ≥1024: two-panel — products | order + cash ──────────── */
+  /* ── Desktop ≥1024: two-panel — products | Orden Actual ──────────── */
   if (isWide) {
     return (
       <div className="screen sale sale-layout" data-testid="sale-screen">
         <div className="sale-products">
           {scanner}
-          {oversell.length > 0 && (
-            <div className="warn-banner" data-testid="oversell-warning" role="status">
-              Stock insuficiente:{" "}
-              {oversell.map((l) => `${l.label} (quedan ${l.stock})`).join(", ")}
-              . Podés vender igual — el saldo quedará en negativo.
-            </div>
-          )}
-
-          <div className="sale-toolbar">
-            <input
-              className="search-input"
-              data-testid="sale-search"
-              type="search"
-              placeholder="Buscar nombre, SKU o código…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              aria-label="Buscar producto"
-            />
-          </div>
-
-          {items.length === 0 ? (
-            <div className="empty-state" data-testid="empty-catalog">
-              <h2>Sin productos</h2>
-              <p className="muted">
-                Cargá el catálogo en la pestaña Catálogo para empezar a vender.
-              </p>
-            </div>
-          ) : filteredItems.length === 0 ? (
-            <div className="empty-state" data-testid="empty-sale-search">
-              <p className="muted">Ningún producto coincide con la búsqueda.</p>
-            </div>
-          ) : (
-            <div className="sale-grid">
-              {filteredItems.map((item) => (
-                <button
-                  key={item.id}
-                  className="sale-tile"
-                  data-testid="sale-item"
-                  onClick={() => {
-                    setError(null);
-                    if (sale.lines.length === 0) setTendered("");
-                    sale.addItem(item);
-                  }}
-                >
-                  {item.photo ? (
-                    <img className="tile-photo" src={item.photo} alt="" />
-                  ) : (
-                    <span
-                      className="tile-photo placeholder"
-                      aria-hidden
-                      style={{
-                        background: avatarColor(item.product_name),
-                        color: "#fff",
-                      }}
-                    >
-                      {item.product_name.charAt(0)}
-                    </span>
-                  )}
-                  <span className="tile-product">{item.product_name}</span>
-                  <span className="tile-variant">{item.name}</span>
-                  <span className="tile-price">{cop(item.price)}</span>
-                </button>
-              ))}
-            </div>
-          )}
+          {searchRow}
+          {grid}
         </div>
 
         <aside className="sale-order card" data-testid="order-panel">
           <div className="order-head">
-            <h3>Orden</h3>
+            <h3>Orden Actual</h3>
             <span className="muted" data-testid="cart-count">
-              {sale.lines.length} ítems
+              {cartUnits} ítems
             </span>
+            <button
+              type="button"
+              className="btn ghost small"
+              data-testid="cart-clear"
+              onClick={() => {
+                sale.clear();
+                setError(null);
+              }}
+            >
+              Limpiar
+            </button>
           </div>
 
           {sale.lines.length === 0 ? (
@@ -778,86 +758,36 @@ export function Sale({
             </ul>
           )}
 
+          {/* IVA DEFERRED (B1): subtotal == total, no fiscal row. */}
+          <div className="row space-between order-sub">
+            <span>Subtotal</span>
+            <strong>{cop(sale.total)}</strong>
+          </div>
           <div className="row space-between order-total" data-testid="cart-total">
-            <span>Total</span>
+            <span>Total a Pagar</span>
             <strong>{cop(sale.total)}</strong>
           </div>
 
-          <div className="seg pay-method" role="tablist" aria-label="Método de pago">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={payMethod === "cash"}
-              className={payMethod === "cash" ? "active" : ""}
-              data-testid="pay-cash"
-              onClick={() => setPayMethod("cash")}
-            >
-              Efectivo
-              <kbd className="pay-kbd">F1</kbd>
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={payMethod === "transfer"}
-              className={payMethod === "transfer" ? "active" : ""}
-              data-testid="pay-transfer"
-              onClick={() => setPayMethod("transfer")}
-            >
-              Transferencia
-              <kbd className="pay-kbd">F2</kbd>
-            </button>
-          </div>
+          <button
+            className="btn primary big"
+            data-testid="checkout-open"
+            disabled={sale.lines.length === 0}
+            onClick={openCheckout}
+          >
+            Procesar Cobro
+          </button>
 
-          {payMethod === "cash" ? (
-            <CashSection
-              total={sale.total}
-              tendered={tendered}
-              setTendered={setTendered}
-              compact
-            />
-          ) : (
-            <div className="transfer-note" data-testid="transfer-note">
-              <p>
-                Venta por <strong>{cop(sale.total)}</strong> como transferencia{" "}
-                <strong>pendiente</strong>.
-              </p>
-              <p className="muted">
-                El dueño la confirma desde Tickets. Sin efectivo ni vuelto.
-              </p>
-            </div>
-          )}
-
-          {error && (
+          {error && !payOpen && (
             <p className="error" data-testid="cart-error" role="alert">
               {error}
             </p>
-          )}
-
-          {payMethod === "cash" ? (
-            <button
-              className="btn primary big"
-              data-testid="checkout-confirm"
-              disabled={sale.lines.length === 0}
-              onClick={confirmCash}
-            >
-              Cobrar en efectivo
-            </button>
-          ) : (
-            <button
-              className="btn primary big"
-              data-testid="checkout-transfer"
-              disabled={sale.lines.length === 0}
-              onClick={confirmTransfer}
-            >
-              Registrar transferencia
-            </button>
           )}
 
           {lastTicket && (
             <button
               className="btn ghost void-trigger"
               data-testid="void-last-quick"
-              disabled={!online || voidBusy}
+              disabled={!isOwner || !online || voidBusy}
               title={!online ? "Se necesita conexión" : undefined}
               onClick={() => openVoid(lastTicket)}
             >
@@ -866,6 +796,34 @@ export function Sale({
           )}
           {voidDialogEl}
         </aside>
+        <PaymentModal
+          open={payOpen}
+          db={db}
+          tenantId={tenantId}
+          total={sale.total}
+          lines={sale.lines.map((l) => ({
+            label: l.label,
+            qty: l.qty,
+            price: l.price,
+          }))}
+          oversell={oversell}
+          method={payMethod}
+          onMethodChange={changePayMethod}
+          tendered={tendered}
+          onTenderedChange={setTendered}
+          error={error}
+          busy={busy}
+          onClose={() => {
+            setPayOpen(false);
+            setError(null);
+          }}
+          onClearOrder={clearOrder}
+          onConfirmCash={() => void confirmCash()}
+          onConfirmTransfer={() => void confirmTransfer()}
+          onConfirmCredit={(customerId, cashAmount) =>
+            void confirmCredit(customerId, cashAmount)
+          }
+        />
       </div>
     );
   }
@@ -874,71 +832,17 @@ export function Sale({
   return (
     <div className="screen sale">
       {scanner}
-      <div className="sale-toolbar">
-        <input
-          className="search-input"
-          data-testid="sale-search"
-          type="search"
-          placeholder="Buscar nombre, SKU o código…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          aria-label="Buscar producto"
-        />
-      </div>
+      {searchRow}
+      {grid}
 
-      {items.length === 0 ? (
-        <div className="empty-state" data-testid="empty-catalog">
-          <h2>Sin productos</h2>
-          <p className="muted">
-            Cargá el catálogo en la pestaña Catálogo para empezar a vender.
-          </p>
-        </div>
-      ) : filteredItems.length === 0 ? (
-        <div className="empty-state" data-testid="empty-sale-search">
-          <p className="muted">Ningún producto coincide con la búsqueda.</p>
-        </div>
-      ) : (
-        <div className="sale-grid">
-          {filteredItems.map((item) => (
-            <button
-              key={item.id}
-              className="sale-tile"
-              data-testid="sale-item"
-              onClick={() => {
-                setError(null);
-                sale.addItem(item);
-              }}
-            >
-              {item.photo ? (
-                <img className="tile-photo" src={item.photo} alt="" />
-              ) : (
-                <span
-                  className="tile-photo placeholder"
-                  aria-hidden
-                  style={{
-                    background: avatarColor(item.product_name),
-                    color: "#fff",
-                  }}
-                >
-                  {item.product_name.charAt(0)}
-                </span>
-              )}
-              <span className="tile-product">{item.product_name}</span>
-              <span className="tile-variant">{item.name}</span>
-              <span className="tile-price">{cop(item.price)}</span>
-            </button>
-          ))}
-        </div>
-      )}
-
-      {error && (
+      {error && !payOpen && (
         <p className="error floating" data-testid="cart-error" role="alert">
           {error}
         </p>
       )}
 
       <div className="cart-bar" data-testid="cart-bar">
-        <span data-testid="cart-count">{sale.lines.length} ítems</span>
+        <span data-testid="cart-count">{cartUnits} ítems</span>
         <strong data-testid="cart-total">{cop(sale.total)}</strong>
         <button
           className="btn primary"
@@ -948,6 +852,34 @@ export function Sale({
           Cobrar
         </button>
       </div>
+      <PaymentModal
+        open={payOpen}
+        db={db}
+        tenantId={tenantId}
+        total={sale.total}
+        lines={sale.lines.map((l) => ({
+          label: l.label,
+          qty: l.qty,
+          price: l.price,
+        }))}
+        oversell={oversell}
+        method={payMethod}
+        onMethodChange={changePayMethod}
+        tendered={tendered}
+        onTenderedChange={setTendered}
+        error={error}
+        busy={busy}
+        onClose={() => {
+          setPayOpen(false);
+          setError(null);
+        }}
+        onClearOrder={clearOrder}
+        onConfirmCash={() => void confirmCash()}
+        onConfirmTransfer={() => void confirmTransfer()}
+        onConfirmCredit={(customerId, cashAmount) =>
+          void confirmCredit(customerId, cashAmount)
+        }
+      />
     </div>
   );
 }

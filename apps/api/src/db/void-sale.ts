@@ -18,6 +18,7 @@ export async function voidSale(tenantId: string, actor: string, ticketId: string
       if (!shift || shift.status !== "open" || closed) {
         await c.query("ROLLBACK"); return { error: "shift_closed" as const };
       }
+      await c.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`credit:${tenantId}`]);
       // H5 (reconciliation 2026-11-11 — customer-level, money invariant):
       // ANY abono of the ticket's customer blocks voiding, linked or not.
       // Balance = Σ credit − Σ abonos and abonos are capped at that balance,
@@ -26,7 +27,8 @@ export async function voidSale(tenantId: string, actor: string, ticketId: string
       // never match here and stay voidable. Precedence: not_found →
       // shift_closed → abonos_exist → incomplete_sale (route maps to 409).
       // Evidence checks below stay untouched: abonos are NOT payments.
-      if (ticket.customer_id) {
+      const creditBearing = ticket.customer_id && (await c.query("SELECT 1 FROM payments WHERE tenant_id=$1 AND ticket_id=$2 AND method='credit' LIMIT 1", [tenantId, ticketId])).rows.length > 0;
+      if (creditBearing) {
         const abono = (await c.query(
           "SELECT 1 FROM credit_abonos WHERE tenant_id=$1 AND customer_id=$2 LIMIT 1",
           [tenantId, ticket.customer_id],

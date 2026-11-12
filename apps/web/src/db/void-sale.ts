@@ -1,6 +1,14 @@
 import type { PGlite } from "@electric-sql/pglite";
 import { scopedFetch } from "../sync/scoped-fetch";
 import { assertWritable } from "./preservation";
+import type { LocalQueryable } from "./pglite";
+
+export async function ticketHasAbonos(db: LocalQueryable, tenantId: string, ticketId: string): Promise<boolean> {
+  return (await db.query(`SELECT 1 FROM tickets tk JOIN credit_abonos ab
+    ON ab.tenant_id=tk.tenant_id AND ab.customer_id=tk.customer_id
+    WHERE tk.tenant_id=$1 AND tk.id=$2 AND EXISTS
+    (SELECT 1 FROM payments p WHERE p.tenant_id=tk.tenant_id AND p.ticket_id=tk.id AND p.method='credit') LIMIT 1`, [tenantId, ticketId])).rows.length > 0;
+}
 
 export type VoidSnapshot = {
   ticket_id: string;

@@ -5,12 +5,14 @@ import { closeDb } from "./db";
 import { migrateCatalog } from "./db/migrate-catalog";
 import { migrateCost } from "./db/migrate-cost";
 import { migrateFiado } from "./db/migrate-fiado";
+import { migratePrototype } from "./db/migrate-prototype";
 import { migrateSaleStage } from "./db/sale-stage";
 
 await ensureAuthTables();
 await migrateCatalog();
 await migrateCost();
 await migrateFiado();
+await migratePrototype();
 await migrateSaleStage();
 
 const app = await buildApp();

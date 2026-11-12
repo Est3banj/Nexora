@@ -11,6 +11,7 @@ for (const width of [375, 1440]) {
     await page.getByTestId("login-submit").click();
     await expect(page.getByTestId("tab-sale")).toBeVisible();
     await page.getByTestId("tab-catalog").click();
+    await page.getByTestId("product-new").click();
     await page.getByTestId("product-name").fill("Cerveza scanner");
     await page.getByTestId("variant-name").fill("330 ml");
     await page.getByTestId("variant-code").fill("000330");
@@ -20,28 +21,31 @@ for (const width of [375, 1440]) {
     await page.getByTestId("product-create").click();
     const product = page.getByTestId("product-item").filter({ hasText: "Cerveza scanner" });
     await expect(product).toBeVisible();
-    await product.getByTestId("extra-variant-name").fill("600 ml");
-    await product.getByTestId("extra-variant-price").fill("6000");
-    await product.getByTestId("extra-variant-code").fill("000330");
-    await product.getByTestId("add-variant").click();
+    await product.getByTestId("product-edit").click();
+    const modal = page.getByTestId("product-modal");
+    await modal.getByTestId("add-variant").click();
+    const extra = modal.getByTestId("variant-row").nth(1);
+    await extra.getByTestId("variant-name").fill("600 ml");
+    await extra.getByTestId("variant-price").fill("6000");
+    await extra.getByTestId("variant-code").fill("000330");
+    await modal.getByTestId("product-create").click();
     await expect(page.getByTestId("catalog-error")).toContainText("ya pertenece");
-    await expect(product.getByTestId("variant-row")).toHaveCount(1);
-    await product.getByTestId("extra-variant-code").fill("000600");
-    await product.getByTestId("add-variant").click();
-    await expect(product.getByTestId("variant-row")).toHaveCount(2);
-    const v330 = product.getByTestId("variant-row").filter({ hasText: "330 ml" });
-    await v330.getByTestId("code-input").fill("0000330");
-    await v330.getByTestId("save-code").click();
-    await expect(page.getByText("Código actualizado (pendiente de sync)", { exact: true })).toBeVisible();
+    await expect(modal.getByTestId("variant-row")).toHaveCount(2);
+    await extra.getByTestId("variant-code").fill("000600");
+    const v330 = modal.getByTestId("variant-row").first();
+    await v330.getByTestId("variant-code").fill("0000330");
+    await modal.getByTestId("product-create").click();
+    await expect(modal).not.toBeVisible();
+    await expect(product).toContainText("600 ml");
     await page.evaluate(async () => {
       await (window as unknown as { __pos: { pushNow(): Promise<void> } }).__pos.pushNow();
     });
     await expect(page.getByTestId("pending-badge")).toContainText("sinc.");
     await page.reload();
     await page.getByTestId("tab-catalog").click();
-    // Accordion resets on reload — expand before reading editors
-    await product.getByTestId("toggle-expand").click();
-    await expect(v330.getByTestId("code-input")).toHaveValue("0000330");
+    await product.getByTestId("product-edit").click();
+    await expect(v330.getByTestId("variant-code")).toHaveValue("0000330");
+    await page.getByRole("button", { name: "Cancelar", exact: true }).click();
     await page.getByTestId("catalog-search").fill("000600");
     await expect(product).toBeVisible();
     await page.getByTestId("catalog-search").fill("Cerveza");
@@ -84,6 +88,9 @@ for (const width of [375, 1440]) {
       await expect(page.getByTestId("checkout-summary")).toContainText("× 1");
     } else {
       await expect(page.getByTestId("order-qty")).toHaveText("1");
+      /* M5: the desktop order panel opens the SAME shared payment modal */
+      await page.getByTestId("checkout-open").click();
+      await expect(page.getByTestId("checkout-summary")).toContainText("× 1");
     }
     await page.getByTestId("quick-cash-exact").click(); // tendered is never auto-filled
     await page.getByTestId("checkout-confirm").click();
@@ -103,7 +110,7 @@ for (const width of [375, 1440]) {
     expect(dbOne("SELECT code || ':' || cost || ':' || stock FROM product_variants WHERE name='330 ml'")).toBe("0000330:2000:9");
     await page.reload();
     await page.getByTestId("tab-catalog").click();
-    await product.getByTestId("toggle-expand").click();
-    await expect(v330.getByTestId("code-input")).toHaveValue("0000330");
+    await product.getByTestId("product-edit").click();
+    await expect(v330.getByTestId("variant-code")).toHaveValue("0000330");
   });
 }

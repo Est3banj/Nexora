@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { variantCodeSchema } from "./catalog";
+import { variantCodeSchema, productIconKeySchema } from "./catalog";
 
 /**
  * Mutation envelope — THE shared client/server sync contract (task D2-1,
@@ -31,6 +31,7 @@ export const MUTATION_ENTITIES = [
   // parented into a sale), abonos are money movements in their OWN table.
   "customer",
   "credit_abono",
+  "cash_movement",
 ] as const;
 
 export const mutationEntitySchema = z.enum(MUTATION_ENTITIES);
@@ -98,11 +99,13 @@ const stockdiaryPayloadSchema = z.object({
 });
 
 const categoryPayloadSchema = z.object({
+  icon_key: productIconKeySchema.nullable().optional(),
   name: z.string().min(1).max(60),
   active: z.boolean().default(true),
 });
 
 const productPayloadSchema = z.object({
+  icon_key: productIconKeySchema.nullable().optional(),
   name: z.string().min(1),
   category_id: uuid.nullable().optional(),
   /** compressed data-URL; optional so old queue rows stay valid */
@@ -131,13 +134,18 @@ const variantPayloadSchema = z.object({
 
 const closedcashPayloadSchema = z.object({
   shift_id: uuid,
-  expected: money,
+  expected: z.number().int(),
   counted: money,
   diff: z.number().int(),
   closed_by: uuid.nullable().optional(),
+  closing_note: z.string().max(500).nullable().optional(),
+  calculation_version: z.enum(["legacy_v1", "drawer_cash_v2"]).optional(),
 });
 
 const shiftPayloadSchema = z.object({
+  opening_cash: money.max(2147483647).optional(),
+  opened_by: uuid.nullable().optional(),
+  calculation_version: z.enum(["legacy_v1", "drawer_cash_v2"]).optional(),
   status: z.enum(["open", "closed"]),
   opened_at: isoDate.optional(),
   closed_at: isoDate.nullable().optional(),
@@ -146,8 +154,9 @@ const shiftPayloadSchema = z.object({
 /* fiado (design §5.1) — customer is a SOLO sync group (D3 split-group: it is
  * never parented into a sale; the sale only carries `ticket.customer_id`).
  * Duplicate names are legal (D7): uniqueness is (tenant_id, client_uuid). */
-const customerPayloadSchema = z.object({
+export const customerPayloadSchema = z.object({
   name: z.string().min(1).max(120),
+  credit_limit: z.number().int().min(0).max(2147483647).nullable().optional(),
   phone: z.string().max(40).nullable().optional(),
   notes: z.string().max(500).nullable().optional(),
   active: z.boolean().default(true),
@@ -158,9 +167,9 @@ const customerPayloadSchema = z.object({
  * (never a payment — payments would double-count revenue and break void
  * evidence sums). amount is integer COP and STRICTLY > 0: a zero abono is
  * nonsense. method never carries `credit` (an abono is not a new debt). */
-const creditAbonoPayloadSchema = z.object({
+export const creditAbonoPayloadSchema = z.object({
   customer_id: uuid,
-  amount: z.number().int().positive(),
+  amount: z.number().int().positive().max(2147483647),
   method: z.enum(["cash", "transfer"]),
   shift_id: uuid.nullable(),
   /** optional attribution (D2) — customer-level when omitted */
@@ -169,7 +178,17 @@ const creditAbonoPayloadSchema = z.object({
   created_at: isoDate.optional(),
 });
 
+export const cashMovementPayloadSchema = z.object({
+  shift_id: uuid,
+  direction: z.enum(["in", "out"]),
+  amount: z.number().int().positive().max(2147483647),
+  reason: z.string().trim().min(1).max(120),
+  note: z.string().max(500).nullable().optional(),
+  created_at: isoDate.optional(),
+});
+
 export const mutationPayloadSchemas = {
+  cash_movement: cashMovementPayloadSchema,
   ticket: ticketPayloadSchema,
   ticket_line: ticketLinePayloadSchema,
   payment: paymentPayloadSchema,
@@ -202,6 +221,7 @@ function envelopeFor<E extends MutationEntity, P extends z.ZodType>(
 }
 
 export const mutationEnvelopeSchema = z.discriminatedUnion("entity", [
+  envelopeFor("cash_movement", cashMovementPayloadSchema),
   envelopeFor("ticket", ticketPayloadSchema),
   envelopeFor("ticket_line", ticketLinePayloadSchema),
   envelopeFor("payment", paymentPayloadSchema),
@@ -245,7 +265,9 @@ export const syncResultSchema = z.object({
   status: syncResultStatusSchema,
   reason: syncRejectReasonSchema.optional(),
   voided_ticket: z.uuid().optional(),
-  closedcash: z.object({ shift_id: z.uuid(), expected: money, counted: money, diff: z.number().int() }).optional(),
+  closedcash: z.object({ shift_id: z.uuid(), expected: z.number().int(), counted: money, diff: z.number().int(),
+    calculation_version: z.enum(["legacy_v1", "drawer_cash_v2"]).optional(), closing_note: z.string().nullable().optional(),
+  }).optional(),
 });
 export type SyncResult = z.infer<typeof syncResultSchema>;
 

@@ -78,7 +78,11 @@ test.describe("D2 gate — airplane mode → reload → reconnect → one copy",
     await page.getByTestId("login-submit").click();
     await expect(page.getByTestId("tab-sale")).toBeVisible();
 
+    // Hold catalog ACKs while asserting the pending badge. Otherwise a fast
+    // successful sync can legitimately replace it with "sinc." first.
+    await context.route(SYNC_GLOB, route => route.abort());
     await page.getByTestId("tab-catalog").click();
+    await page.getByTestId("product-new").click();
     await page.getByTestId("product-name").fill("Granizado Aereo");
     await page.getByTestId("variant-name").fill("Grande");
     await page.getByTestId("variant-price").fill(String(PRICE));
@@ -88,6 +92,7 @@ test.describe("D2 gate — airplane mode → reload → reconnect → one copy",
       page.getByTestId("product-item").filter({ hasText: "Granizado Aereo" }),
     ).toBeVisible();
     await expect(page.getByTestId("pending-badge")).toContainText("pendientes");
+    await context.unroute(SYNC_GLOB);
 
     /* baseline: drain the catalog mutations so the offline queue starts
        empty and the badge is deterministic */

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { PGlite } from "@electric-sql/pglite";
 import { openLocalDb } from "../src/db/pglite";
-import { claimLocal } from "../src/db/preservation";
+import { BUSINESS_TABLES, claimLocal } from "../src/db/preservation";
 import {
   clearLocalBusinessData,
   createLocalProduct,
@@ -59,24 +59,17 @@ describe("D4-4 · clearLocalBusinessData", () => {
     expect(await tableCount("products")).toBeGreaterThan(0);
     expect(await tableCount("sync_log")).toBeGreaterThan(0);
     expect(await tableCount("tickets")).toBe(1);
+    await db.query("INSERT INTO customers(id,tenant_id,client_uuid,name,credit_limit) VALUES($1,$1,$1,'Cliente',0)", [TENANT_A]);
+    await db.query("INSERT INTO credit_abonos(id,tenant_id,client_uuid,customer_id,amount,method) VALUES($1,$1,$1,$1,100,'cash')", [TENANT_A]);
+    expect(await tableCount("customers")).toBe(1);
+    expect(await tableCount("credit_abonos")).toBe(1);
 
     // These tests model acknowledged rows; pending work is covered by
     // preservation.test.ts and MUST reject this destructive helper.
     await db.query("UPDATE sync_log SET status='synced'");
     await clearLocalBusinessData(db);
 
-    for (const t of [
-      "products",
-      "product_variants",
-      "tickets",
-      "ticket_lines",
-      "payments",
-      "shifts",
-      "closedcash",
-      "stockcurrent",
-      "stockdiary",
-      "sync_log",
-    ]) {
+    for (const t of BUSINESS_TABLES) {
       expect(await tableCount(t), t).toBe(0);
     }
 

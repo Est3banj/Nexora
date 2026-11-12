@@ -64,6 +64,12 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
   );
 
   app.get(
+    "/api/reports/customer-accounts",
+    { preHandler: app.requireAuth },
+    async (req) => ({ rows: await repoFor(req).reports.customerAccounts() }),
+  );
+
+  app.get(
     "/api/reports/dashboard",
     { preHandler: app.requireAuth },
     async (req) => {

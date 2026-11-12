@@ -52,12 +52,12 @@ function headers() {
   return authHeaders(owner);
 }
 
-async function openShift(): Promise<{ id: string }> {
+async function openShift(fields: Record<string, unknown> = {}): Promise<{ id: string }> {
   const res = await app.inject({
     method: "POST",
     url: "/api/shifts/open",
     headers: headers(),
-    payload: {},
+    payload: fields,
   });
   expect(res.statusCode).toBe(201);
   return res.json().shift;
@@ -76,7 +76,7 @@ async function seedSale(
   shiftId: string,
   opts: {
     amount: number;
-    method: "cash" | "transfer";
+    method: "cash" | "transfer" | "credit";
     status: "pending" | "confirmed";
     ticketNo: number;
   },
@@ -116,20 +116,59 @@ describe("arqueo property (cash-close §Recomputation is stable)", () => {
         fc.array(
           fc.record({
             amount: fc.integer({ min: 0, max: 50_000 }),
-            method: fc.constantFrom("cash" as const, "transfer" as const),
+            method: fc.constantFrom("cash" as const, "transfer" as const, "credit" as const),
             status: fc.constantFrom("confirmed" as const, "pending" as const),
+            abono: fc.boolean(),
           }),
           { minLength: 1, maxLength: 10 },
         ),
         fc.integer({ min: 0, max: 1_000_000 }),
-        async (payments, counted) => {
+        fc.boolean(),
+        fc.integer({ min: 1, max: 100000 }),
+        fc.integer({ min: 1, max: 100000 }),
+        fc.integer({ min: 1, max: 100000 }),
+        async (payments, counted, v2, base, income, withdrawals) => {
           // one open→close cycle per run (partial unique: one open at a time)
-          const shift = await openShift();
+          const version = v2 ? "drawer_cash_v2" : "legacy_v1";
+          const shift = await openShift({ opening_cash: base, calculation_version: version });
+          for (const [direction, amount] of [["in",income],["out",withdrawals]] as const) {
+            const id = randomUUID();
+            await db.insert(t.cashMovements).values({ id, client_uuid: id, tenant_id: owner.orgId,
+              shift_id: shift.id, direction, amount, reason: "Property" });
+          }
           for (const p of payments) {
-            await seedSale(shift.id, { ...p, ticketNo: ticketNo++ });
+            await seedSale(shift.id, { ...p, status: p.method === "credit" ? "confirmed" : p.status, ticketNo: ticketNo++ });
+            if (p.abono) {
+              const id = randomUUID();
+              await db.insert(t.creditAbonos).values({ id, client_uuid: id, tenant_id: owner.orgId,
+                customer_id: randomUUID(), shift_id: shift.id, amount: p.amount, method: p.method === "cash" ? "cash" : "transfer" });
+            }
           }
 
           const atClose = await repo.shifts.expected(shift.id);
+          const cash = payments.filter(p => p.method === "cash" && p.status === "confirmed").reduce((n,p) => n+p.amount,0);
+          const transfers = payments.filter(p => p.method === "transfer" && p.status === "confirmed").reduce((n,p) => n+p.amount,0);
+          const abonos = payments.filter(p => p.abono && p.method === "cash").reduce((n,p) => n+p.amount,0);
+          const pending = payments.filter(p => p.method !== "credit" && p.status === "pending").reduce((n,p) => n+p.amount,0);
+          expect(atClose).toEqual({ cash, transfers, abonos, pending,
+            ...(v2 ? { opening_cash: base, income, withdrawals, calculation_version: version } : {}),
+            expected: v2 ? base+cash+abonos+income-withdrawals : cash+transfers+abonos });
+          const local = new PGlite("memory://");
+          try {
+            await local.exec(LOCAL_SCHEMA_SQL);
+            await local.query(`INSERT INTO shifts(id,tenant_id,client_uuid,opening_cash,calculation_version) VALUES($1,$2,$1,$3,$4)`, [shift.id,owner.orgId,base,version]);
+            for (const [direction, amount] of [["in",income],["out",withdrawals]] as const) {
+              await local.query(`INSERT INTO cash_movements(id,tenant_id,client_uuid,shift_id,direction,amount,reason)
+                VALUES($1,$2,$1,$3,$4,$5,'Property')`, [randomUUID(),owner.orgId,shift.id,direction,amount]);
+            }
+            const serverPayments = await db.select().from(t.payments).where(eq(t.payments.shift_id, shift.id));
+            for (const p of serverPayments) await local.query(`INSERT INTO payments(id,tenant_id,client_uuid,ticket_id,method,amount,status,shift_id)
+              VALUES($1,$2,$1,$3,$4,$5,$6,$7)`, [p.id,p.tenant_id,p.ticket_id,p.method,p.amount,p.status,p.shift_id]);
+            const serverAbonos = await db.select().from(t.creditAbonos).where(eq(t.creditAbonos.shift_id, shift.id));
+            for (const a of serverAbonos) await local.query(`INSERT INTO credit_abonos(id,tenant_id,client_uuid,customer_id,amount,method,shift_id)
+              VALUES($1,$2,$1,$3,$4,$5,$6)`, [a.id,a.tenant_id,a.customer_id,a.amount,a.method,a.shift_id]);
+            expect(parseExpectedRow((await local.query<Record<string, unknown>>(EXPECTED_FROM_PAYMENTS_SQL,[owner.orgId,shift.id])).rows[0])).toEqual(atClose);
+          } finally { await local.close(); }
           const res = await closeShift(shift.id, counted);
           expect(res.statusCode).toBe(200);
           const body = res.json();
@@ -164,6 +203,12 @@ describe("offline close reconciliation (cash-close §Arqueo works offline)", () 
     await seedSale(shift.id, { amount: 7000, method: "cash", status: "confirmed", ticketNo: 9002 });
     await seedSale(shift.id, { amount: 4500, method: "cash", status: "confirmed", ticketNo: 9003 });
     await seedSale(shift.id, { amount: 18000, method: "transfer", status: "pending", ticketNo: 9004 });
+    await seedSale(shift.id, { amount: 20000, method: "credit", status: "confirmed", ticketNo: 9005 });
+    const abonoId = randomUUID(), transferAbonoId = randomUUID(), customer = randomUUID();
+    await db.insert(t.creditAbonos).values([
+      { id: abonoId, client_uuid: abonoId, tenant_id: owner.orgId, customer_id: customer, shift_id: shift.id, amount: 5000, method: "cash" },
+      { id: transferAbonoId, client_uuid: transferAbonoId, tenant_id: owner.orgId, customer_id: customer, shift_id: shift.id, amount: 3000, method: "transfer" },
+    ]);
 
     /* ------------- local cache: the SAME rows (offline device) ------- */
     const local = new PGlite("memory://");
@@ -202,14 +247,17 @@ describe("offline close reconciliation (cash-close §Arqueo works offline)", () 
       }
 
       /* ------- offline close: SAME SQL over the local payments -------- */
+      for (const [id, amount, method] of [[abonoId,5000,"cash"],[transferAbonoId,3000,"transfer"]])
+        await local.query(`INSERT INTO credit_abonos(id,tenant_id,client_uuid,customer_id,shift_id,amount,method)
+          VALUES($1,$2,$1,$3,$4,$5,$6)`,[id,owner.orgId,customer,shift.id,amount,method]);
       const localRes = await local.query(EXPECTED_FROM_PAYMENTS_SQL, [
         owner.orgId,
         shift.id,
       ]);
       const E = parseExpectedRow(localRes.rows[0] as Record<string, unknown>);
-      expect(E).toEqual({ cash: 23500, transfers: 0, pending: 18000, abonos: 0, expected: 23500 });
+      expect(E).toEqual({ cash: 23500, transfers: 0, pending: 18000, abonos: 5000, expected: 28500 });
 
-      const counted = 23500;
+      const counted = 28500;
       const diff = counted - E.expected;
       const closedUuid = randomUUID();
       await local.query(

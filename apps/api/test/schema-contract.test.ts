@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PGlite } from "@electric-sql/pglite";
-import { LOCAL_SCHEMA_SQL } from "@pos/shared";
+import { FIADO_MIGRATION_SQL, LOCAL_SCHEMA_SQL, PROTOTYPE_MIGRATION_SQL } from "@pos/shared";
 import type { Pool } from "pg";
 
 /**
@@ -16,6 +16,7 @@ import type { Pool } from "pg";
  */
 
 const SHARED_TABLES = [
+  "cash_movements",
   "categories",
   "products",
   "product_variants",
@@ -32,6 +33,9 @@ const SHARED_TABLES = [
 ] as const;
 
 const EXPECTED_INDEXES = [
+  "cash_movements_tenant_client_uq",
+  "cash_movements_tenant_shift_created_idx",
+  "cash_movements_tenant_created_idx",
   "audit_log_tenant_created_idx",
   "categories_tenant_active_idx",
   "categories_tenant_client_uq",
@@ -118,6 +122,68 @@ function group(rows: Col[]) {
 }
 
 describe("local PGlite ↔ server Drizzle parity", () => {
+  it("prototype migration twice preserves populated legacy shifts and close money in both engines", async () => {
+    const client = await serverPool.connect();
+    try {
+      for (const store of [local, client]) {
+        const exec = (s: string) => store === local ? local.exec(s) : client.query(s);
+        const query = (s: string) => store === local ? local.query(s) : client.query(s);
+        await exec(`CREATE SCHEMA drawer_upgrade; SET search_path TO drawer_upgrade;
+          CREATE TABLE shifts(id uuid PRIMARY KEY, status text);
+          CREATE TABLE products(id uuid PRIMARY KEY, name text);
+          CREATE TABLE categories(id uuid PRIMARY KEY, name text);
+          INSERT INTO products VALUES ('11111111-1111-4111-8111-111111111111','Café ñ');
+          INSERT INTO categories VALUES ('11111111-1111-4111-8111-111111111111','Bebidas');
+          CREATE TABLE closedcash(id uuid PRIMARY KEY, expected integer, counted integer, diff integer);
+          INSERT INTO shifts VALUES ('11111111-1111-4111-8111-111111111111','open');
+          INSERT INTO closedcash VALUES ('11111111-1111-4111-8111-111111111111',24000,23000,-1000);`);
+        try {
+          // pg simple-query and PGlite exec support the multi-statement DDL.
+          if (store === local) { await local.exec(PROTOTYPE_MIGRATION_SQL); await local.exec(PROTOTYPE_MIGRATION_SQL); }
+          else { await client.query(PROTOTYPE_MIGRATION_SQL); await client.query(PROTOTYPE_MIGRATION_SQL); }
+          expect((await query("SELECT name,icon_key FROM products")).rows).toEqual([{ name: "Café ñ", icon_key: null }]);
+          expect((await query("SELECT name,icon_key FROM categories")).rows).toEqual([{ name: "Bebidas", icon_key: null }]);
+          expect((await query("SELECT opening_cash,opened_by,calculation_version FROM shifts")).rows)
+            .toEqual([{ opening_cash: 0, opened_by: null, calculation_version: "legacy_v1" }]);
+          expect((await query("SELECT expected,counted,diff,closing_note,calculation_version FROM closedcash")).rows)
+            .toEqual([{ expected: 24000, counted: 23000, diff: -1000, closing_note: null, calculation_version: "legacy_v1" }]);
+          expect((await query(`SELECT is_nullable,column_default FROM information_schema.columns
+            WHERE table_schema='drawer_upgrade' AND table_name='shifts' AND column_name='calculation_version'`)).rows[0])
+            .toMatchObject({ is_nullable: "NO", column_default: "'legacy_v1'::text" });
+        } finally { await exec("SET search_path TO public; DROP SCHEMA drawer_upgrade CASCADE"); }
+      }
+    } finally { client.release(); }
+  });
+  it("additive fiado ALTER upgrades populated pre-limit tables twice without backfill in both stores", async () => {
+    // Isolated schemas, so this actually exercises ALTER on an OLD table;
+    // drizzle push creating a fresh table would not prove upgrade safety.
+    const client = await serverPool.connect();
+    const stores = [
+      { exec: (sql: string) => local.exec(sql), query: (sql: string) => local.query(sql) },
+      { exec: (sql: string) => client.query(sql), query: (sql: string) => client.query(sql) },
+    ];
+    try { for (const store of stores) {
+      await store.exec("CREATE SCHEMA fiado_upgrade_contract");
+      try {
+        const sql = `SET search_path TO fiado_upgrade_contract;
+          CREATE TABLE tickets(id uuid PRIMARY KEY, tenant_id uuid NOT NULL);
+          CREATE TABLE customers(id uuid PRIMARY KEY, tenant_id uuid NOT NULL, client_uuid uuid NOT NULL,
+            name text NOT NULL, phone text, notes text, active boolean DEFAULT true,
+            created_at timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now());
+          INSERT INTO customers(id,tenant_id,client_uuid,name) VALUES
+            ('11111111-1111-4111-8111-111111111111','11111111-1111-4111-8111-111111111111','11111111-1111-4111-8111-111111111111','Legacy');
+          ${FIADO_MIGRATION_SQL}
+          ${FIADO_MIGRATION_SQL}
+          SET search_path TO public;`;
+        await store.exec(sql);
+        const rows = await store.query("SELECT name,credit_limit FROM fiado_upgrade_contract.customers");
+        expect(rows.rows).toEqual([{ name: "Legacy", credit_limit: null }]);
+      } finally {
+        await store.exec("SET search_path TO public");
+        await store.exec("DROP SCHEMA fiado_upgrade_contract CASCADE");
+      }
+    } } finally { client.release(); }
+  });
   it("creates every shared table locally", async () => {
     const rows = await columnsOf("local");
     const tables = new Set(rows.map((r) => r.table_name));
@@ -145,7 +211,10 @@ describe("local PGlite ↔ server Drizzle parity", () => {
 
     expect(find("tickets", "total")).toBe("integer");
     expect(find("payments", "amount")).toBe("integer");
+    expect(find("cash_movements", "amount")).toBe("integer");
+    expect(find("shifts", "opening_cash")).toBe("integer");
     expect(find("credit_abonos", "amount")).toBe("integer");
+    expect(find("customers", "credit_limit")).toBe("integer");
     expect(find("product_variants", "price")).toBe("integer");
     expect(find("products", "tenant_id")).toBe("uuid");
     expect(find("products", "client_uuid")).toBe("uuid");
@@ -171,6 +240,7 @@ describe("D1-2: drizzle-kit push created every design §2 index", () => {
     );
     const defs = res.rows.map((r) => r.indexdef).join("\n");
     for (const table of [
+      "cash_movements",
       "products",
       "product_variants",
       "shifts",

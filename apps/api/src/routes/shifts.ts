@@ -5,9 +5,11 @@ import { repoFor } from "../auth/ctx";
 
 const uuidParam = z.object({ id: z.uuid() });
 const openBodySchema = z
-  .object({ client_uuid: z.uuid().optional() })
+  .object({ client_uuid: z.uuid().optional(), opening_cash: z.number().int().min(0).max(2147483647).optional(),
+    calculation_version: z.enum(["legacy_v1", "drawer_cash_v2"]).optional() })
   .nullish();
 const closeBodySchema = z.object({
+  closing_note: z.string().max(500).nullable().optional(),
   /** The ONLY figure the client sends — expected/diff are server-derived. */
   counted: countedSchema,
   /** Optional row uuid so the client can mirror the exact server row. */
@@ -37,6 +39,9 @@ export async function shiftRoutes(app: FastifyInstance): Promise<void> {
       }
       try {
         const shift = await repo.shifts.createOpen({
+          opening_cash: body?.opening_cash,
+          opened_by: req.ctx.userId,
+          calculation_version: body?.calculation_version ?? "legacy_v1",
           ...(body?.client_uuid ? { client_uuid: body.client_uuid } : {}),
         });
         return reply.code(201).send({ shift });
@@ -66,6 +71,7 @@ export async function shiftRoutes(app: FastifyInstance): Promise<void> {
       const { id } = uuidParam.parse(req.params);
       const body = closeBodySchema.parse(req.body);
       const result = await repoFor(req).shifts.close({
+        closingNote: body.closing_note,
         shiftId: id,
         counted: body.counted,
         closedBy: req.ctx.userId,

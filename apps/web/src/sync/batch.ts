@@ -36,6 +36,12 @@ export function groupQueue<T extends Item>(rows: T[]): T[][] {
     const group=groups.get(key)!;
     for(const row of group) {
       const p=row.payload as Record<string,unknown>;
+      if (row.entity === "closedcash") {
+        for (const [depKey, depGroup] of groups) {
+          if (depKey !== key && depGroup.some(r => ["ticket", "payment", "credit_abono", "cash_movement"].includes(r.entity)
+            && (r.payload as Record<string, unknown>).shift_id === p.shift_id)) visit(depKey);
+        }
+      }
       for(const field of ["product_id","category_id","variant_id","shift_id","customer_id"]) {
         const dep=owner.get(p[field] as string);
         if(dep && dep!==key) visit(dep);

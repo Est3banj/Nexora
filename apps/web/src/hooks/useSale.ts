@@ -21,7 +21,8 @@ export type CartLine = {
 /** Checkout options for `commit` — the cart lines come from the hook. */
 export type SaleCommitOpts =
   | { method?: "cash"; tendered: number }
-  | { method: "transfer" };
+  | { method: "transfer" }
+  | { method: "credit"; customerId: string; cashAmount: number };
 
 /**
  * Cart + commit for the 3-tap sale (task D1-8, extended by D2-6).
@@ -85,10 +86,7 @@ export function useSale() {
         qty: l.qty,
         unit_price: l.price,
       }));
-      const input: SaleCommitInput =
-        opts.method === "transfer"
-          ? { lines: cartLines, method: "transfer" }
-          : { lines: cartLines, tendered: opts.tendered };
+      const input: SaleCommitInput = { ...opts, lines: cartLines };
       const committed = await commitLocalSale(db, tenantId, input);
       setLines([]);
       if (typeof navigator === "undefined" || navigator.onLine !== false) {

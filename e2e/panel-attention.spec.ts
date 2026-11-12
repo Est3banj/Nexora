@@ -23,6 +23,7 @@ test.describe("Panel — attention metrics", () => {
 
     /* catalog: one product at stock 3 (≤ default threshold 5) */
     await page.getByTestId("tab-catalog").click();
+    await page.getByTestId("product-new").click();
     await page.getByTestId("product-name").fill("Panel Attention");
     await page.getByTestId("variant-name").fill("Único");
     await page.getByTestId("variant-price").fill("4000");
@@ -43,6 +44,7 @@ test.describe("Panel — attention metrics", () => {
     await expect(page.getByTestId("transfer-note")).toBeVisible();
     await page.getByTestId("checkout-transfer").click();
     await expect(page.getByTestId("sale-success")).toBeVisible();
+    await page.getByTestId("receipt-close").click();
 
     /* ── Panel: hero + attention section ── */
     await page.getByTestId("tab-dashboard").click();
@@ -50,6 +52,8 @@ test.describe("Panel — attention metrics", () => {
     /* fresh local history → honest "sin dato previo", never a fake % */
     await expect(page.getByTestId("kpi-delta")).toContainText("sin dato previo");
     await expect(page.getByTestId("kpi-gross")).toBeVisible();
+    await expect(page.getByTestId("kpi-gross")).toContainText("Sin costo en las ventas del período");
+    await expect(page.getByTestId("kpi-gross").locator(".kpi-value")).toHaveText("—");
     await expect(page.getByTestId("kpi-cash")).toBeVisible();
 
     const attention = page.getByTestId("dash-attention-title");

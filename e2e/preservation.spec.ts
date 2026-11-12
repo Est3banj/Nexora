@@ -35,10 +35,13 @@ async function seed(page: Page) {
 }
 async function sell(page: Page) {
   await page.getByTestId("sale-item").click();
-  if ((page.viewportSize()?.width ?? 375) < 1024) await page.getByTestId("checkout-open").click();
+  /* M5: the cobro is ONE shared modal on every breakpoint — always open it. */
+  await page.getByTestId("checkout-open").click();
   await page.getByTestId("quick-cash-exact").click(); // tendered is never auto-filled
   await page.getByTestId("checkout-confirm").click();
   await expect(page.getByTestId("sale-success")).toBeVisible();
+  /* receipt opens only after the durable commit — dismiss before touching chrome */
+  await page.getByTestId("receipt-close").click();
 }
 async function login(page: Page, email = "owner@demo.test", password = "demo12345") {
   await page.getByTestId("login-email").fill(email);
@@ -61,6 +64,7 @@ for (const width of [375, 1440]) {
       await sell(page);
       await started;
       await page.route("**/api/auth/sign-out", route => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ message: "auth temporarily unavailable" }) }));
+      if (width < 768) await page.getByLabel("Cuenta y caja", { exact: true }).click();
       await page.getByTestId("sign-out").click();
       await expect(page.getByTestId("logout-busy")).toBeVisible();
       await expect(page.getByTestId("transition-retry")).toBeDisabled();
@@ -86,6 +90,7 @@ for (const width of [375, 1440]) {
       await page.evaluate(f => localStorage.setItem(f, "1"), flag);
       await context.setOffline(true);
       await sell(page);
+      if (width < 768) await page.getByLabel("Cuenta y caja", { exact: true }).click();
       await page.getByTestId("sign-out").click();
       await expect(page.getByTestId("logout-blocked")).toBeVisible();
       expect(await localState(page)).toMatchObject({ tickets: 1, work: 5 });
@@ -121,6 +126,7 @@ for (const width of [375, 1440]) {
       await expect.poll(async () => (await localState(page)).work).toBe(0);
       expect(dbOne("SELECT count(*) FROM tickets")).toBe("1");
       expect(dbOne("SELECT sum(amount) FROM payments")).toBe("100");
+      if (width < 768) await page.getByLabel("Cuenta y caja", { exact: true }).click();
       await page.getByTestId("sign-out").click();
       await expect(page.getByTestId("login-submit")).toBeVisible();
       expect(await localState(page)).toMatchObject({ tickets: 0, products: 0, work: 0 });

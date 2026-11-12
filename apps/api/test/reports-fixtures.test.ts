@@ -4,6 +4,10 @@ import type { FastifyInstance } from "fastify";
 import { PGlite } from "@electric-sql/pglite";
 import {
   LOCAL_SCHEMA_SQL,
+  CUSTOMER_ACCOUNTS_SQL,
+  CUSTOMER_BALANCES_SQL,
+  parseCustomerAccounts,
+  parseCustomerBalances,
   LOW_STOCK_SQL,
   SALES_BY_DAY_SQL,
   TOP_PRODUCTS_SQL,
@@ -18,7 +22,7 @@ import {
   resetTables,
   type Actor,
 } from "./helpers";
-import { closeDb, db } from "../src/db";
+import { closeDb, db, pool } from "../src/db";
 import { scopedRepo, type ScopedRepo } from "../src/db/scope";
 
 /**
@@ -337,6 +341,58 @@ async function get(path: string, actor: Actor = owner) {
 }
 
 describe("sales by day (exact numbers)", () => {
+  it("accounts include zero/negative/limits while Por Cobrar stays positive, identical on server and PGlite", async () => {
+    const local = new PGlite("memory://");
+    await local.exec(LOCAL_SCHEMA_SQL);
+    const ids = Array.from({ length: 5 }, () => randomUUID());
+    try {
+      // Same fixture on both engines: A=53000-15000, B=10000-10000,
+      // inactive excluded, inconsistent negative surfaced (never clamped).
+      const stores = [
+        { query: (sql: string, params: unknown[]) => pool.query(sql, params) },
+        { query: (sql: string, params: unknown[]) => local.query(sql, params) },
+      ];
+      for (const q of stores) {
+        for (const [i, name] of ["A", "B", "Inactive", "Negative", "Legacy"].entries()) {
+          await q.query(`INSERT INTO customers(id,tenant_id,client_uuid,name,credit_limit,active)
+            VALUES($1,$2,$1,$3,$4,$5)`, [ids[i], owner.orgId, name, i === 4 ? null : i === 1 ? 0 : 200000, i !== 2]);
+        }
+        for (const [i, customer, amount, method, status] of [
+          [0, 0, 35000, "credit", "completed"], [1, 0, 18000, "credit", "completed"],
+          [2, 0, 10000, "cash", "completed"], [3, 0, 99999, "credit", "voided"],
+          [4, 1, 10000, "credit", "completed"], [5, 2, 9000, "credit", "completed"],
+        ] as const) {
+          const ticket = randomUUID();
+          await q.query(`INSERT INTO tickets(id,tenant_id,client_uuid,ticket_no,total,status,customer_id)
+            VALUES($1,$2,$1,$3,$4,$5,$6)`, [ticket, owner.orgId, i + 100, amount, status, ids[customer]]);
+          const payment = randomUUID();
+          await q.query(`INSERT INTO payments(id,tenant_id,client_uuid,ticket_id,method,amount,status)
+            VALUES($1,$2,$1,$3,$4,$5,'confirmed')`, [payment, owner.orgId, ticket, method, amount]);
+        }
+        for (const [customer, amount, method] of [[0, 10000, "cash"], [0, 5000, "transfer"], [1, 10000, "cash"], [3, 100, "cash"]] as const) {
+          const id = randomUUID();
+          await q.query(`INSERT INTO credit_abonos(id,tenant_id,client_uuid,customer_id,amount,method)
+            VALUES($1,$2,$1,$3,$4,$5)`, [id, owner.orgId, ids[customer], amount, method]);
+        }
+      }
+      const expected = [
+        { customer_id: ids[0], name: "A", phone: null, credit: 53000, abonos: 15000, balance: 38000, credit_limit: 200000 },
+        { customer_id: ids[1], name: "B", phone: null, credit: 10000, abonos: 10000, balance: 0, credit_limit: 0 },
+        { customer_id: ids[4], name: "Legacy", phone: null, credit: 0, abonos: 0, balance: 0, credit_limit: null },
+        { customer_id: ids[3], name: "Negative", phone: null, credit: 0, abonos: 100, balance: -100, credit_limit: 200000 },
+      ];
+      const accounts = await get("/api/reports/customer-accounts");
+      expect(accounts.statusCode).toBe(200);
+      expect(accounts.json().rows).toEqual(expected);
+      expect(parseCustomerAccounts((await local.query<Record<string, unknown>>(CUSTOMER_ACCOUNTS_SQL, [owner.orgId])).rows)).toEqual(expected);
+      const { credit_limit: _limit, ...positive } = expected[0];
+      expect((await get("/api/reports/customer-balances")).json().rows).toEqual([positive]);
+      expect(parseCustomerBalances((await local.query<Record<string, unknown>>(CUSTOMER_BALANCES_SQL, [owner.orgId])).rows)).toEqual([positive]);
+      expect((await get("/api/reports/customer-accounts", other)).json().rows).toEqual([]);
+      expect(parseCustomerAccounts((await local.query<Record<string, unknown>>(CUSTOMER_ACCOUNTS_SQL, [other.orgId])).rows)).toEqual([]);
+      expect((await app.inject({ method: "GET", url: "/api/reports/customer-accounts" })).statusCode).toBe(401);
+    } finally { await local.close(); }
+  });
   it("day1 = 45000; day2 = 30000 with 18000 pending (local-day buckets)", async () => {
     const res = await get(`/api/reports/sales-by-day?from=${RANGE.from}&to=${RANGE.to}`);
     expect(res.statusCode).toBe(200);

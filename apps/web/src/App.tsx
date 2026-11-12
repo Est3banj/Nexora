@@ -1,12 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  BarChart3,
-  LayoutDashboard,
-  LayoutGrid,
-  Receipt,
-  ShoppingCart,
-  Wallet,
-} from "lucide-react";
+import { AppShell } from "./components/AppShell";
+import { Toast, type ToastKind, type ToastMessage } from "./components/Toast";
+import type { AppTab } from "./components/navigation";
+import { Credito } from "./screens/Credito";
 import { activeOrgId, authClient } from "./auth";
 import type { LocalHandle } from "./db/pglite";
 import { claimLocal, sealLocal, unresolvedWork } from "./db/preservation";
@@ -36,7 +32,7 @@ import { Arqueo } from "./screens/Arqueo";
 import { Reports } from "./screens/Reports";
 import { Dashboard } from "./screens/Dashboard";
 
-type Tab = "dashboard" | "sale" | "catalog" | "tickets" | "arqueo" | "reports";
+type Tab = AppTab;
 
 export default function App() {
   const { data: session, isPending } = authClient.useSession();
@@ -44,7 +40,8 @@ export default function App() {
   const [secondTab, setSecondTab] = useState(false);
   const [bootError, setBootError] = useState(false);
   const [tab, setTab] = useState<Tab>("sale");
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<ToastMessage | null>(null);
+  const toastId = useRef(0);
   const [refreshToken, setRefreshToken] = useState(0);
   const [tenantName, setTenantName] = useState<string>();
   const [transition, setTransition] = useState<TransitionState>({ phase: "idle" });
@@ -81,6 +78,8 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [pendingProduct, setPendingProduct] = useState<SaleItem | null>(null);
   const [pendingTicketId, setPendingTicketId] = useState<string | null>(null);
+  const [pendingVariantId, setPendingVariantId] = useState<string | null>(null);
+  const consumeVariant = useCallback(() => setPendingVariantId(null), []);
   const consumeProduct = useCallback(() => setPendingProduct(null), []);
   const consumeTicket = useCallback(() => setPendingTicketId(null), []);
   const paletteReady = Boolean(
@@ -94,6 +93,7 @@ export default function App() {
     }
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+        if (document.querySelector("dialog[open]")) return;
         e.preventDefault();
         setPaletteOpen((o) => !o);
         return;
@@ -126,7 +126,10 @@ export default function App() {
     setReady(null);
     setTenantName(undefined);
     setToast(null);
-    setTab("dashboard");
+    setTab("sale");
+    setPendingProduct(null);
+    setPendingTicketId(null);
+    setPendingVariantId(null);
     void (async () => {
       try {
         await stopSync();
@@ -206,10 +209,10 @@ export default function App() {
     return () => { alive = false; };
   }, [session, tenantId, ready, sessionKey]);
 
-  const showToast = useCallback((msg: string) => {
-    setToast(msg);
-    window.setTimeout(() => setToast(null), 3500);
+  const showToast = useCallback((msg: string, kind: ToastKind = "success") => {
+    setToast({ id: ++toastId.current, message: msg, kind });
   }, []);
+  const closeToast = useCallback(() => setToast(null), []);
 
   const handleSignOut = useCallback(async () => {
     if (!local) return;
@@ -219,6 +222,7 @@ export default function App() {
       finish: async () => {
         const result = await authClient.signOut({ fetchOptions: { timeout: 15_000 } });
         if (result.error) throw new Error("No se pudo cerrar la sesión del servidor");
+        sessionStorage.removeItem("pos:member-role");
         await clearLocalBusinessData(local.db);
         setRecoveryNeeded(false);
         setReady(null);
@@ -409,31 +413,11 @@ export default function App() {
   }
 
   return (
-    <div className="app">
-      <div className="app-frame">
-        <header className="app-header">
-          <span className="brand"><img src="/icon-192.png" alt="" className="brand-logo" /> NEXORA</span>
-          <span
-            className={`net-status ${sync.online ? "net-online" : "net-offline"}`}
-            data-testid="net-status"
-          >
-            {sync.online ? "en línea" : "sin conexión"}
-          </span>
-          <span
-            className={`badge ${sync.pending > 0 ? "badge-pending" : "badge-ok"}`}
-            data-testid="pending-badge"
-            title="Mutaciones pendientes de sincronizar"
-          >
-            {sync.pending > 0 ? `${sync.pending} pendientes` : "sinc."}
-          </span>
-          <button
-            className="btn ghost small"
-            data-testid="sign-out"
-            onClick={() => void handleSignOut()}
-          >
-            Salir
-          </button>
-        </header>
+    <>
+      <AppShell key={`${tenantId}:${session.user.id}`} db={local.db} tenantId={tenantId} user={session.user} tenantName={tenantName}
+        tab={tab} refreshToken={refreshToken} onNavigate={setTab} onSignOut={handleSignOut}
+        onTicket={id => { setPendingTicketId(id); setTab("tickets"); }}
+        onVariant={id => { setPendingVariantId(id); setTab("catalog"); }}>
 
         {sync.lastSync !== null && (
           <div className="sync-meta" data-testid="last-sync">
@@ -474,6 +458,17 @@ export default function App() {
         )}
 
         <main className="app-main">
+        {tab === "credito" && (
+          <Credito
+            db={local.db}
+            tenantId={tenantId}
+            refreshToken={refreshToken}
+            userId={session.user.id}
+            tenantName={tenantName}
+            showToast={showToast}
+            onMutated={onMutated}
+          />
+        )}
         {tab === "dashboard" && (
           <Dashboard
             db={local.db}
@@ -484,8 +479,10 @@ export default function App() {
         )}
         {tab === "sale" && (
           <Sale
+            userId={session.user.id}
             db={local.db}
             tenantId={tenantId}
+            tenantName={tenantName}
             refreshToken={refreshToken}
             showToast={showToast}
             onCommitted={onMutated}
@@ -495,6 +492,8 @@ export default function App() {
         )}
         {tab === "catalog" && (
           <Catalog
+            pendingVariantId={pendingVariantId}
+            onPendingVariantUsed={consumeVariant}
             db={local.db}
             tenantId={tenantId}
             refreshToken={refreshToken}
@@ -504,6 +503,7 @@ export default function App() {
         )}
         {tab === "tickets" && (
           <Tickets
+            userId={session.user.id}
             db={local.db}
             tenantId={tenantId}
             refreshToken={refreshToken}
@@ -512,10 +512,13 @@ export default function App() {
             onMutated={onMutated}
             pendingTicketId={pendingTicketId}
             onPendingTicketUsed={consumeTicket}
+            onOpenAccount={() => setTab("credito")}
           />
         )}
         {tab === "arqueo" && (
           <Arqueo
+            actorId={session.user.id}
+            actorName={session.user.name}
             db={local.db}
             tenantId={tenantId}
             refreshToken={refreshToken}
@@ -532,7 +535,7 @@ export default function App() {
           />
         )}
         </main>
-      </div>
+      </AppShell>
 
       {paletteOpen && (
         <CommandPalette
@@ -551,65 +554,7 @@ export default function App() {
         />
       )}
 
-      <nav className="tabbar">
-        {/* Priority order: sell first, then daily cash ops, then lookups,
-            catalog upkeep, overview last (deep reports at the end).
-            Icons are decorative (aria-hidden) — labels stay for a11y. */}
-        <button
-          className={tab === "sale" ? "active" : ""}
-          data-testid="tab-sale"
-          onClick={() => setTab("sale")}
-        >
-          <ShoppingCart size={18} aria-hidden="true" />
-          <span>Venta</span>
-        </button>
-        <button
-          className={tab === "arqueo" ? "active" : ""}
-          data-testid="tab-arqueo"
-          onClick={() => setTab("arqueo")}
-        >
-          <Wallet size={18} aria-hidden="true" />
-          <span>Caja</span>
-        </button>
-        <button
-          className={tab === "tickets" ? "active" : ""}
-          data-testid="tab-tickets"
-          onClick={() => setTab("tickets")}
-        >
-          <Receipt size={18} aria-hidden="true" />
-          <span>Tickets</span>
-        </button>
-        <button
-          className={tab === "catalog" ? "active" : ""}
-          data-testid="tab-catalog"
-          onClick={() => setTab("catalog")}
-        >
-          <LayoutGrid size={18} aria-hidden="true" />
-          <span>Catálogo</span>
-        </button>
-        <button
-          className={tab === "dashboard" ? "active" : ""}
-          data-testid="tab-dashboard"
-          onClick={() => setTab("dashboard")}
-        >
-          <LayoutDashboard size={18} aria-hidden="true" />
-          <span>Panel</span>
-        </button>
-        <button
-          className={tab === "reports" ? "active" : ""}
-          data-testid="tab-reports"
-          onClick={() => setTab("reports")}
-        >
-          <BarChart3 size={18} aria-hidden="true" />
-          <span>Reportes</span>
-        </button>
-      </nav>
-
-      {toast && (
-        <div className="toast" data-testid="toast" role="status">
-          {toast}
-        </div>
-      )}
-    </div>
+      {toast && <Toast key={toast.id} toast={toast} onClose={closeToast} />}
+    </>
   );
 }

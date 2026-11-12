@@ -8,7 +8,7 @@ import * as t from "../src/db/schema";
 import { scopedRepo } from "../src/db/scope";
 import { computeExpected, closeShift } from "../src/db/arqueo";
 import { getAuth } from "../src/auth/auth";
-import { buildTestApp, resetTables, createTenant, authHeaders, type Actor } from "./helpers";
+import { buildTestApp, resetTables, createTenant, authHeaders, seedCustomer, pushCreditSale, pushMixedSale, pushAbono, type Actor } from "./helpers";
 
 let app: FastifyInstance;
 let owner: Actor;
@@ -46,6 +46,33 @@ async function balances(variantId: string) {
   const variant = await repo.productVariants.byUuid(variantId);
   return { stock: variant?.stock, current: (await repo.stock.byVariant(variantId))?.stock, diary: await repo.stock.recount(variantId), cost: variant?.cost };
 }
+
+it.each(["full-linked", "mixed-unlinked"])("credit void blocked by any customer abono: %s, cash-only still voidable and history byte-identical", async kind => {
+  const cash = await sale();
+  const customer = await seedCustomer(app, owner);
+  const s = kind === "full-linked"
+    ? await pushCreditSale(app, owner, { customer, amount: 35000, shift: cash.shift.id, variant: cash.variant.id })
+    : await pushMixedSale(app, owner, { customer, cash: 10000, credit: 25000, shift: cash.shift.id, variant: cash.variant.id });
+  await pushAbono(app, owner, { customer, amount: 5000, method: "cash", shift: cash.shift.id, ticket: kind === "full-linked" ? s.ticket : null });
+  const before = await repo.creditAbonos.listRecent();
+  expect((await annul(s.ticket)).json()).toEqual({ error: "abonos_exist" });
+  expect((await repo.tickets.byUuid(s.ticket))?.status).toBe("completed");
+  expect((await annul(cash.id)).statusCode).toBe(200);
+  expect(await repo.creditAbonos.listRecent()).toEqual(before);
+});
+
+it("credit void without abonos drops derived debt; concurrent abono/void cannot strand negative balance", async () => {
+  const base = await sale();
+  const customer = await seedCustomer(app, owner);
+  const s = await pushCreditSale(app, owner, { customer, amount: 20000, shift: base.shift.id, variant: base.variant.id });
+  const [voided, abono] = await Promise.all([
+    annul(s.ticket), pushAbono(app, owner, { customer, amount: 5000, method: "cash", shift: base.shift.id }),
+  ]);
+  const account = (await repo.reports.customerAccounts())[0];
+  expect(account.balance).toBe(voided.statusCode === 200 ? 0 : 15000);
+  expect(abono.results[0].status).toBe(voided.statusCode === 200 ? "rejected" : "applied");
+  if (voided.statusCode !== 200) expect(voided.json()).toEqual({ error: "abonos_exist" });
+});
 
 it.each(["cash", "transfer", "confirmed-transfer"])("annuls %s once; preserves history, exact reports and cash", async method => {
   const s = await sale(method === "cash" ? "cash" : "transfer");
@@ -165,7 +192,7 @@ it("offline close sync derives net expected on server and ACKs canonical frozen 
   for (let i = 0; i < 2; i++) {
     const result = (await push([mutation])).json().results[0];
     expect(result.status).toBe(i === 0 ? "applied" : "duplicate");
-    expect(result.closedcash).toEqual({ shift_id: s.shift.id, expected: 0, counted: 0, diff: 0 });
+    expect(result.closedcash).toEqual({ shift_id: s.shift.id, expected: 0, counted: 0, diff: 0, calculation_version: "legacy_v1", closing_note: null });
   }
   expect(await repo.closedcash.byShift(s.shift.id)).toMatchObject({ expected: 0, counted: 0, diff: 0 });
 });

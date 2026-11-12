@@ -66,8 +66,8 @@ describe("cart arithmetic (spec number)", () => {
       tendered: 29000,
     });
     expect(sale.ticket.total).toBe(29000);
-    expect(sale.payment.amount).toBe(29000);
-    expect(sale.payment.vuelto).toBe(0);
+    expect(sale.payments[0].amount).toBe(29000);
+    expect(sale.payments[0].vuelto).toBe(0);
   });
 });
 
@@ -88,8 +88,8 @@ describe("cash checkout (exact / over / under)", () => {
       lines: [{ variant_id: variantA, qty: 3, unit_price: 4000 }],
       tendered: 12000,
     });
-    expect(sale.payment.vuelto).toBe(0);
-    expect(sale.payment.status).toBe("confirmed");
+    expect(sale.payments[0].vuelto).toBe(0);
+    expect(sale.payments[0].status).toBe("confirmed");
   });
 
   it("overpayment computes vuelto 8000", async () => {
@@ -97,7 +97,7 @@ describe("cash checkout (exact / over / under)", () => {
       lines: [{ variant_id: variantA, qty: 3, unit_price: 4000 }],
       tendered: 20000,
     });
-    expect(sale.payment.vuelto).toBe(8000);
+    expect(sale.payments[0].vuelto).toBe(8000);
   });
 
   it("underpayment rejected — no ticket created", async () => {
@@ -179,7 +179,7 @@ describe("atomic local-first commit", () => {
     });
     const payment = await db.query<{ shift_id: string | null }>(
       `SELECT shift_id FROM payments WHERE id = $1`,
-      [sale.payment.id],
+      [sale.payments[0].id],
     );
     expect(payment.rows[0]?.shift_id).toBe(shiftId);
   });

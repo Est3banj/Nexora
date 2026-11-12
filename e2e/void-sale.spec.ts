@@ -9,6 +9,7 @@ test("owner annulment: accessible confirmation, offline edge, replay mirror and 
   await page.getByTestId("login-submit").click();
   await expect(page.getByTestId("tab-sale")).toBeVisible();
   await page.getByTestId("tab-catalog").click();
+  await page.getByTestId("product-new").click();
   await page.getByTestId("product-name").fill("Café anulación E2E");
   await page.getByTestId("variant-name").fill("Único");
   await page.getByTestId("variant-price").fill("4000");
@@ -30,8 +31,11 @@ test("owner annulment: accessible confirmation, offline edge, replay mirror and 
     return rows.rows.length;
   })).toBe(1);
   await expect(page.getByTestId("pending-badge")).toContainText("sinc.");
+  /* dismiss the post-commit receipt before touching app chrome */
+  await page.getByTestId("receipt-close").click();
   await page.getByTestId("tab-tickets").click();
   await page.getByTestId("ticket-item").click();
+  await expect(page.getByTestId("ticket-detail")).toBeVisible();
 
   await context.setOffline(true);
   await page.evaluate(() => window.dispatchEvent(new Event("offline")));
@@ -78,6 +82,7 @@ test("owner annulment: accessible confirmation, offline edge, replay mirror and 
   await page.reload();
   await page.getByTestId("tab-tickets").click();
   await page.getByTestId("ticket-item").click();
+  await expect(page.getByTestId("ticket-detail")).toBeVisible();
   await expect(page.getByTestId("ticket-voided")).toContainText("Venta cobrada por error");
   for (const width of [375, 1440]) {
     await page.setViewportSize({ width, height: 900 });

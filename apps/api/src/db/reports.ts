@@ -1,4 +1,7 @@
 import {
+  CUSTOMER_ACCOUNTS_SQL,
+  parseCustomerAccounts,
+  type CustomerAccountRow,
   CUSTOMER_BALANCES_SQL,
   DASHBOARD_SUMMARY_SQL,
   INVENTORY_VALUE_SQL,
@@ -84,4 +87,8 @@ export async function inventoryValue(
  */
 export async function customerBalances(tenantId: string): Promise<CustomerBalanceRow[]> {
   return parseCustomerBalances(await run(CUSTOMER_BALANCES_SQL, [tenantId]));
+}
+
+export async function customerAccounts(tenantId: string): Promise<CustomerAccountRow[]> {
+  return parseCustomerAccounts(await run(CUSTOMER_ACCOUNTS_SQL, [tenantId]));
 }

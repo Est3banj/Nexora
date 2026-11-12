@@ -19,6 +19,11 @@ export type RehydrateFetch = (
 type Row = Record<string, unknown>;
 
 export type RehydratePage = {
+  shifts?: Row[];
+  closedcash?: Row[];
+  cash_movements?: Row[];
+  customers?: Row[];
+  credit_abonos?: Row[];
   categories?: Row[];
   products?: Row[];
   variants?: Row[];
@@ -58,16 +63,33 @@ export async function applyRehydratePage(
     await assertWritable(tx, tenantId);
     let inserted = 0;
 
+    for (const c of page.customers ?? []) {
+      await insertIgnore(tx, "customers",
+        ["id", "tenant_id", "client_uuid", "name", "phone", "notes", "active", "credit_limit", "created_at", "updated_at"],
+        [c.id, tenantId, c.client_uuid ?? c.id, c.name, c.phone ?? null, c.notes ?? null, c.active,
+          c.credit_limit ?? null, iso(c.created_at), iso(c.updated_at)]);
+      inserted += 1;
+    }
+
+    for (const a of page.credit_abonos ?? []) {
+      await insertIgnore(tx, "credit_abonos",
+        ["id", "tenant_id", "client_uuid", "customer_id", "amount", "method", "shift_id", "ticket_id", "note", "created_at", "updated_at"],
+        [a.id, tenantId, a.client_uuid ?? a.id, a.customer_id, a.amount, a.method, a.shift_id ?? null,
+          a.ticket_id ?? null, a.note ?? null, iso(a.created_at), iso(a.updated_at)]);
+      inserted += 1;
+    }
+
     for (const c of page.categories ?? []) {
       await insertIgnore(
         tx,
         "categories",
-        ["id", "tenant_id", "client_uuid", "name", "active", "created_at", "updated_at"],
+        ["id", "tenant_id", "client_uuid", "name", "icon_key", "active", "created_at", "updated_at"],
         [
           c.id,
           tenantId,
           c.client_uuid ?? c.id,
           c.name,
+          c.icon_key ?? null,
           c.active,
           iso(c.created_at),
           iso(c.updated_at),
@@ -80,12 +102,13 @@ export async function applyRehydratePage(
       await insertIgnore(
         tx,
         "products",
-        ["id", "tenant_id", "client_uuid", "name", "category_id", "photo", "active", "created_at", "updated_at"],
+        ["id", "tenant_id", "client_uuid", "name", "icon_key", "category_id", "photo", "active", "created_at", "updated_at"],
         [
           p.id,
           tenantId,
           p.client_uuid ?? p.id,
           p.name,
+          p.icon_key ?? null,
           p.category_id ?? null,
           p.photo ?? null,
           p.active,
@@ -134,14 +157,29 @@ export async function applyRehydratePage(
       inserted += 1;
     }
 
-    const shift = page.open_shift;
-    if (shift && shift.id) {
+    for (const shift of [...(page.shifts ?? []), ...(page.open_shift ? [page.open_shift] : [])]) {
       await insertIgnore(
         tx,
         "shifts",
-        ["id", "tenant_id", "client_uuid", "status", "opened_at", "closed_at"],
-        [shift.id, tenantId, shift.client_uuid ?? shift.id, shift.status, iso(shift.opened_at), iso(shift.closed_at)],
+        ["id", "tenant_id", "client_uuid", "status", "opened_at", "closed_at", "opening_cash", "opened_by", "calculation_version", "created_at", "updated_at"],
+        [shift.id, tenantId, shift.client_uuid ?? shift.id, shift.status, iso(shift.opened_at), iso(shift.closed_at),
+          shift.opening_cash ?? 0, shift.opened_by ?? null, shift.calculation_version ?? "legacy_v1",
+          iso(shift.created_at) ?? iso(shift.opened_at), iso(shift.updated_at) ?? iso(shift.opened_at)],
       );
+      inserted += 1;
+    }
+
+    for (const c of page.closedcash ?? []) {
+      await insertIgnore(tx, "closedcash",
+        ["id", "tenant_id", "client_uuid", "shift_id", "expected", "counted", "diff", "closed_by", "closing_note", "calculation_version", "created_at", "updated_at"],
+        [c.id, tenantId, c.client_uuid ?? c.id, c.shift_id, c.expected, c.counted, c.diff, c.closed_by ?? null,
+          c.closing_note ?? null, c.calculation_version ?? "legacy_v1", iso(c.created_at), iso(c.updated_at)]);
+      inserted += 1;
+    }
+    for (const m of page.cash_movements ?? []) {
+      await insertIgnore(tx, "cash_movements",
+        ["id", "tenant_id", "client_uuid", "shift_id", "direction", "amount", "reason", "note", "created_at", "updated_at"],
+        [m.id, tenantId, m.client_uuid ?? m.id, m.shift_id, m.direction, m.amount, m.reason, m.note ?? null, iso(m.created_at), iso(m.updated_at)]);
       inserted += 1;
     }
 
@@ -165,11 +203,12 @@ export async function applyRehydratePage(
           "client_uuid",
           "shift_id",
           "ticket_no",
+          "customer_id",
           "status",
           "total",
           "created_at",
         ],
-        [t.id, tenantId, t.client_uuid ?? t.id, t.shift_id ?? null, t.ticket_no, t.status, t.total, iso(t.created_at)],
+        [t.id, tenantId, t.client_uuid ?? t.id, t.shift_id ?? null, t.ticket_no, t.customer_id ?? null, t.status, t.total, iso(t.created_at)],
       );
       inserted += 1;
     }
@@ -186,6 +225,7 @@ export async function applyRehydratePage(
           "variant_id",
           "qty",
           "unit_price",
+          "unit_cost",
           "subtotal",
           "created_at",
         ],
@@ -197,6 +237,7 @@ export async function applyRehydratePage(
           l.variant_id,
           l.qty,
           l.unit_price,
+          l.unit_cost ?? null,
           l.subtotal,
           iso(l.created_at),
         ],

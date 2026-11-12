@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS local_vault (
 INSERT INTO local_vault(id) VALUES(1) ON CONFLICT DO NOTHING;
 `;
 
-export const BUSINESS_TABLES = ["sync_sale_outbox", "sync_log", "stockdiary", "stockcurrent", "closedcash", "payments", "ticket_lines", "tickets", "shifts", "product_variants", "products", "categories"] as const;
+export const BUSINESS_TABLES = ["sync_sale_outbox", "sync_log", "cash_movements", "stockdiary", "stockcurrent", "closedcash", "credit_abonos", "payments", "ticket_lines", "tickets", "customers", "shifts", "product_variants", "products", "categories"] as const;
 
 export async function unresolvedWork(q: LocalQueryable): Promise<number> {
   const r = await q.query<{ n: string }>(`SELECT

@@ -7,13 +7,13 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: "autoUpdate",
-      includeAssets: ["favicon.svg"],
+      includeAssets: ["favicon.svg", "fonts/*.woff2", "fonts/*-OFL.txt"],
       manifest: {
         name: "NEXORA",
         short_name: "NEXORA",
         display: "standalone",
-        background_color: "#f3f4f7",
-        theme_color: "#f3f4f7",
+        background_color: "#f1f5f9",
+        theme_color: "#f1f5f9",
         start_url: "/",
         icons: [
           {

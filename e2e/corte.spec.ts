@@ -32,6 +32,7 @@ test.describe("Batch D — corte de caja", () => {
 
     /* one cash sale → both exports enable */
     await page.getByTestId("tab-catalog").click();
+    await page.getByTestId("product-new").click();
     await page.getByTestId("product-name").fill("Corte E2E");
     await page.getByTestId("variant-name").fill("Único");
     await page.getByTestId("variant-price").fill("4000");
@@ -50,6 +51,7 @@ test.describe("Batch D — corte de caja", () => {
     await page.getByTestId("quick-cash-exact").click();
     await page.getByTestId("checkout-confirm").click();
     await expect(page.getByTestId("sale-success")).toBeVisible();
+    await page.getByTestId("receipt-close").click();
 
     await page.getByTestId("tab-reports").click();
     const corte = page.getByTestId("corte-print");

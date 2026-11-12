@@ -74,6 +74,7 @@ export const categories = pgTable(
     tenant_id: tenantCol(),
     client_uuid: clientUuidCol(),
     name: text("name").notNull(),
+    icon_key: text("icon_key"),
     active: boolean("active").notNull().default(true),
     created_at: createdAt(),
     updated_at: updatedAt(),
@@ -92,6 +93,7 @@ export const products = pgTable(
     tenant_id: tenantCol(),
     client_uuid: clientUuidCol(),
     name: text("name").notNull(),
+    icon_key: text("icon_key"),
     category_id: uuid("category_id"),
     /** data-URL image, client-compressed ≤ ~150KB before enqueue */
     photo: text("photo"),
@@ -147,6 +149,9 @@ export const shifts = pgTable(
     tenant_id: tenantCol(),
     client_uuid: clientUuidCol(),
     status: text("status").notNull().default("open"),
+    opening_cash: integer("opening_cash").notNull().default(0),
+    opened_by: uuid("opened_by"),
+    calculation_version: text("calculation_version").notNull().default("legacy_v1"),
     opened_at: timestamp("opened_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -193,6 +198,7 @@ export const customers = pgTable(
     tenant_id: tenantCol(),
     client_uuid: clientUuidCol(),
     name: text("name").notNull(),
+    credit_limit: integer("credit_limit"),
     phone: text("phone"),
     notes: text("notes"),
     /** soft-delete, mirrors products */
@@ -236,6 +242,17 @@ export const creditAbonos = pgTable(
     index("credit_abonos_tenant_created_idx").on(t.tenant_id, t.created_at),
   ],
 );
+
+export const cashMovements = pgTable("cash_movements", {
+  id: idCol(), tenant_id: tenantCol(), client_uuid: clientUuidCol(),
+  shift_id: uuid("shift_id").notNull(), direction: text("direction").notNull(),
+  amount: integer("amount").notNull(), reason: text("reason").notNull(), note: text("note"),
+  created_at: createdAt(), updated_at: updatedAt(),
+}, (t) => [
+  uniqueIndex("cash_movements_tenant_client_uq").on(t.tenant_id, t.client_uuid),
+  index("cash_movements_tenant_shift_created_idx").on(t.tenant_id, t.shift_id, t.created_at),
+  index("cash_movements_tenant_created_idx").on(t.tenant_id, t.created_at),
+]);
 
 export const ticketLines = pgTable(
   "ticket_lines",
@@ -293,6 +310,8 @@ export const payments = pgTable(
 export const closedcash = pgTable(
   "closedcash",
   {
+    closing_note: text("closing_note"),
+    calculation_version: text("calculation_version").notNull().default("legacy_v1"),
     id: idCol(),
     tenant_id: tenantCol(),
     client_uuid: clientUuidCol(),

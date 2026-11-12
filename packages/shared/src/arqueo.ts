@@ -9,8 +9,9 @@ import { z } from "zod";
  * (local expected == server recomputation) holds by construction and is
  * proven by the property test.
  *
- *   expected = confirmed cash + confirmed transfers + cash abonos of the
- *              shift (fiado — the ONE additive component, design §4.1)
+ *   legacy_v1 = confirmed cash + confirmed transfers + cash abonos
+ *   drawer_cash_v2 = fixed opening base + cash + cash abonos + income − withdrawals
+ *   The persisted SHIFT version chooses the policy, never a client close payload.
  *   pending  = transfers still `pending` → reported separately, NEVER counted
  *   diff     = counted - expected (derived, never entered)
  *
@@ -28,21 +29,29 @@ SELECT COALESCE(SUM(amount) FILTER (WHERE method = 'cash' AND status = 'confirme
        COALESCE((
          SELECT SUM(a.amount) FROM credit_abonos a
          WHERE a.tenant_id = $1 AND a.shift_id = $2 AND a.method = 'cash'
-       ), 0) AS abonos
+        ), 0) AS abonos,
+        COALESCE((SELECT s.calculation_version FROM shifts s WHERE s.tenant_id=$1 AND s.id=$2), 'legacy_v1') AS calculation_version,
+        COALESCE((SELECT s.opening_cash FROM shifts s WHERE s.tenant_id=$1 AND s.id=$2), 0) AS opening_cash,
+        COALESCE((SELECT SUM(m.amount) FROM cash_movements m WHERE m.tenant_id=$1 AND m.shift_id=$2 AND m.direction='in'), 0) AS income,
+        COALESCE((SELECT SUM(m.amount) FROM cash_movements m WHERE m.tenant_id=$1 AND m.shift_id=$2 AND m.direction='out'), 0) AS withdrawals
 FROM payments
 WHERE tenant_id = $1 AND shift_id = $2
   AND NOT EXISTS (SELECT 1 FROM tickets tk WHERE tk.tenant_id=payments.tenant_id AND tk.id=payments.ticket_id AND tk.status='voided')`;
 
 export type ExpectedBreakdown = {
+  calculation_version?: "drawer_cash_v2";
+  opening_cash?: number;
+  income?: number;
+  withdrawals?: number;
   /** confirmed cash in the drawer */
   cash: number;
-  /** confirmed bank transfers (included in expected per spec) */
+  /** confirmed bank transfers (included only in legacy expected) */
   transfers: number;
   /** pending transfers — excluded from expected, reported separately */
   pending: number;
   /** cash abonos of the shift (drawer money) — transfer abonos excluded */
   abonos: number;
-  /** cash + transfers + abonos */
+  /** Derived using the shift's policy; may be negative after withdrawals. */
   expected: number;
 };
 
@@ -53,6 +62,11 @@ export function parseExpectedRow(row: Record<string, unknown> | undefined): Expe
   const transfers = num(row?.transfers);
   const pending = num(row?.pending);
   const abonos = num(row?.abonos);
+  if (row?.calculation_version === "drawer_cash_v2") {
+    const opening_cash = num(row.opening_cash), income = num(row.income), withdrawals = num(row.withdrawals);
+    return { cash, transfers, pending, abonos, opening_cash, income, withdrawals, calculation_version: "drawer_cash_v2",
+      expected: opening_cash + cash + abonos + income - withdrawals };
+  }
   return { cash, transfers, pending, abonos, expected: cash + transfers + abonos };
 }
 
@@ -62,4 +76,4 @@ export function arqueoDiff(counted: number, expected: number): number {
 }
 
 /** Non-negative integer pesos — negative counted is rejected (spec). */
-export const countedSchema = z.number().int().nonnegative();
+export const countedSchema = z.number().int().nonnegative().max(2147483647);
