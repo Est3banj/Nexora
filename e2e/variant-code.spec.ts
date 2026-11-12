@@ -65,7 +65,8 @@ for (const width of [375, 1440]) {
     await page.getByTestId("sale-search").fill("");
     await context.setOffline(true);
     await page.evaluate(() => window.dispatchEvent(new Event("offline")));
-    const scanner = page.getByTestId("sale-code");
+    /* Unified search/scan field (prototype POS): an exact code adds a unit */
+    const scanner = page.getByTestId("sale-search");
     await scanner.fill("999999");
     await scanner.press("Enter");
     await expect(page.getByTestId("scan-message")).toContainText("Código no encontrado");

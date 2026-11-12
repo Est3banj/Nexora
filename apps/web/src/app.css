@@ -952,12 +952,67 @@ dialog .row, .ticket-actions { flex-wrap: wrap; }
 
 .order-head h3 {
   margin: 0;
-  margin-right: auto;
 }
 
+.order-head-icon {
+  color: var(--primary);
+  flex: none;
+}
+
+/* count pill (proto: brand-50 chip) */
+.cart-count-pill {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #4f46e5;
+  border: 1px solid #c7d2fe;
+  white-space: nowrap;
+}
+
+/* Limpiar: ghost text+icon, not a bordered button (proto) */
+.cart-clear {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color var(--dur) var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .cart-clear:hover {
+    color: #e11d48;
+  }
+}
+
+/* empty cart: basket + two lines (proto) */
 .order-empty {
-  padding: 16px 0;
+  padding: 40px 16px;
   text-align: center;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.order-empty svg {
+  color: var(--surface-3);
+  margin-bottom: 4px;
+}
+
+.order-empty-title {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--muted);
 }
 
 .order-lines {
@@ -969,34 +1024,57 @@ dialog .row, .ticket-actions { flex-wrap: wrap; }
   gap: 10px;
 }
 
+/* Cart line = its own card (prototype renderCart: rounded-xl border card,
+ * unit price under the name, stepper group, line total, separate remove) */
 .order-line {
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 10px;
-}
-
-.order-line:last-child {
-  border-bottom: none;
-}
-
-.order-line-main {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
   gap: 8px;
-  margin-bottom: 6px;
+  padding: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-sm);
+}
+
+.order-line-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .order-line-label {
-  font-weight: 600;
+  font-weight: 700;
+  font-size: 0.9rem;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* unit price (proto: mono emerald c/u) */
+.order-line-unit {
+  font: 600 11px/16px var(--font-mono);
+  color: var(--success);
+}
+
+/* stepper inside its own gray group (proto qty controls container) */
 .order-line-qty {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
+  padding: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.order-line-qty .qty-btn {
+  background: var(--surface);
+  border-radius: 6px;
+  box-shadow: var(--shadow-sm);
 }
 
 .qty-btn {
@@ -1009,12 +1087,54 @@ dialog .row, .ticket-actions { flex-wrap: wrap; }
   min-width: 24px;
   text-align: center;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.order-line-total {
+  min-width: 70px;
+  text-align: right;
+  font: 700 13px/18px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* remove sits OUTSIDE the stepper (proto), quiet until hover */
+.order-line-remove {
+  display: grid;
+  place-items: center;
+  padding: 6px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color var(--dur) var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .order-line-remove:hover {
+    color: #e11d48;
+  }
 }
 
 .order-total {
   font-size: 1.15rem;
-  border-top: 2px solid var(--border);
+  font-weight: 700;
+  border-top: 1px solid var(--surface-3); /* proto light rule (slate-100) */
   padding-top: 10px;
+}
+
+/* proto: emerald total — the number the cashier reads first */
+.order-total-value {
+  color: var(--success);
+  font-variant-numeric: tabular-nums;
+}
+
+/* icon + label CTA (proto Procesar Cobro has the dollar icon) */
+.pay-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
 /* IVA DEFERRED: subtotal mirrors total — never a fiscal row (B1). */
@@ -1029,7 +1149,34 @@ dialog .row, .ticket-actions { flex-wrap: wrap; }
 .cash-section {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
+}
+
+/* visible label above the pills (prototype: "Billetes / Denominaciones Rápidas") */
+.cash-sub-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* Monto Recibido | Cambio side by side (prototype grid-cols-2) */
+.cash-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  align-items: end;
+}
+
+.cash-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cash-pair .change-display {
+  min-height: 52px; /* aligns with the cash input */
+  align-items: center;
 }
 
 .cash-total-row {
@@ -2135,6 +2282,7 @@ select {
 
 .tickets-table {
   min-width: 760px;
+  font-size: 14px; /* design-rules table cells = sm (proto text-sm) */
 }
 
 .tickets-table thead th {
@@ -2289,15 +2437,51 @@ select {
 
 /* ── POS toolbar + category chips (M5 12.1) ───────────────── */
 
+/* Prototype POS toolbar: search + chips ONE row (sm+), full-bleed bg,
+ * border-bottom only — no boxed radius. Mobile stacks (proto flex-col). */
 .pos-toolbar {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding-bottom: 10px;
+  padding: 10px 0;
   border-bottom: 1px solid var(--border);
   background: var(--surface-2);
-  border-radius: var(--radius);
-  padding: 10px 12px;
+}
+
+@media (min-width: 640px) {
+  .pos-toolbar {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+}
+
+/* ONE search field doubles as the scan surface (prototype has no scanner card) */
+.pos-search-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 200px;
+}
+
+.pos-search-wrap > svg {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.pos-search-wrap .search-input {
+  border-radius: 12px; /* proto rounded-xl, not pill */
+  padding-left: 38px;
+}
+
+.scan-status {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .pos-chips {
@@ -2306,6 +2490,7 @@ select {
   overflow-x: auto;
   padding-bottom: 2px;
   scrollbar-width: thin;
+  flex: none;
 }
 
 .pos-chip {
@@ -2407,7 +2592,7 @@ select {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2px;
+  gap: 4px;
   min-height: 56px;
   padding: 8px 4px;
   border-radius: 12px;
@@ -2499,6 +2684,19 @@ select {
 .btn.primary.pay-confirm {
   background: var(--success);
   border-color: var(--success);
+}
+
+/* green CTA must stay green on hover/press (base .btn.primary turns blue) */
+@media (hover: hover) and (pointer: fine) {
+  .btn.primary.pay-confirm:hover:not(:disabled) {
+    background: #059669;
+    border-color: #059669;
+  }
+}
+
+.btn.primary.pay-confirm:active:not(:disabled) {
+  background: #047857;
+  border-color: #047857;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -3466,9 +3664,12 @@ select {
 .cash-screen .cash-breakdown { margin-top: 16px; display: grid; gap: 12px; padding: 16px; font-size: 12px; }
 .cash-breakdown > div { display: flex; justify-content: space-between; gap: 12px; }
 .cash-breakdown strong { font-family: var(--font-mono); white-space: nowrap; }
-.cash-screen .cash-expected { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; margin-top: 16px; border-radius: 12px; }
-.cash-expected span { font-size: 14px; font-weight: 500; }.cash-expected p { font-size: 11px; color: var(--muted); margin: 4px 0 0; }
-.cash-expected strong { font: 600 24px/32px var(--font-mono); overflow-wrap: anywhere; }
+.cash-screen .cash-expected { display: flex; flex-direction: column; gap: 16px; margin-top: 16px; border-radius: 12px; }
+.cash-expected-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; }
+.cash-expected-top span { font-size: 14px; font-weight: 500; }
+.cash-expected-top p { font-size: 11px; color: var(--muted); margin: 4px 0 0; }
+.cash-expected-top strong { font: 600 24px/32px var(--font-mono); overflow-wrap: anywhere; }
+.cash-expected .cash-breakdown { margin-top: 0; padding-top: 12px; border-top: 1px solid var(--border); }
 .cash-form { display: grid; gap: 12px; }.cash-form h3, .cash-form p { margin: 0; }
 .cash-form label { font-size: 12px; font-weight: 600; margin: 0; }
 .cash-form input, .cash-form textarea { width: 100%; min-width: 0; padding: 10px 12px; font-size: 16px; }
@@ -3485,6 +3686,45 @@ select {
 .cash-screen table { font-size: 12px; text-align: left; min-width: 800px; }
 .cash-screen td { vertical-align: top; }.cash-screen td small { display: block; color: var(--muted); font-size: 10px; margin-top: 4px; }
 .cash-id { max-width: 140px; overflow-wrap: anywhere; }.cash-history-note { min-width: 180px; max-width: 280px; overflow-wrap: anywhere; }
+
+/* ── Caja redesign (Fase A): prototype rhythm + real-copy polish ── */
+.cash-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  flex: none;
+  animation: cash-pulse 2s ease-in-out infinite;
+}
+@keyframes cash-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.8); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cash-dot { animation: none; }
+}
+.cash-input-wrap { position: relative; }
+.cash-input-wrap > span {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  font: 600 16px/1 var(--font-mono);
+  color: var(--muted);
+  pointer-events: none;
+}
+.cash-input-wrap input { padding-left: 28px; font: 600 20px/28px var(--font-mono); }
+.cash-count > .muted { font-size: 11px; }
+.cash-screen th, .cash-screen td { padding: 8px 10px; }
+/* Global nexora th (mono12/400/#f1f5f9) is the design-rules tableHead —
+   only add the proto's uppercase tracking here. */
+.cash-screen thead th {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.cash-screen td small { margin-top: 2px; }
+/* Airier cards — prototype rhythm (p-5/p-6 vs the old dense16px) */
+.cash-screen .card { padding: 20px; }
 .cash-diff-pill { display: inline-block; border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; white-space: nowrap; font-size: 11px; }
 .cash-movement-modal { width: min(448px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 24px; overflow-y: auto; }
 .cash-movement-modal h3 { margin: 0; font-size: 18px; }.cash-movement-modal .cash-form { margin-top: 20px; }

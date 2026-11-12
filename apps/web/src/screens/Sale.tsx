@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { PGlite } from "@electric-sql/pglite";
+import {
+  CircleDollarSign,
+  Search,
+  ShoppingBasket,
+  ShoppingCart,
+  Trash2,
+} from "lucide-react";
 import { paymentMethodLabel } from "@pos/shared";
 import {
   getLocalTicket,
@@ -75,7 +82,6 @@ export function Sale({
   // completing is always allowed (negative balance is legal + visible).
   const oversell = sale.lines.filter((l) => l.qty > l.stock);
   const [search, setSearch] = useState("");
-  const [scanCode, setScanCode] = useState("");
   const [scanMessage, setScanMessage] = useState("");
   /* Single payment modal (M5): one surface for both breakpoints. */
   const [payOpen, setPayOpen] = useState(false);
@@ -229,33 +235,28 @@ export function Sale({
   /* countsumqty (tasks 12.1): badge counts UNITS, not distinct lines. */
   const cartUnits = sale.lines.reduce((acc, l) => acc + l.qty, 0);
 
-  const scanner = (
-    <form className="card scanner" data-testid="scanner-form" onSubmit={(event) => {
-      event.preventDefault();
-      const code = scanCode.trim();
-      if (!code) return;
-      const item = items.find((candidate) => candidate.code === code);
-      if (!item) {
-        setScanMessage(`Código no encontrado: ${code}. No se agregó ningún producto.`);
-        return;
+  /* Prototype POS: ONE search field doubles as the scan surface —
+   * Enter with an EXACT SKU/barcode adds a unit (hardware scanners type
+   * the code into whatever is focused); any other query on Enter must
+   * NEVER add or sell (variant-code: "Enter in a normal search input
+   * must neither add nor sell"). Code-looking misses report honestly. */
+  function submitSearch() {
+    const code = search.trim();
+    if (!code) return;
+    const item = items.find((candidate) => candidate.code === code);
+    if (!item) {
+      if (/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(code)) {
+        setScanMessage(
+          `Código no encontrado: ${code}. No se agregó ningún producto.`,
+        );
       }
-      sale.addItem(item);
-      setError(null);
-      setScanCode("");
-      setScanMessage(`Agregado: ${item.product_name} ${item.name}, una unidad.`);
-    }}>
-      <label htmlFor="sale-code">SKU / código de barras</label>
-      <div className="row gap">
-        <input id="sale-code" data-testid="sale-code" type="text" maxLength={120}
-          autoComplete="off" autoCapitalize="none" spellCheck={false} enterKeyHint="go"
-          aria-describedby="scan-help scan-message" value={scanCode}
-          onChange={(event) => setScanCode(event.target.value)} />
-        <button type="submit" className="btn" data-testid="scan-add">Agregar</button>
-      </div>
-      <p id="scan-help" className="muted">Lector USB o teclado + Enter. Agrega una unidad; no cobra.</p>
-      <p id="scan-message" role="status" aria-live="polite" data-testid="scan-message">{scanMessage}</p>
-    </form>
-  );
+      return;
+    }
+    sale.addItem(item);
+    setError(null);
+    setSearch("");
+    setScanMessage(`Agregado: ${item.product_name} ${item.name}, una unidad.`);
+  }
 
   const chips = categories.length > 0 && (
     <div className="pos-chips" role="group" aria-label="Categorías">
@@ -285,18 +286,36 @@ export function Sale({
 
   const searchRow = (
     <div className="sale-toolbar pos-toolbar">
-      <input
-        className="search-input"
-        data-testid="sale-search"
-        type="search"
-        placeholder="Buscar por Nombre, SKU o Código…"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        aria-label="Buscar producto"
-      />
+      <div className="pos-search-wrap">
+        <Search size={16} aria-hidden="true" />
+        <input
+          className="search-input"
+          data-testid="sale-search"
+          type="search"
+          placeholder="Buscar por Nombre, SKU o Código…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter") return;
+            e.preventDefault();
+            submitSearch();
+          }}
+          aria-label="Buscar producto o escanear código"
+          autoComplete="off"
+          autoCapitalize="none"
+          spellCheck={false}
+          enterKeyHint="go"
+        />
+      </div>
       {chips}
     </div>
   );
+
+  const scanStatus = scanMessage ? (
+    <p className="scan-status" role="status" aria-live="polite" data-testid="scan-message">
+      {scanMessage}
+    </p>
+  ) : null;
 
   const grid = items.length === 0 ? (
     <div className="empty-state" data-testid="empty-catalog">
@@ -688,47 +707,55 @@ export function Sale({
     return (
       <div className="screen sale sale-layout" data-testid="sale-screen">
         <div className="sale-products">
-          {scanner}
           {searchRow}
+          {scanStatus}
           {grid}
         </div>
 
         <aside className="sale-order card" data-testid="order-panel">
           <div className="order-head">
+            <ShoppingCart size={16} aria-hidden="true" className="order-head-icon" />
             <h3>Orden Actual</h3>
-            <span className="muted" data-testid="cart-count">
+            <span className="cart-count-pill" data-testid="cart-count">
               {cartUnits} ítems
             </span>
             <button
               type="button"
-              className="btn ghost small"
+              className="cart-clear"
               data-testid="cart-clear"
               onClick={() => {
                 sale.clear();
                 setError(null);
               }}
             >
+              <Trash2 size={14} aria-hidden="true" />
               Limpiar
             </button>
           </div>
 
           {sale.lines.length === 0 ? (
-            <p className="muted order-empty">
-              Tocá un producto para agregarlo a la orden.
-            </p>
+            <div className="order-empty">
+              <ShoppingBasket size={40} aria-hidden="true" />
+              <p className="order-empty-title">El carrito está vacío</p>
+              <p className="muted">Haz clic en los productos para agregarlos</p>
+            </div>
           ) : (
             <ul className="order-lines">
               {sale.lines.map((l) => (
                 <li key={l.variantId} className="order-line" data-testid="order-line">
-                  <div className="order-line-main">
+                  <div className="order-line-info">
                     <span className="order-line-label">{l.label}</span>
-                    <strong>{cop(l.price * l.qty)}</strong>
+                    <span className="order-line-unit">{cop(l.price)} c/u</span>
                   </div>
-                  <div className="order-line-qty">
+                  <div
+                    className="order-line-qty"
+                    role="group"
+                    aria-label={`Cantidad de ${l.label}`}
+                  >
                     <button
                       type="button"
                       className="btn small qty-btn"
-                      aria-label={`Quitar ${l.label}`}
+                      aria-label={`Restar una unidad de ${l.label}`}
                       onClick={() => sale.setQty(l.variantId, l.qty - 1)}
                     >
                       −
@@ -739,20 +766,23 @@ export function Sale({
                     <button
                       type="button"
                       className="btn small qty-btn"
-                      aria-label={`Agregar ${l.label}`}
+                      aria-label={`Agregar una unidad de ${l.label}`}
                       onClick={() => sale.setQty(l.variantId, l.qty + 1)}
                     >
                       +
                     </button>
-                    <button
-                      type="button"
-                      className="btn small ghost qty-btn"
-                      aria-label={`Eliminar ${l.label}`}
-                      onClick={() => sale.setQty(l.variantId, 0)}
-                    >
-                      ✕
-                    </button>
                   </div>
+                  <strong className="order-line-total">
+                    {cop(l.price * l.qty)}
+                  </strong>
+                  <button
+                    type="button"
+                    className="order-line-remove"
+                    aria-label={`Eliminar ${l.label} de la orden`}
+                    onClick={() => sale.setQty(l.variantId, 0)}
+                  >
+                    ✕
+                  </button>
                 </li>
               ))}
             </ul>
@@ -765,15 +795,16 @@ export function Sale({
           </div>
           <div className="row space-between order-total" data-testid="cart-total">
             <span>Total a Pagar</span>
-            <strong>{cop(sale.total)}</strong>
+            <strong className="order-total-value">{cop(sale.total)}</strong>
           </div>
 
           <button
-            className="btn primary big"
+            className="btn primary big pay-cta"
             data-testid="checkout-open"
             disabled={sale.lines.length === 0}
             onClick={openCheckout}
           >
+            <CircleDollarSign size={18} aria-hidden="true" />
             Procesar Cobro
           </button>
 
@@ -831,8 +862,8 @@ export function Sale({
   /* ── Mobile browse: product grid + bottom cart bar ───────────────── */
   return (
     <div className="screen sale">
-      {scanner}
       {searchRow}
+      {scanStatus}
       {grid}
 
       {error && !payOpen && (

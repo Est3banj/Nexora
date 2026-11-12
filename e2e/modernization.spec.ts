@@ -457,6 +457,7 @@ for (const width of [1440, 375]) {
     await page.keyboard.press("F1");
     await page.keyboard.press("F3");
     await expect(page.getByTestId("pay-cash")).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("checkout-confirm")).toBeFocused();
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("receipt-preview")).toBeVisible();
     const ticketsAfterSale = dbOne("SELECT count(*) FROM tickets");

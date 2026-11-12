@@ -22,8 +22,14 @@ export function useActiveMemberRole(tenantId: string | null, userId: string | nu
       void authClient.organization.getActiveMemberRole({ query: { organizationId: tenantId } }).then(result => {
         if (!alive) return;
         if (result.error || !valid(result.data?.role)) {
-          setValue(null);
-          sessionStorage.removeItem(CACHE);
+          // Refresh failed (rate-limit/5xx/transient): KEEP the last verified
+          // hint for this identity — a transient error must not make the
+          // owner's buttons vanish. Authority is enforced server-side regardless;
+          // a definitive role change lands on the next successful refresh.
+          if (!cached) {
+            setValue(null);
+            sessionStorage.removeItem(CACHE);
+          }
           return;
         }
         const next = { key, role: result.data.role };

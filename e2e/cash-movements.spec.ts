@@ -216,7 +216,8 @@ test("M8 existing open legacy keeps consolidated semantics with transfers, base 
   await expect(page.getByTestId("expected-total")).toContainText("14.000");
   await expect(page.getByTestId("expected-card")).toContainText("NO es efectivo físico");
   await expect(page.locator(".cash-count")).toContainText("no solo la gaveta");
-  await expect(page.getByTestId("shift-actor")).toHaveText("No registrado");
+  /* unknown opener → the "· Por …" clause is omitted entirely (no fake copy) */
+  await expect(page.getByTestId("shift-actor")).toHaveCount(0);
   await page.getByTestId("cash-movement-open").click();
   await page.getByTestId("movement-amount").fill("1000");
   await page.getByTestId("movement-reason").fill("Legacy registrado, no sumado");

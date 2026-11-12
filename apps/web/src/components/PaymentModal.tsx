@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PGlite } from "@electric-sql/pglite";
+import { Banknote, BookMarked, CheckCircle2, Smartphone } from "lucide-react";
 import {
   createLocalCustomer,
   customerAccountById,
@@ -64,18 +65,11 @@ function CashSection({
 
   return (
     <div className="cash-section">
-      <label htmlFor="tendered">Efectivo recibido</label>
-      <input
-        id="tendered"
-        data-testid="tendered"
-        inputMode="numeric"
-        className="cash-input"
-        value={tendered}
-        onChange={(e) => setTendered(e.target.value)}
-        placeholder="0"
-      />
-
-      <div className="quick-cash" role="group" aria-label="Billetes">
+      {/* Denominations FIRST (prototype order), then the received/change pair */}
+      <span className="cash-sub-label" id="quick-cash-label">
+        Billetes / Denominaciones Rápidas
+      </span>
+      <div className="quick-cash" role="group" aria-labelledby="quick-cash-label">
         <button
           type="button"
           className="btn small quick-cash-btn"
@@ -97,13 +91,33 @@ function CashSection({
         ))}
       </div>
 
-      <div
-        className={`change-display${changeClass}`}
-        data-testid="change-display"
-        aria-live="polite"
-      >
-        <span className="muted">{changeLabel}</span>
-        <strong>{changeValue}</strong>
+      <div className="cash-pair">
+        <div className="cash-field">
+          <label htmlFor="tendered">Efectivo recibido</label>
+          <div className="cash-input-wrap">
+            <span aria-hidden="true">$</span>
+            <input
+              id="tendered"
+              data-testid="tendered"
+              inputMode="numeric"
+              className="cash-input"
+              value={tendered}
+              onChange={(e) => setTendered(e.target.value)}
+              placeholder="0"
+              autoComplete="off"
+            />
+          </div>
+        </div>
+        <div className="cash-field">
+          <div
+            className={`change-display${changeClass}`}
+            data-testid="change-display"
+            aria-live="polite"
+          >
+            <span className="muted">{changeLabel}</span>
+            <strong>{changeValue}</strong>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -188,6 +202,16 @@ export function PaymentModal({
       setNewPhone("");
       setNewLimit("");
       setNewErr(null);
+      /* Keyboard-first: showModal() applies the UA default focus (first
+         focusable = the X close), which races F1's rAF focus — under load
+         Enter would CLOSE the modal instead of charging. Focus the primary
+         action right after open so Enter always hits the charge path. */
+      const primary = dialog.querySelector<HTMLButtonElement>(
+        method === "transfer"
+          ? '[data-testid="checkout-transfer"]'
+          : '[data-testid="checkout-confirm"]',
+      );
+      if (primary && !primary.disabled) primary.focus();
     } else if (!open && dialog.open) {
       dialog.close();
     }
@@ -333,7 +357,7 @@ export function PaymentModal({
         </button>
       </div>
 
-      {/* 3-method switcher — prototype pay-method-btn grammar */}
+      {/* 3-method switcher — prototype pay-method-btn grammar (icon over label) */}
       <div className="pay-switch" role="tablist" aria-label="Método de pago">
         <button
           type="button"
@@ -344,8 +368,10 @@ export function PaymentModal({
           disabled={busy}
           onClick={() => onMethodChange("cash")}
         >
-          Efectivo
-          <kbd className="pay-kbd">F1</kbd>
+          <Banknote size={18} aria-hidden="true" />
+          <span>
+            Efectivo <kbd className="pay-kbd">F1</kbd>
+          </span>
         </button>
         <button
           type="button"
@@ -356,8 +382,10 @@ export function PaymentModal({
           disabled={busy}
           onClick={() => onMethodChange("transfer")}
         >
-          Transferencia
-          <kbd className="pay-kbd">F2</kbd>
+          <Smartphone size={18} aria-hidden="true" />
+          <span>
+            Transferencia <kbd className="pay-kbd">F2</kbd>
+          </span>
         </button>
         <button
           type="button"
@@ -368,7 +396,8 @@ export function PaymentModal({
           disabled={busy}
           onClick={() => onMethodChange("credit")}
         >
-          Fiado (Crédito)
+          <BookMarked size={18} aria-hidden="true" />
+          <span>Fiado (Crédito)</span>
         </button>
       </div>
 
@@ -588,6 +617,7 @@ export function PaymentModal({
           aria-busy={busy}
           onClick={onConfirmTransfer}
         >
+          <CheckCircle2 size={18} aria-hidden="true" />
           {busy ? "Registrando…" : "Registrar transferencia"}
         </button>
       ) : (
@@ -606,6 +636,7 @@ export function PaymentModal({
             }
           }}
         >
+          <CheckCircle2 size={18} aria-hidden="true" />
           {busy
             ? "Procesando…"
             : method === "credit"
