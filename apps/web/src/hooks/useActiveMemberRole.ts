@@ -13,9 +13,26 @@ export function useActiveMemberRole(tenantId: string | null, userId: string | nu
     let alive = true;
     let cached: { key: string; role: Role } | null = null;
     try {
-      const data = JSON.parse(sessionStorage.getItem(CACHE) ?? "null");
-      if (key && data?.key === key && valid(data.role)) cached = data;
-      else sessionStorage.removeItem(CACHE);
+      const data = JSON.parse(sessionStorage.getItem(CACHE) ?? "null") as { key?: unknown; role?: unknown } | null;
+      if (data && typeof data === "object") {
+        if (!valid(data.role)) {
+          // Corrupt entry — never trust it.
+          sessionStorage.removeItem(CACHE);
+        } else if (key === null) {
+          // No identity YET (session still resolving on boot/reload): keep
+          // the entry. roles-admin 5.2 lifted this hook to App, so it now
+          // runs during the pending-session window — dropping the hint here
+          // would destroy a verified role on every OFFLINE reload (the
+          // refetch cannot run to restore it). It is re-checked the moment
+          // an identity is known, below.
+        } else if (data.key === key) {
+          cached = { key, role: data.role };
+        } else {
+          // Different tenant/user — a stale hint must never resurface
+          // (modernization: "tenant change discards prior cached owner").
+          sessionStorage.removeItem(CACHE);
+        }
+      }
     } catch { sessionStorage.removeItem(CACHE); }
     setValue(cached);
     if (key && tenantId && online) {

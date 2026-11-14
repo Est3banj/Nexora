@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PGlite } from "@electric-sql/pglite";
 import { openLocalDb } from "../src/db/pglite";
 import {
@@ -10,6 +10,7 @@ import {
   pendingCount,
   recountLocal,
 } from "../src/db/local";
+import { DEFAULT_SETTINGS, settingsCacheKey } from "../src/lib/settings";
 
 /**
  * D1-8 · Local-only sale skeleton [D1 E2E GATE — unit side]
@@ -46,6 +47,7 @@ beforeEach(async () => {
 afterEach(async () => {
   release();
   await db.close();
+  vi.unstubAllGlobals();
 });
 
 async function countRows(table: string): Promise<number> {
@@ -292,5 +294,87 @@ describe("stock on sale (D3-1)", () => {
     const invB = await invariant(variantB);
     expect(invA).toEqual({ sum: 95, variants: 95, current: 95 });
     expect(invB).toEqual({ sum: 97, variants: 97, current: 97 });
+  });
+});
+
+describe("NEGATIVE_STOCK local guard (roles-admin 3.8)", () => {
+  function stubNegativeStockCache() {
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) =>
+        k === settingsCacheKey(TENANT)
+          ? JSON.stringify({ ...DEFAULT_SETTINGS, allow_negative_stock: false })
+          : null,
+      setItem: () => {},
+      removeItem: () => {},
+      key: () => null,
+      length: 0,
+    });
+  }
+
+  it("cached allow_negative_stock=false blocks a below-zero sale with NEGATIVE_STOCK (no rows land)", async () => {
+    stubNegativeStockCache();
+    // fixture starts at 100 → bring it to 1
+    await adjustLocalStock(db, TENANT, {
+      variant_id: variantA,
+      delta: -99,
+      reason: "recount",
+      note: "al mínimo",
+    });
+
+    await expect(
+      commitLocalSale(db, TENANT, {
+        lines: [{ variant_id: variantA, qty: 3, unit_price: 4000 }],
+        tendered: 12000,
+      }),
+    ).rejects.toThrow("NEGATIVE_STOCK");
+
+    // whole tx rolled back — nothing committed, nothing enqueued
+    expect(await countRows("tickets")).toBe(0);
+    expect(await countRows("ticket_lines")).toBe(0);
+    expect(await countRows("payments")).toBe(0);
+    // 2 fixture initial movements + 1 adjustment; the blocked sale adds ZERO
+    expect(await countRows("stockdiary")).toBe(3);
+    const stock = await db.query<{ stock: number }>(
+      `SELECT stock FROM product_variants WHERE tenant_id = $1 AND id = $2`,
+      [TENANT, variantA],
+    );
+    expect(stock.rows[0].stock).toBe(1);
+  });
+
+  it("same cache still allows a sale that stays non-negative (qty 1 from stock 1 → 0)", async () => {
+    stubNegativeStockCache();
+    await adjustLocalStock(db, TENANT, {
+      variant_id: variantA,
+      delta: -99,
+      reason: "recount",
+      note: "al mínimo",
+    });
+
+    const sale = await commitLocalSale(db, TENANT, {
+      lines: [{ variant_id: variantA, qty: 1, unit_price: 4000 }],
+      tendered: 4000,
+    });
+    expect(sale.ticket.total).toBe(4000);
+    const stock = await db.query<{ stock: number }>(
+      `SELECT stock FROM product_variants WHERE tenant_id = $1 AND id = $2`,
+      [TENANT, variantA],
+    );
+    expect(stock.rows[0].stock).toBe(0);
+  });
+
+  it("absent cache (defaults) keeps today's oversell-allowed behavior", async () => {
+    // no localStorage stub → readSettingsCache returns DEFAULT_SETTINGS
+    await adjustLocalStock(db, TENANT, {
+      variant_id: variantA,
+      delta: -99,
+      reason: "recount",
+      note: "al mínimo",
+    });
+    const sale = await commitLocalSale(db, TENANT, {
+      lines: [{ variant_id: variantA, qty: 3, unit_price: 4000 }],
+      tendered: 12000,
+    });
+    expect(sale.ticket.total).toBe(12000);
+    expect(await recountLocal(db, TENANT, variantA)).toBe(-2);
   });
 });

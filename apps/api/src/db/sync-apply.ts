@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import {
   contentHash,
   CUSTOMER_ACCOUNT_BY_ID_SQL,
@@ -10,6 +10,8 @@ import {
 } from "@pos/shared";
 import * as t from "./schema";
 import type { Db } from "./index";
+import { loadTenantSettings, type PublicSettings } from "./settings";
+import { isDueño, type Role } from "../auth/ctx";
 
 /**
  * Idempotent mutation apply (task D2-3, design §3) — lives inside src/db/
@@ -133,7 +135,19 @@ export async function applyMutationGroups(
   actor: string,
   envelopes: MutationEnvelope[],
   atomicSale?: string,
+  role?: Role | null,
 ): Promise<SyncResult[]> {
+  // Internal callers also resolve real membership; omission never implies owner.
+  if (role === undefined) {
+    const member = (await db.execute(sql`SELECT role FROM member WHERE "organizationId"=${tenantId} AND "userId"=${actor}`)).rows[0];
+    role = member?.role === "owner" || member?.role === "admin" || member?.role === "member" ? member.role : null;
+  }
+  // roles-admin 3.7 / H3 · module toggles are SERVER-authoritative — load
+  // ONCE per push (design §5: "applyMutationGroups loads row per request"),
+  // never trusting the client cache. Absent row → DEFAULT_SETTINGS, so a
+  // tenant that never touched settings behaves exactly as before this batch.
+  const settings = await loadTenantSettings(db, tenantId);
+
   const ordered = envelopes
     .map((m, index) => ({ m, index }))
     .sort((a, b) => a.m.client_ts - b.m.client_ts || a.index - b.index);
@@ -201,12 +215,18 @@ export async function applyMutationGroups(
         }
         const inner: SyncResult[] = [];
         const dirtyVariants = new Set<string>();
+        if (!isDueño(role)) await validateMemberHints(tx, tenantId, group.map(({ m }) => m));
         // Dependencies, not timestamp ties: a newly-created variant can travel
         // with its first sale. Preserve result alignment with the input group.
         const rank = (m: MutationEnvelope) => m.entity === "ticket" ? 0 : m.entity === "variant" ? 1 : 2;
         const execution = group.map((item, i) => ({ ...item, i })).sort((a,b) => rank(a.m) - rank(b.m));
         for (const { m, i } of execution)
-          inner[i] = await applyOne(tx, tenantId, actor, m, dirtyVariants);
+          inner[i] = !isDueño(role) && m.entity === "variant"
+            // Refresh hints ACK stale offline snapshots, but NEVER write the
+            // catalog or its LWW ledger (including price/cost/absolute stock).
+            ? { client_uuid: m.client_uuid, status: "applied" }
+            : await applyOne(tx, tenantId, actor, m, dirtyVariants, settings, role);
+        if (!isDueño(role)) await validateMemberMovements(tx, tenantId, group.map(({ m }) => m));
         for (const id of ticketIds) {
           const [ticket] = await tx.select().from(t.tickets).where(and(eq(t.tickets.tenant_id, tenantId), eq(t.tickets.id, id)));
           if (ticket?.customer_id) customerIds.add(ticket.customer_id);
@@ -220,6 +240,25 @@ export async function applyMutationGroups(
         }
         // last step of the group: movement log → balance (D3-1 invariant)
         await recomputeStock(tx, tenantId, dirtyVariants);
+        // roles-admin 3.7 · oversell backstop (D2, group-level): AFTER the
+        // per-group recompute, any touched variant below 0 rejects the WHOLE
+        // group (sale atomicity — no partial ticket/payment/stockdiary rows);
+        // sibling groups keep their own transactions, so independent entries
+        // in the same batch still apply. Default allow_negative_stock=true
+        // skips this entirely (stock-sale.test.ts stays green untouched).
+        if (!settings.allow_negative_stock && dirtyVariants.size > 0) {
+          const negatives = await tx
+            .select({ id: t.productVariants.id })
+            .from(t.productVariants)
+            .where(
+              and(
+                eq(t.productVariants.tenant_id, tenantId),
+                inArray(t.productVariants.id, [...dirtyVariants]),
+                lt(t.productVariants.stock, 0),
+              ),
+            );
+          if (negatives.length > 0) throw new InvalidSync();
+        }
         for (let i = 0; i < group.length; i++) {
           const m = group[i].m;
           if (m.entity !== "closedcash" || inner[i].status === "rejected") continue;
@@ -247,12 +286,48 @@ export async function applyMutationGroups(
   return envelopes.map((_, i) => byIndex.get(i)!);
 }
 
+async function validateMemberHints(tx: Tx, tenantId: string, items: MutationEnvelope[]) {
+  for (const m of items) {
+    if (m.entity === "category" || m.entity === "product") throw new InvalidSync();
+    if (m.entity !== "variant" && m.entity !== "stockdiary") continue;
+    const ref = m.payload.ref_ticket_id;
+    if (!ref || (m.entity === "stockdiary" && (m.payload.reason !== "sale" || m.payload.delta >= 0))) throw new InvalidSync();
+    const id = m.entity === "variant" ? m.client_uuid : m.payload.variant_id;
+    const [variant] = await tx.select().from(t.productVariants)
+      .where(and(eq(t.productVariants.tenant_id, tenantId), eq(t.productVariants.id, id)));
+    if (!variant || (m.entity === "variant" && variant.product_id !== m.payload.product_id)) throw new InvalidSync();
+    const [parent] = await tx.select().from(t.tickets).where(and(eq(t.tickets.tenant_id, tenantId), eq(t.tickets.id, ref)));
+    if (!parent && !items.some(i => i.entity === "ticket" && i.client_uuid === ref)) throw new InvalidSync();
+    const [line] = await tx.select({ id: t.ticketLines.id }).from(t.ticketLines).where(and(
+      eq(t.ticketLines.tenant_id, tenantId), eq(t.ticketLines.ticket_id, ref), eq(t.ticketLines.variant_id, id)));
+    if (!line && !items.some(i => i.entity === "ticket_line" && i.payload.ticket_id === ref && i.payload.variant_id === id)) throw new InvalidSync();
+  }
+}
+
+// Evaluate the union of incoming and already-delivered evidence, NOT a closed
+// aggregate requirement on every legacy packet. Ticket/lines/payments can land
+// first; a movement retries until its matching quantity evidence is available.
+async function validateMemberMovements(tx: Tx, tenantId: string, items: MutationEnvelope[]) {
+  for (const m of items) {
+    if (m.entity !== "stockdiary") continue;
+    const p = m.payload;
+    const [parent] = await tx.select().from(t.tickets).where(and(eq(t.tickets.tenant_id, tenantId), eq(t.tickets.id, p.ref_ticket_id!)));
+    if (!parent || parent.status === "voided") throw new InvalidSync();
+    const lines = await tx.select().from(t.ticketLines).where(and(eq(t.ticketLines.tenant_id, tenantId), eq(t.ticketLines.ticket_id, parent.id), eq(t.ticketLines.variant_id, p.variant_id)));
+    const movements = await tx.select().from(t.stockdiary).where(and(eq(t.stockdiary.tenant_id, tenantId), eq(t.stockdiary.ref_ticket_id, parent.id), eq(t.stockdiary.variant_id, p.variant_id)));
+    if (!lines.length || movements.some(row => row.reason !== "sale" || row.delta >= 0)
+      || -movements.reduce((sum, row) => sum + row.delta, 0) > lines.reduce((sum, row) => sum + row.qty, 0)) throw new InvalidSync();
+  }
+}
+
 async function applyOne(
   tx: Tx,
   tenantId: string,
   actor: string,
   m: MutationEnvelope,
   dirtyVariants: Set<string>,
+  settings: PublicSettings,
+  role: Role | null,
 ): Promise<SyncResult> {
   const ledgerRows = await tx
     .select()
@@ -264,6 +339,13 @@ async function applyOne(
     .for("update");
   const stored = ledgerRows[0];
   if (stored && stored.entity !== m.entity) throw new InvalidSync();
+  if (!isDueño(role) && m.entity === "stockdiary") {
+    const [row] = await tx.select().from(t.stockdiary).where(and(eq(t.stockdiary.tenant_id, tenantId), eq(t.stockdiary.id, m.client_uuid)));
+    if (stored && contentHash(stored.payload) !== contentHash(m.payload)) throw new InvalidSync();
+    if (row && (row.variant_id !== m.payload.variant_id || row.ref_ticket_id !== m.payload.ref_ticket_id
+      || row.delta !== m.payload.delta || row.reason !== m.payload.reason || row.note !== (m.payload.note ?? null)
+      || (m.payload.created_at && row.created_at.getTime() !== new Date(m.payload.created_at).getTime()))) throw new InvalidSync();
+  }
   if (m.entity === "cash_movement") {
     const [row] = await tx.select().from(t.cashMovements)
       .where(and(eq(t.cashMovements.tenant_id, tenantId), eq(t.cashMovements.client_uuid, m.client_uuid)));
@@ -301,7 +383,7 @@ async function applyOne(
     }
     if (m.client_ts > stored.client_ts) {
       // LWW: the later single-device write wins (sync §LWW)
-      await upsertEntity(tx, tenantId, m, dirtyVariants);
+      await upsertEntity(tx, tenantId, m, dirtyVariants, settings);
       await tx
         .update(t.syncLog)
         .set({
@@ -337,7 +419,7 @@ async function applyOne(
     };
   }
 
-  await upsertEntity(tx, tenantId, m, dirtyVariants);
+  await upsertEntity(tx, tenantId, m, dirtyVariants, settings);
   await tx
     .insert(t.syncLog)
     .values({
@@ -372,6 +454,7 @@ async function upsertEntity(
   tenantId: string,
   m: MutationEnvelope,
   dirtyVariants: Set<string>,
+  settings: PublicSettings,
 ): Promise<void> {
   const now = new Date();
   const cu = m.client_uuid;
@@ -472,6 +555,13 @@ async function upsertEntity(
       // leak into arqueo's pending line and dashboard pending_count, poisoning
       // the cash close — there is no pending→confirmed flip for credit.
       if (p.method === "credit" && p.status !== "confirmed") throw new InvalidSync();
+      // roles-admin 3.7 · fiado backstop (D2 group-level, H3): fiado OFF
+      // rejects the credit payment for EVERY role. Throwing here rolls back
+      // the WHOLE group — a ticket/lines/stockdiary must never apply without
+      // its credit payment (invariant SUM(payments) === ticket.total; NEVER
+      // a per-item payment rejection). Duplicates above the toggle flip are
+      // acked before upsertEntity runs, so already-applied debt replays fine.
+      if (p.method === "credit" && !settings.enable_fiado) throw new InvalidSync();
       // No orphan credit claims (credit-sales §Customer required): a credit
       // payment needs a parent ticket that exists in-tenant AND carries a
       // customer. Cash/transfer never pay a customer — skip the lookup.
@@ -751,6 +841,11 @@ async function upsertEntity(
       return;
     }
     case "credit_abono": {
+      // roles-admin 3.7 · fiado backstop (D2): abonos collect credit debt —
+      // fiado OFF rejects them for EVERY role (abonos travel as their own
+      // solo group, so the rejection is naturally one entry; the group-level
+      // throw keeps the payment invariant above intact).
+      if (!settings.enable_fiado) throw new InvalidSync();
       const p = m.payload;
       // (1) the customer must exist IN THIS TENANT (product→category pattern
       // `:473`) — cross-tenant abonos die here with the same validation

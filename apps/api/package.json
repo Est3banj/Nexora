@@ -10,6 +10,7 @@
     "test": "vitest run",
     "seed": "tsx src/cli/seed.ts",
     "tenant-create": "tsx src/cli/tenant-create.ts",
+    "owner-provision": "tsx src/cli/owner-provision.ts",
     "sync-status": "tsx src/cli/sync-status.ts",
     "backup-status": "tsx src/cli/backup-status.ts",
     "db:push": "drizzle-kit push",

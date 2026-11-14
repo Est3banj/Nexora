@@ -3,6 +3,7 @@ import { canonicalJson, mutationEnvelopeSchema, saleDigest, saleManifestSchema, 
 import { db, pool, type Db } from "./index";
 import * as t from "./schema";
 import { applyMutationGroups } from "./sync-apply";
+import type { Role } from "../auth/ctx";
 
 export async function migrateSaleStage() { await pool.query(SALE_STAGE_MIGRATION_SQL); }
 function fail(message: string, statusCode = 409): never { throw Object.assign(new Error(message), { statusCode }); }
@@ -70,7 +71,7 @@ function validateSale(manifest: SaleManifest, items: MutationEnvelope[]) {
   for (const [id, qty] of quantities) if (deltas.get(id) !== -qty) fail("sale_invalid_movement", 400);
 }
 
-export async function finalizeSale(tenant: string, actor: string, operation: string, manifest: SaleManifest) {
+export async function finalizeSale(tenant: string, actor: string, operation: string, manifest: SaleManifest, role: Role | null = null) {
   try { return await db.transaction(async tx => {
     await lock(tx, tenant);
     const row = (await tx.execute(sql`SELECT manifest,results FROM sync_sale_operations WHERE tenant_id=${tenant} AND operation_id=${operation} FOR UPDATE`)).rows[0] as Operation | undefined;
@@ -118,7 +119,7 @@ export async function finalizeSale(tenant: string, actor: string, operation: str
     // A delivered offline sale remains evidence even after another device
     // closes. applyMutationGroups freezes existing closed-sale rows; new
     // evidence can land, but never recomputes the immutable closed snapshot.
-    const results = await applyMutationGroups(tx as unknown as Db, tenant, actor, items, manifest.ticket_id);
+    const results = await applyMutationGroups(tx as unknown as Db, tenant, actor, items, manifest.ticket_id, role);
     if (results.some(r => r.status === "rejected")) fail(`sale_rejected:${results.find(r => r.status === "rejected")?.reason}`);
     await tx.execute(sql`UPDATE sync_sale_operations SET results=${JSON.stringify(results)}::jsonb WHERE tenant_id=${tenant} AND operation_id=${operation}`);
     await tx.execute(sql`DELETE FROM sync_sale_parts WHERE tenant_id=${tenant} AND operation_id=${operation}`);

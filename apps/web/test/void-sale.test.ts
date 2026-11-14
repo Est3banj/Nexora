@@ -1,15 +1,16 @@
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { PGlite } from "@electric-sql/pglite";
 import { openLocalDb } from "../src/db/pglite";
 import { commitLocalSale, createLocalProduct, getLocalTicket, recountLocal, openLocalShift } from "../src/db/local";
 import { mirrorVoidedSale } from "../src/db/void-sale";
+import { annulTicket, AnnulError } from "../src/db/annul";
 import { groupQueue } from "../src/sync/batch";
 import { DASHBOARD_SUMMARY_SQL, EXPECTED_FROM_PAYMENTS_SQL, localDate } from "@pos/shared";
 
 const tenant = "33333333-3333-4333-8333-333333333333";
 let db: PGlite;
 beforeEach(async () => { db = (await openLocalDb({ url: "memory://", locks: null }))!.db; });
-afterEach(async () => { await db.close(); });
+afterEach(async () => { vi.unstubAllGlobals(); await db.close(); });
 
 it("mirrors compensation once, keeps originals and later offline sale, preserves cost in variant queue", async () => {
   await openLocalShift(db, tenant);
@@ -46,4 +47,50 @@ it("keeps two sales separate when queue ordering interleaves children, and prese
   expect(groups.map(g => g.length)).toEqual([54, 2]);
   expect(groups[0].some(r => r.id === "pay-b")).toBe(false);
   expect(groups[1].map(r => r.id)).toEqual(["b", "pay-b"]);
+});
+
+// roles-admin 4.5 · annulTicket passes the optional `code` in the body and
+// maps the D3 403 table to the exact Spanish operator copy (design D3).
+it("annulTicket sends `code` in the body only when provided", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+    sent.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+    return Response.json({ error: "annul_code_required" }, { status: 403 });
+  }));
+
+  await expect(annulTicket(db, tenant, crypto.randomUUID(), "Error de cobro"))
+    .rejects.toThrow("Ingresá el código de anulación para anular");
+  expect(sent[0]).toEqual({ reason: "Error de cobro" });
+  expect(sent[0]).not.toHaveProperty("code");
+
+  await expect(annulTicket(db, tenant, crypto.randomUUID(), "Error de cobro", "K7QW2M9R"))
+    .rejects.toThrow("Ingresá el código de anulación para anular");
+  expect(sent[1]).toEqual({ reason: "Error de cobro", code: "K7QW2M9R" });
+});
+
+it("maps every D3 403 body to its exact Spanish copy (design D3 table)", async () => {
+  const cases = [
+    [{ error: "annul_code_required" }, "Ingresá el código de anulación para anular"],
+    [{ error: "annul_code_invalid", detail: "expired" }, "El código de anulación venció; pedí uno nuevo en Administración"],
+    [{ error: "annul_code_invalid", detail: "mismatch" }, "Código de anulación incorrecto"],
+    [{ error: "owner_only" }, "Solo el dueño o un administrador puede anular ventas"],
+  ] as const;
+  for (const [payload, message] of cases) {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(payload, { status: 403 })));
+    await expect(
+      annulTicket(db, tenant, crypto.randomUUID(), "Error de cobro", "ABCDEFGH"),
+    ).rejects.toThrow(message);
+  }
+  // operator-facing copy stays an AnnulError (callers branch on it)
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "owner_only" }, { status: 403 })));
+  await expect(annulTicket(db, tenant, crypto.randomUUID(), "Error de cobro")).rejects.toBeInstanceOf(AnnulError);
+});
+
+it("a 200 with the code supplied continues into the local mirror", async () => {
+  const ticketId = crypto.randomUUID();
+  vi.stubGlobal("fetch", vi.fn(async () =>
+    Response.json({ ticket_id: ticketId, stockdiary: [] })));
+  await expect(
+    annulTicket(db, tenant, ticketId, "Error de cobro", "K7QW2M9R"),
+  ).resolves.toBeUndefined();
 });

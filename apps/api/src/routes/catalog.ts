@@ -18,6 +18,12 @@ const variantInputSchema = createProductInputSchema.shape.variant;
  * Catalog vertical slice (task D1-7) — every handler reads/writes through
  * `repoFor(req)` = scopedRepo(db, session tenant). No raw db access here
  * (lint gate enforces it).
+ *
+ * roles-admin 2.1 · the 7 MUTATIONS are Dueño-tier (`requireDueño` →
+ * 403 `{error:"forbidden", detail:"dueño_only"}`); every GET stays
+ * any-auth (read-only continuity — catalog spec §Member catalog reads
+ * still work). Member catalog WRITES also die per-item on the sync push
+ * (sync/route.ts D2 pre-scan) — both layers are the authority.
  */
 export async function catalogRoutes(app: FastifyInstance): Promise<void> {
   app.get(
@@ -28,7 +34,7 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
 
   app.post(
     "/api/catalog/categories",
-    { preHandler: app.requireAuth },
+    { preHandler: [app.requireAuth, app.requireDueño] },
     async (req, reply) => {
       const input = createCategoryInputSchema.parse(req.body);
       const category = await repoFor(req).categories.create({
@@ -40,7 +46,7 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
 
   app.patch(
     "/api/catalog/categories/:id",
-    { preHandler: app.requireAuth },
+    { preHandler: [app.requireAuth, app.requireDueño] },
     async (req, reply) => {
       const { id } = uuidParam.parse(req.params);
       const input = updateCategoryInputSchema.parse(req.body);
@@ -81,7 +87,7 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
 
   app.post(
     "/api/catalog/products",
-    { preHandler: app.requireAuth },
+    { preHandler: [app.requireAuth, app.requireDueño] },
     async (req, reply) => {
       // zod strips unknown keys → a forged tenant_id in the body is ignored
       // by construction (tenancy-auth spec §Forged tenant_id ignored).
@@ -99,7 +105,7 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
   /** Extra size/price on an existing product (two sizes, independent prices). */
   app.post(
     "/api/catalog/products/:id/variants",
-    { preHandler: app.requireAuth },
+    { preHandler: [app.requireAuth, app.requireDueño] },
     async (req, reply) => {
       const { id } = uuidParam.parse(req.params);
       const input = variantInputSchema.parse(req.body);
@@ -111,7 +117,7 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
 
   app.patch(
     "/api/catalog/products/:id",
-    { preHandler: app.requireAuth },
+    { preHandler: [app.requireAuth, app.requireDueño] },
     async (req, reply) => {
       const { id } = uuidParam.parse(req.params);
       const input = updateProductInputSchema.parse(req.body);
@@ -123,7 +129,7 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
 
   app.patch(
     "/api/catalog/variants/:id",
-    { preHandler: app.requireAuth },
+    { preHandler: [app.requireAuth, app.requireDueño] },
     async (req, reply) => {
       const { id } = uuidParam.parse(req.params);
       const input = updateVariantInputSchema.parse(req.body);
@@ -136,7 +142,7 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
   /** Manual stock adjustment — reason + note are mandatory (catalog spec). */
   app.post(
     "/api/catalog/variants/:id/stock-adjust",
-    { preHandler: app.requireAuth },
+    { preHandler: [app.requireAuth, app.requireDueño] },
     async (req, reply) => {
       const { id } = uuidParam.parse(req.params);
       const input = adjustStockInputSchema.parse(req.body);

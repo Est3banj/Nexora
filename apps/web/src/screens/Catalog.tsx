@@ -4,11 +4,18 @@ import { Plus, Search, SquarePen } from "lucide-react";
 import { catalogError, createLocalCategory, listCategories, listProducts, updateLocalProduct, type LocalCategory, type LocalProduct } from "../db/local";
 import { ProductIcon } from "../components/ProductIcon";
 import { ProductModal } from "../components/ProductModal";
+import { isDueñoHint, type RoleHint } from "../components/navigation";
 
 const cop = (n: number) => new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 0 }).format(n);
-type Props = { db: PGlite; tenantId: string; refreshToken: number; showToast: (msg: string) => void; onMutated: () => void; pendingVariantId?: string | null; onPendingVariantUsed?: () => void };
+type Props = { db: PGlite; tenantId: string; role: RoleHint; refreshToken: number; showToast: (msg: string) => void; onMutated: () => void; pendingVariantId?: string | null; onPendingVariantUsed?: () => void };
 
-export function Catalog({ db, tenantId, refreshToken, showToast, onMutated, pendingVariantId, onPendingVariantUsed }: Props) {
+export function Catalog({ db, tenantId, role, refreshToken, showToast, onMutated, pendingVariantId, onPendingVariantUsed }: Props) {
+  /* roles-admin 5.5 / menu-visibility §Catálogo read-only for member:
+   * browse/search/stock stay for every role, but create/edit/deactivate/
+   * category affordances render ONLY for the Dueño tier. `null` (unverified)
+   * is NOT dueño → hidden: unverified = no writes (server gates re-check
+   * anyway — this is a hint, never authority). */
+  const canWrite = isDueñoHint(role);
   const [products, setProducts] = useState<LocalProduct[]>([]);
   const [categories, setCategories] = useState<LocalCategory[]>([]);
   const [search, setSearch] = useState("");
@@ -31,8 +38,14 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated, pend
   useEffect(() => {
     if (!pendingVariantId) return;
     const product = products.find(p => p.variants.some(v => v.id === pendingVariantId));
-    if (product) { setEditing(product); setOpen(true); onPendingVariantUsed?.(); }
-  }, [products, pendingVariantId, onPendingVariantUsed]);
+    if (product) {
+      // The notification hand-off opens the EDIT form — a write surface, so
+      // it honours the same read-only gate. Always consume the pending id
+      // (otherwise it would re-fire on every product refresh).
+      if (canWrite) { setEditing(product); setOpen(true); }
+      onPendingVariantUsed?.();
+    }
+  }, [products, pendingVariantId, onPendingVariantUsed, canWrite]);
   async function mutate(fn: () => Promise<unknown>, message: string) {
     if (busyRef.current) return;
     busyRef.current = true; setBusy(true); setError(null);
@@ -47,24 +60,24 @@ export function Catalog({ db, tenantId, refreshToken, showToast, onMutated, pend
       <div className="catalog-filters"><div className="catalog-search-wrap"><Search size={16} aria-hidden="true" /><input type="search" data-testid="catalog-search" aria-label="Buscar en catálogo" placeholder="Buscar producto o SKU…" value={search} onChange={e => setSearch(e.target.value)} /></div>
         <select aria-label="Filtrar categoría" data-testid="catalog-category-filter" value={category} onChange={e => setCategory(e.target.value)}><option value="all">Todas las Categorías</option><option value="">Sin categoría</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
       </div>
-      <button className="btn primary" data-testid="product-new" onClick={() => { setEditing(null); setOpen(true); }}><Plus size={16} aria-hidden="true" /> Nuevo Producto</button>
+      {canWrite && <button className="btn primary" data-testid="product-new" onClick={() => { setEditing(null); setOpen(true); }}><Plus size={16} aria-hidden="true" /> Nuevo Producto</button>}
     </div>
     {error && <p className="error" role="alert" data-testid="catalog-error">{error}</p>}
     {loading && <p role="status">Cargando catálogo…</p>}
     <div className="catalog-cards" aria-busy={loading}>
       {visible.map(p => <article className="catalog-tile" data-testid="product-item" key={p.id}>
-        <div className="catalog-tile-head"><span className="catalog-category">{categories.find(c => c.id === p.category_id)?.name ?? "Sin categoría"}</span><button className={`catalog-state ${p.active ? "is-active" : ""}`} data-testid="toggle-active" disabled={busy} aria-label={`${p.active ? "Desactivar" : "Reactivar"} ${p.name}`} onClick={() => void mutate(() => updateLocalProduct(db, tenantId, p.id, { active: !p.active }), `${p.active ? "Producto desactivado" : "Producto reactivado"} (pendiente de sync)`)}>{p.active ? "Activo" : "Inactivo"}</button></div>
+        <div className="catalog-tile-head"><span className="catalog-category">{categories.find(c => c.id === p.category_id)?.name ?? "Sin categoría"}</span>{canWrite && <button className={`catalog-state ${p.active ? "is-active" : ""}`} data-testid="toggle-active" disabled={busy} aria-label={`${p.active ? "Desactivar" : "Reactivar"} ${p.name}`} onClick={() => void mutate(() => updateLocalProduct(db, tenantId, p.id, { active: !p.active }), `${p.active ? "Producto desactivado" : "Producto reactivado"} (pendiente de sync)`)}>{p.active ? "Activo" : "Inactivo"}</button>}</div>
         <h3>{p.photo ? <img data-testid="product-photo-thumb" src={p.photo} alt="" /> : <ProductIcon iconKey={p.icon_key} />} {p.name}</h3>
         <div className="catalog-variant-list">{p.variants.map(v => <div className="catalog-variant-summary" key={v.id}>
           <strong>{v.name}{!v.active && " · Inactiva"}</strong>
           <p className="catalog-sku">SKU: {v.code ?? "Sin código"}</p>
           <dl><div><dt>Precio Venta:</dt><dd className="catalog-price">{cop(v.price)}</dd></div><div><dt>Costo:</dt><dd>{v.cost == null ? "Sin configurar" : cop(v.cost)}</dd></div><div><dt>Stock Actual:</dt><dd className={v.stock <= (v.low_stock_threshold ?? 0) ? "catalog-low" : ""}>{v.stock} un.</dd></div></dl>
         </div>)}</div>
-        <button className="btn catalog-edit" data-testid="product-edit" onClick={() => { setEditing(p); setOpen(true); }}><SquarePen size={14} aria-hidden="true" /> Editar</button>
+        {canWrite && <button className="btn catalog-edit" data-testid="product-edit" onClick={() => { setEditing(p); setOpen(true); }}><SquarePen size={14} aria-hidden="true" /> Editar</button>}
       </article>)}
     </div>
     {!loading && !visible.length && <div className="empty-state" data-testid="empty-catalog-note"><h2>{products.length ? "Sin resultados" : "Catálogo vacío"}</h2><p>{products.length ? "Probá otra búsqueda o categoría." : "Creá el primer producto con Nuevo Producto para empezar a vender."}</p></div>}
-    <details className="catalog-categories"><summary>Administrar categorías</summary><form onSubmit={e => { e.preventDefault(); if (newCategory.trim()) void mutate(async () => { await createLocalCategory(db, tenantId, { name: newCategory.trim() }); setNewCategory(""); }, "Categoría creada (pendiente de sync)"); }}><label htmlFor="new-category">Nueva categoría</label><div className="row gap"><input id="new-category" data-testid="new-category-name" maxLength={60} required value={newCategory} onChange={e => setNewCategory(e.target.value)} /><button className="btn" data-testid="category-create" disabled={busy}>Agregar</button></div></form></details>
+    {canWrite && <details className="catalog-categories"><summary>Administrar categorías</summary><form onSubmit={e => { e.preventDefault(); if (newCategory.trim()) void mutate(async () => { await createLocalCategory(db, tenantId, { name: newCategory.trim() }); setNewCategory(""); }, "Categoría creada (pendiente de sync)"); }}><label htmlFor="new-category">Nueva categoría</label><div className="row gap"><input id="new-category" data-testid="new-category-name" maxLength={60} required value={newCategory} onChange={e => setNewCategory(e.target.value)} /><button className="btn" data-testid="category-create" disabled={busy}>Agregar</button></div></form></details>}
     <ProductModal open={open} product={editing} categories={categories} db={db} tenantId={tenantId} onClose={() => setOpen(false)} onSaved={() => { setOpen(false); void refresh(); onMutated(); showToast(`${editing ? "Producto actualizado" : "Producto creado"} (pendiente de sync)`); }} />
   </section>;
 }

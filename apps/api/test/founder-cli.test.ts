@@ -208,7 +208,7 @@ describe("D4-1 · founder sync-status isolation (A=7, B=2, never 9)", () => {
     // no business payloads on the row shape
     for (const r of rows) {
       expect(Object.keys(r).sort()).toEqual(
-        ["errors", "last_error", "last_sync", "name", "pending", "tenant_id", "users"].sort(),
+        ["errors", "last_error", "last_sync", "name", "slug", "pending", "tenant_id", "users"].sort(),
       );
     }
   });

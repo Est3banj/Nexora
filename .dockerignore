@@ -1,0 +1,36 @@
+# Docker build-context exclusions — context is the REPO ROOT
+# (docker/compose.yml → build.context: ..).
+# STATUS: prepared, build UNVERIFIED (no `docker build` was executed).
+
+# Secrets — never let an env file reach the image or the build cache.
+.env
+.env.local
+.env.*.local
+
+# Dependencies and VCS: rebuilt inside the image, huge, and .git is noise.
+node_modules/
+**/node_modules
+.git
+
+# Test/tooling output and local artifacts.
+# (dist/ is excluded from the CONTEXT only: the SPA is bind-mounted at
+# runtime by compose — ../apps/web/dist:/srv/web — never COPYed into an image.
+# Remove these two lines if you ever add a Dockerfile that COPYs dist/.)
+test-results/
+playwright-report/
+coverage/
+.vite/
+dist/
+**/dist
+*.tsbuildinfo
+*.log
+var/
+logs/
+
+# Host-only / non-repo trees that may sit next to the sources.
+openspec/
+Downloads/
+dumps/
+
+# OS noise.
+.DS_Store

@@ -8,6 +8,7 @@ import {
   saleManifestSchema,
 } from "@pos/shared";
 import { z } from "zod";
+import { isDueño } from "../auth/ctx";
 import { uploadSalePart, finalizeSale } from "../db/sale-stage";
 import { db } from "../db";
 import { applyMutationGroups } from "../db/sync-apply";
@@ -35,7 +36,7 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
   app.post("/api/sync/sales/:operation/finalize", { preHandler: app.requireAuth }, async (req) => {
     const { operation } = z.object({ operation: z.uuid() }).parse(req.params);
     const manifest = saleManifestSchema.parse(req.body);
-    return finalizeSale(req.ctx.tenantId!, req.ctx.userId, operation, manifest);
+    return finalizeSale(req.ctx.tenantId!, req.ctx.userId, operation, manifest, req.ctx.role);
   });
   app.post(
     "/api/sync/mutations",
@@ -51,19 +52,37 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
       body.mutations.forEach((raw, index) => {
         const parsed = mutationEnvelopeSchema.safeParse(raw);
         if (parsed.success) {
-          // D4 owner gate: abonos are owner-only money (same trust level as
-          // transfer confirm), but enforcement is PER-ITEM here — NOT HTTP 403.
-          // A 403 would nuke the member's legitimate sale mutations riding the
-          // same batch ("one poison entry never fails the batch", `:22-25`).
-          // Same `rejected/validation` shape an old server would produce for an
-          // unknown entity, so the response contract stays byte-compatible.
-          if (req.ctx.role !== "owner" && parsed.data.entity === "credit_abono") {
-            preResults.set(index, {
-              client_uuid: parsed.data.client_uuid,
-              status: "rejected",
-              reason: "validation",
-            });
-            return;
+          // roles-admin 2.5 (D2) · member per-item pre-scan — NEVER HTTP 403:
+          // one poison catalog entry must not nuke the member's legitimate
+          // sale mutations riding the same batch ("one poison entry never
+          // fails the batch", `:22-25`). Same `rejected/validation` shape an
+          // old server would produce, so the response contract stays
+          // byte-compatible and member batches stay 2xx.
+          //
+          // The OLD `credit_abono` owner-only gate (former :54-67, D4) is
+          // DELETED — roles-admin decision #1 supersedes fiado decision #6:
+          // any verified role (member included) may register abonos.
+          //
+          // This is only an early shape filter. ref_ticket_id is an untrusted
+          // grouping hint, NEVER authority. sync-apply validates tenant-owned
+          // sale evidence and treats member variant snapshots as read-only hints.
+          if (!isDueño(req.ctx.role)) {
+            const p = parsed.data.payload as Record<string, unknown>;
+            const inSale = typeof p.ref_ticket_id === "string";
+            const forbidden =
+              parsed.data.entity === "category" ||
+              parsed.data.entity === "product" ||
+              ((parsed.data.entity === "variant" ||
+                parsed.data.entity === "stockdiary") &&
+                !inSale);
+            if (forbidden) {
+              preResults.set(index, {
+                client_uuid: parsed.data.client_uuid,
+                status: "rejected",
+                reason: "validation",
+              });
+              return;
+            }
           }
           valid.push({ index, envelope: parsed.data });
           return;
@@ -82,6 +101,8 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
             tenantId,
             actor,
             valid.map((v) => v.envelope),
+            undefined,
+            req.ctx.role,
           )
         : [];
 

@@ -1,5 +1,19 @@
-# Skeleton — full compose lands in D4-5 (deploy task).
-# Local dev does NOT use docker: pnpm dev runs api + web directly.
+# NEXORA — production compose template (Partition B · deploy prep).
+# STATUS: prepared, build/deploy UNVERIFIED — no `docker build`, no
+# `docker compose up`, no migration against a real database was executed.
+#
+# Every value comes from an env file next to this one: copy `.env.example`
+# to `.env` and fill it in. `.env` is git-ignored (root .gitignore) and
+# excluded from the build context (.dockerignore) — never commit it.
+#
+# Services
+#   caddy   TLS + SPA static files + the ONLY reverse proxy for /api/*
+#   api     the Fastify API (Dockerfile.api)
+#   db      Postgres 16, not published to the host — only `api` reaches it
+#   backup  on-demand pg_dump (profile "backup", see DEPLOY.md §9)
+#
+# Ports: 80/443 only. The API port is deliberately NOT published.
+
 services:
   caddy:
     image: caddy:2-alpine
@@ -8,44 +22,108 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Built SPA (run `pnpm --filter @pos/web build` on the host first —
+      # see DEPLOY.md §4). `:ro`: Caddy never writes it.
+      - ../apps/web/dist:/srv/web:ro
+      # Persistent TLS assets + Caddy config: without these every restart
+      # re-issues certificates and re-downloads the config history.
+      - caddy_data:/data
+      - caddy_config:/config
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      # Caddy's admin endpoint (localhost:2019 inside the container) answers
+      # with the live config — a cheap liveness probe that needs no TLS.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2019/config/ >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: &log_rotation
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   api:
     build:
       context: ..
       dockerfile: docker/Dockerfile.api
     environment:
-      DATABASE_URL: postgres://pos:pos@db:5432/pos
       NODE_ENV: production
+      # Must point at THIS compose network's db service, with the same
+      # user/password/db as the POSTGRES_* values below.
+      DATABASE_URL: ${NEXORA_DATABASE_URL:?NEXORA_DATABASE_URL is required (postgres://user:pass@db:5432/name)}
+      BETTER_AUTH_SECRET: ${NEXORA_BETTER_AUTH_SECRET:?NEXORA_BETTER_AUTH_SECRET is required}
+      BETTER_AUTH_URL: ${NEXORA_BETTER_AUTH_URL:?NEXORA_BETTER_AUTH_URL is required}
+      TRUSTED_ORIGINS: ${NEXORA_TRUSTED_ORIGINS:?NEXORA_TRUSTED_ORIGINS is required}
+      PORT: "3000"
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      # /api/health is READINESS: it answers 503 while the DB or the schema
+      # is not there, so `api` only becomes healthy when it can serve traffic.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    logging: *log_rotation
 
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: pos
-      POSTGRES_PASSWORD: pos
-      POSTGRES_DB: pos
+      POSTGRES_USER: ${NEXORA_DB_USER:?NEXORA_DB_USER is required}
+      POSTGRES_PASSWORD: ${NEXORA_DB_PASSWORD:?NEXORA_DB_PASSWORD is required}
+      POSTGRES_DB: ${NEXORA_DB_NAME:?NEXORA_DB_NAME is required}
+    # NOT published: no `ports:` on purpose. Only containers on this
+    # network can talk to Postgres.
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U pos -d pos"]
+      # $$ so compose leaves $POSTGRES_* for the shell inside the container.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 3s
-      retries: 10
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    logging: *log_rotation
 
+  # On-demand dump. Never runs during `docker compose up` (profile).
+  #   docker compose --profile backup run --rm backup
+  # Schedule it with host cron — see DEPLOY.md §9.
   backup:
     image: postgres:16-alpine
+    profiles: ["backup"]
     volumes:
       - ./backup.sh:/backup.sh:ro
       - backups:/backups
-      - pgdata:ro
+    environment:
+      DB_HOST: db
+      DB_USER: ${NEXORA_DB_USER:?NEXORA_DB_USER is required}
+      DB_NAME: ${NEXORA_DB_NAME:?NEXORA_DB_NAME is required}
+      # PGPASSWORD stays an ENVIRONMENT variable on purpose: argv is visible
+      # in `ps` on the host.
+      PGPASSWORD: ${NEXORA_DB_PASSWORD:?NEXORA_DB_PASSWORD is required}
+      KEEP: "14"
     entrypoint: ["/bin/sh", "/backup.sh"]
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    restart: "no"
+    logging: *log_rotation
 
 volumes:
   pgdata:
+    name: nexora_pgdata
   backups:
+    name: nexora_backups
+  caddy_data:
+    name: nexora_caddy_data
+  caddy_config:
+    name: nexora_caddy_config

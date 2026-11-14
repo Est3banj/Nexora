@@ -1,9 +1,60 @@
-# Skeleton — D4-5 turns this into the real TLS reverse proxy.
-:443 {
-    tls internal
-    reverse_proxy api:3000
-}
+# NEXORA — TLS reverse proxy + SPA host (Partition B · deploy prep).
+# STATUS: prepared, build/deploy UNVERIFIED — this file was never loaded by
+# a running Caddy (no `docker build` / `docker compose up` was executed).
+#
+# ── Before first boot ──────────────────────────────────────────────────────
+# 1. Replace `pos.example.com` with the REAL DNS name (A/AAAA → this host).
+#    With a real name Caddy issues a Let's Encrypt certificate by itself —
+#    then DELETE the `tls internal` line. `tls internal` is only for the
+#    placeholder/lab phase and produces certificates browsers will reject.
+# 2. Validate without starting anything:
+#      docker compose -f docker/compose.yml config
+#      docker compose -f docker/compose.yml run --rm --no-deps \
+#        --entrypoint caddy caddy validate \
+#        --config /etc/caddy/Caddyfile --adapter caddyfile
+# 3. The SPA must already be built on the host: apps/web/dist/index.html
+#    (compose bind-mounts ../apps/web/dist → /srv/web).
+#
+# ── Routing contract (exclusive) ───────────────────────────────────────────
+#   /api/*   → api:3000  — the ONLY thing proxied. Auth, settings and every
+#                          business payload live under /api/*, so a single
+#                          prefix rule cannot leak them into the static tree.
+#   everything else → the built SPA in /srv/web (index.html fallback)
+#
+# The API container's port is not published: this file is the only way in.
 
-:80 {
-    respond "POS Piloto — use HTTPS" 301
+pos.example.com {
+	encode gzip
+
+	# API first: `handle` blocks are mutually exclusive, so /api/* never
+	# falls through to the static handler (and vice versa).
+	@api path /api/*
+	handle @api {
+		# X-Forwarded-For is appended here; the API honours it only when the
+		# peer address is inside Docker's private range (trustProxy CIDR in
+		# apps/api/src/app.ts), so its rate limit keys on the real client IP.
+		reverse_proxy api:3000
+	}
+
+	handle {
+		root * /srv/web
+		# SPA fallback: unknown paths render the shell, /api/* cannot reach
+		# this block (handled above).
+		try_files {path} /index.html
+		file_server
+
+		# Default for everything served from /srv/web: revalidate. The
+		# second rule overrides the first for /assets/* (same field, later
+		# match wins), which is what a content-hashed file wants.
+		header {
+			Cache-Control "no-cache"
+		}
+		header /assets/* {
+			Cache-Control "public, max-age=31536000, immutable"
+		}
+	}
+
+	# PLACEHOLDER ONLY — see step 1 above. Real deployments use the
+	# automatic HTTPS certificate and drop this line.
+	tls internal
 }

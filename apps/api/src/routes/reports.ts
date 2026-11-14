@@ -22,11 +22,17 @@ function resolveRange(q: z.infer<typeof rangeQuerySchema>): {
  * top products (qty/revenue/name tiebreak), low stock (threshold or
  * system default). Tenant scoping is structural: repoFor(req) binds $1 to
  * the session tenant, so cross-tenant figures can never appear.
+ *
+ * roles-admin 2.2 · FINANCIAL datasets (dashboard, sales-by-day,
+ * top-products) are Dueño-tier. UNTOUCHED any-auth reads: low-stock,
+ * customer-balances, customer-accounts (+ routes/rehydrate.ts) — the
+ * cashier's operational/offline workflow must never brick (reports spec
+ * §Operational reads stay open to any member).
  */
 export async function reportRoutes(app: FastifyInstance): Promise<void> {
   app.get(
     "/api/reports/sales-by-day",
-    { preHandler: app.requireAuth },
+    { preHandler: [app.requireAuth, app.requireDueño] },
     async (req) => {
       const range = resolveRange(rangeQuerySchema.parse(req.query));
       return { range, rows: await repoFor(req).reports.salesByDay(range) };
@@ -35,7 +41,7 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
 
   app.get(
     "/api/reports/top-products",
-    { preHandler: app.requireAuth },
+    { preHandler: [app.requireAuth, app.requireDueño] },
     async (req) => {
       const range = resolveRange(rangeQuerySchema.parse(req.query));
       return { range, rows: await repoFor(req).reports.topProducts(range) };
@@ -54,8 +60,10 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
   /**
    * Por Cobrar (fiado) — server parity for the balance query the Crédito
    * screen runs locally (same shared SQL, fixture parity both stores).
-   * Any authed role: balances are visible to members, only the abono FORM
-   * is owner-gated (D4, enforced on the sync push path).
+   * Any authed role: balances are visible to members (reports spec §
+   * Operational reads); abonos open to any verified role since roles-admin
+   * decision #1 (supersedes fiado #6 — sync/route.ts no longer role-gates
+   * credit_abono).
    */
   app.get(
     "/api/reports/customer-balances",
@@ -71,7 +79,7 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
 
   app.get(
     "/api/reports/dashboard",
-    { preHandler: app.requireAuth },
+    { preHandler: [app.requireAuth, app.requireDueño] },
     async (req) => {
       const range = resolveRange(rangeQuerySchema.parse(req.query));
       const repo = repoFor(req);

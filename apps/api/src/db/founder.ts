@@ -19,6 +19,7 @@ import { pool } from "./index";
 export type FounderSyncStatus = {
   tenant_id: string;
   name: string;
+  slug: string;
   users: number;
   pending: number;
   last_sync: Date | null;
@@ -36,6 +37,7 @@ const SYNC_STATUS_SQL = `
   SELECT
     o.id::text AS tenant_id,
     o.name,
+    o.slug,
     (SELECT count(*)
        FROM member m
       WHERE m."organizationId" = o.id)::int AS users,

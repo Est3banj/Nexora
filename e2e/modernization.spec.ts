@@ -81,7 +81,7 @@ for (const width of [1440, 375]) {
         const before = await page.locator(".shell-clock").innerText();
         await expect.poll(() => page.locator(".shell-clock").innerText()).not.toBe(before);
       } else expect((await page.locator(".shell-sidebar").boundingBox())!.height).toBeLessThan(90);
-      for (const tab of ["sale", "arqueo", "tickets", "catalog", "dashboard", "reports", "credito"]) {
+      for (const tab of ["sale", "arqueo", "tickets", "catalog", "dashboard", "reports", "admin", "credito"]) {
         await page.getByTestId(`tab-${tab}`).click();
         await expect(page.getByTestId(`tab-${tab}`)).toHaveAttribute("aria-current", "page");
         expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);

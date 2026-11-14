@@ -9,7 +9,7 @@ import {
 import type { PGlite } from "@electric-sql/pglite";
 import { listSaleItems, type SaleItem } from "../db/local";
 import { paymentMethodLabel } from "@pos/shared";
-import { NAVIGATION, type AppTab } from "./navigation";
+import { type AppTab, type NavItem } from "./navigation";
 
 /**
  * Command palette (Batch C) — Ctrl/Cmd+K or "/" from anywhere:
@@ -23,6 +23,11 @@ type PaletteTab = AppTab;
 type Props = {
   db: PGlite;
   tenantId: string;
+  /** Already-filtered matrix from App (roles-admin 5.4) — the palette can
+   * never list a destination the tabbar hides (nav & palette agree), and it
+   * auto-grows with the matrix (Administración in batch 6). Consola is NEVER
+   * here: D7 keeps it out of the tenant palette. */
+  nav: NavItem[];
   onClose: () => void;
   onNavigate: (tab: PaletteTab) => void;
   onPickProduct: (item: SaleItem) => void;
@@ -45,8 +50,6 @@ type Entry = {
   run: () => void;
 };
 
-const NAV = NAVIGATION;
-
 const cop = (n: number) =>
   new Intl.NumberFormat("es-CO", {
     style: "currency",
@@ -57,6 +60,7 @@ const cop = (n: number) =>
 export function CommandPalette({
   db,
   tenantId,
+  nav,
   onClose,
   onNavigate,
   onPickProduct,
@@ -120,7 +124,7 @@ export function CommandPalette({
 
   const entries = useMemo<Entry[]>(() => {
     const out: Entry[] = [];
-    for (const n of NAV) {
+    for (const n of nav) {
       if (!q || n.label.toLowerCase().includes(q)) {
         out.push({
           key: `nav:${n.tab}`,
@@ -187,7 +191,7 @@ export function CommandPalette({
       }
     }
     return out;
-  }, [q, products, tickets, onNavigate, onPickProduct, onPickTicket, onClose]);
+  }, [q, products, tickets, nav, onNavigate, onPickProduct, onPickTicket, onClose]);
 
   useEffect(() => {
     itemRefs.current[active]?.scrollIntoView({ block: "nearest" });

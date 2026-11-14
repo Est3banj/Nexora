@@ -40,6 +40,7 @@ export async function founderRoutes(app: FastifyInstance): Promise<void> {
     "/api/founder/tenants",
     { preHandler: app.requirePlatformAdmin },
     async (req, reply) => {
+      reply.header("Cache-Control", "no-store");
       const input = createBodySchema.parse(req.body);
       try {
         const result = await createTenantWithFirstUser({
@@ -73,6 +74,9 @@ export async function founderRoutes(app: FastifyInstance): Promise<void> {
   app.get(
     "/api/founder/sync-status",
     { preHandler: app.requirePlatformAdmin },
-    async () => ({ tenants: await founderSyncStatus() }),
+    async (_req, reply) => {
+      reply.header("Cache-Control", "no-store");
+      return { tenants: await founderSyncStatus() };
+    },
   );
 }

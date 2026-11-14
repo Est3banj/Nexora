@@ -19,6 +19,7 @@ import {
   authHeaders,
   buildTestApp,
   createTenant,
+  joinOrg,
   resetTables,
   type Actor,
 } from "./helpers";
@@ -538,4 +539,61 @@ describe("offline report path (same fixtures against PGlite)", () => {
       await local.close();
     }
   }, 30_000);
+});
+
+/* ── roles-admin 2.2 · Dueño-tier financial gates ────────────────────── */
+
+describe("Dueño-tier financial gates (roles-admin 2.2)", () => {
+  let member: Actor;
+  let admin: Actor;
+
+  beforeEach(async () => {
+    member = await joinOrg(app, owner, "member", "rep-member@test.dev");
+    admin = await joinOrg(app, owner, "admin", "rep-admin@test.dev");
+  });
+
+  const FINANCIAL = [
+    `/api/reports/sales-by-day?from=${RANGE.from}&to=${RANGE.to}`,
+    `/api/reports/top-products?from=${RANGE.from}&to=${RANGE.to}`,
+    `/api/reports/dashboard?from=${RANGE.from}&to=${RANGE.to}`,
+  ];
+
+  it("member 403 on the three financial datasets, no figure leaks", async () => {
+    for (const url of FINANCIAL) {
+      const res = await get(url, member);
+      expect(res.statusCode, url).toBe(403);
+      expect(res.json()).toEqual({ error: "forbidden", detail: "dueño_only" });
+      expect(res.body).not.toContain("revenue");
+    }
+  });
+
+  it("admin gets the EXACT same fixture numbers as owner (RP:Owner and admin financial reports unchanged)", async () => {
+    for (const url of FINANCIAL) {
+      const asOwner = await get(url, owner);
+      const asAdmin = await get(url, admin);
+      expect(asOwner.statusCode, url).toBe(200);
+      expect(asAdmin.statusCode, url).toBe(200);
+      expect(asAdmin.json(), url).toEqual(asOwner.json());
+    }
+    // the canonical fixture numbers themselves (non-regression)
+    const sales = await get(FINANCIAL[0], admin);
+    expect(sales.json().rows).toEqual(EXPECTED_SALES_A);
+    const top = await get(FINANCIAL[1], admin);
+    expect(top.json().rows.map((r: { variant_name: string }) => r.variant_name))
+      .toEqual(EXPECTED_TOP_A.map(r => r.variant_name));
+  });
+
+  it("member still reads balances and low stock (RP:Member sees balances and low stock)", async () => {
+    for (const url of [
+      "/api/reports/customer-balances",
+      "/api/reports/customer-accounts",
+      "/api/reports/low-stock",
+      "/api/rehydrate",
+    ]) {
+      expect((await get(url, member)).statusCode, url).toBe(200);
+    }
+    const low = await get("/api/reports/low-stock", member);
+    expect(low.json().rows.map((r: { variant_name: string }) => r.variant_name))
+      .toEqual(EXPECTED_LOW_A.map(r => r.variant_name));
+  });
 });

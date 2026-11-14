@@ -12,6 +12,33 @@
 
 ## Contrato y decisiones
 
+> **〔ENMIENDA roles-admin — 2026-11-13〕** Este contrato de void fue
+> extendido por el cambio `roles-admin` (Batch 4 + hardening del Batch 8).
+> El texto de abajo sigue siendo la base; donde difiere, manda esta
+> enmienda (historia preservada, sin reescribir el original):
+>
+> - **Body:** `{ reason (trim 3–500), code?: string }` — `.strict()`; claves
+>   extra → 400.
+> - **Toggle OFF (`require_annul_code=false`, default):** comportamiento
+>   documentado abajo — dueño/administrador tier; member → 403
+>   `{error:"owner_only"}` (cuerpo byte-idéntico al histórico).
+> - **Toggle ON:** **nadie** anula sin el código vigente — ni owner ni
+>   admin → 403 `{error:"annul_code_required"}`; código incorrecto → 403
+>   `{error:"annul_code_invalid", detail:"mismatch"|"expired"}` (TTL 15 min,
+>   rotación mata al anterior al instante). **Con** el código, **cualquier
+>   rol verificado** anula (Cajero incluido). El chequeo corre **antes** de
+>   `voidSale` (no filtra existencia del ticket) y no altera la precedencia
+>   `not_found → shift_closed → abonos_exist → incomplete_sale`.
+> - **Online-only intacto:** sin path offline, sin storage local del código,
+>   sin entidad de sync; el código sólo se valida en
+>   `POST /api/sales/tickets/:id/void`.
+> - Evidencia: `apps/api/test/annul-code.test.ts` +
+>   `apps/api/test/void-sale.test.ts` + `e2e/annul-code.spec.ts`.
+>
+> Las secciones “Sync y caché”/“Verificación” de abajo describen el batch
+> original de anulación; el contrato de código vive en `ROLES-ADMIN.md`
+> ▸ Batch 8 — Operación.
+
 `POST /api/sales/tickets/:id/void` recibe **solo** `{ reason }` (trim, 3–500 caracteres).
 Owner del tenant de sesión; miembro → 403, ticket ajeno/inexistente → 404, motivo inválido → 400.
 Venta sin turno abierto, turno cerrado o arqueo ya persistido → 409 `shift_closed`.

@@ -26,6 +26,7 @@ import {
 } from "@pos/shared";
 import { localTx, type LocalQueryable } from "./pglite";
 import { assertWritable, unresolvedWork, BUSINESS_TABLES } from "./preservation";
+import { readSettingsCache } from "../lib/settings";
 
 /**
  * Local-first data layer (tasks D1-7 / D1-8).
@@ -844,6 +845,15 @@ export async function commitLocalSale(
     input.lines.map((l) => ({ price: l.unit_price, qty: l.qty })),
   ); // throws EMPTY_CART
 
+  // roles-admin 3.8 · oversell LOCAL guard (spec settings §Oversell disabled
+  // blocks both layers): when the cached toggle forbids negative stock,
+  // every line is pre-checked against its FOR UPDATE stock read and the sale
+  // dies with "NEGATIVE_STOCK" before any row commits (whole tx rolls back).
+  // Cache is a hint only — the server re-checks at sync apply (3.7).
+  // SALES ONLY: manual catalog adjustments stay unrestricted (explicit
+  // non-goal). Absent/corrupt cache → defaults → oversell allowed (today).
+  const blockNegativeStock = readSettingsCache(tenantId).allow_negative_stock === false;
+
   const isTransfer = input.method === "transfer";
   const isCredit = input.method === "credit";
   let tendered: number | null = null;
@@ -908,6 +918,13 @@ export async function commitLocalSale(
         [tenantId, line.variant_id],
       );
       const variant = vRes.rows[0];
+      // roles-admin 3.8 · per-line pre-check (sales only). The FOR UPDATE
+      // read above is authoritative, so two lines of the same variant are
+      // checked against the running balance; a hit throws before THIS line
+      // writes and the surrounding tenantTx rolls everything back.
+      if (blockNegativeStock && variant && variant.stock - line.qty < 0) {
+        throw new Error("NEGATIVE_STOCK");
+      }
       const unitCost = variant?.cost ?? null;
 
       const lineId = newId();
@@ -1176,6 +1193,7 @@ export async function listLocalTickets(
   db: Q,
   tenantId: string,
   limit = 100,
+  status?: "voided",
 ): Promise<LocalTicketRow[]> {
   const res = await db.query<LocalTicketRow>(
     `SELECT t.id, t.ticket_no, t.total, t.status, t.created_at,
@@ -1183,10 +1201,10 @@ export async function listLocalTickets(
             ${TICKET_CUSTOMER_COLUMNS},
             ${TICKET_ITEMS_COLUMN}
      FROM tickets t
-     WHERE t.tenant_id = $1
+     WHERE t.tenant_id = $1 AND ($3::text IS NULL OR t.status = $3)
      ORDER BY t.created_at DESC
      LIMIT $2`,
-    [tenantId, limit],
+    [tenantId, limit, status ?? null],
   );
   return res.rows;
 }

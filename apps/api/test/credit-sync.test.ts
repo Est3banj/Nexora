@@ -75,14 +75,58 @@ it("identical lines have identical COGS under cash and credit; pending count unc
   expect(summaries[1]).toMatchObject({revenue:20000,cogs:4000,gross:16000,credit:0,cash:20000,pending_count:0});
 });
 
-it("owner/member gates isolate abono rejection while member customer mutations still apply", async () => {
+// roles-admin 2.7 · FLIP + SUPERSESSION: fiado decision #6 (owner-only
+// abonos → member pushes rejected) is SUPERSEDED by roles-admin decision #1
+// (ANY verified role registers abonos). The deliberate case flips from
+// `["rejected","applied"]` to `["applied","applied"]` — the member's abono
+// now lands exactly once (immutable replay rules untouched, see the first
+// test in this file).
+it("member abono applies (supersedes fiado #6) alongside member customer mutations", async () => {
   const member = await createTenant(app, { email: "credit-member@test.co", orgSlug: "credit-member" });
   await getAuth().api.addMember({ body: { organizationId: owner.orgId, userId: member.userId, role: "member" }, headers: new Headers(authHeaders(owner)) });
   await app.inject({ method: "POST", url: "/api/auth/organization/set-active", headers: authHeaders(member), payload: { organizationId: owner.orgId } });
   const results = await pushMutations(app, member, [creditMutation("credit_abono", { customer_id: customer, amount: 1, method: "cash", shift_id: shift }), creditMutation("customer", { name: "Permitido" })]);
-  expect(results.map(r => r.status)).toEqual(["rejected", "applied"]);
-  expect(await repo.creditAbonos.listRecent()).toEqual([]);
+  expect(results.map(r => r.status)).toEqual(["applied", "applied"]);
+  expect(await repo.creditAbonos.listRecent()).toHaveLength(1);
   expect((await pushAbono(app, owner, { customer, amount: 1, method: "cash", shift })).results[0].status).toBe("applied");
+  expect(await repo.creditAbonos.listRecent()).toHaveLength(2);
+});
+
+// roles-admin 2.7 · D2 trap proof: a member batch mixing SOLO catalog
+// mutations with a real sale group must reject ONLY the catalog entries
+// (per-item `rejected/validation`, HTTP 2xx — never a blanket 403) while the
+// sale group applies intact. ref_ticket_id groups entries, but tenant-owned
+// ticket/line quantity evidence authorizes movements, not the ref alone.
+it("member mixed batch: catalog items rejected per-item, sale group applies intact", async () => {
+  const member = await createTenant(app, { email: "credit-mixed@test.co", orgSlug: "credit-mixed" });
+  await getAuth().api.addMember({ body: { organizationId: owner.orgId, userId: member.userId, role: "member" }, headers: new Headers(authHeaders(owner)) });
+  await app.inject({ method: "POST", url: "/api/auth/organization/set-active", headers: authHeaders(member), payload: { organizationId: owner.orgId } });
+
+  const { product, variant } = await repo.catalog.createProduct({ name: "Mezcla D2", variant: { name: "Único", price: 3000, stock: 10 } });
+  const ticket = randomUUID();
+  const mutations = [
+    // SOLO catalog entries (NO ref_ticket_id) → rejected:validation
+    creditMutation("product", { name: "Producto Nuevo Member" }),
+    creditMutation("variant", { product_id: product.id, name: "Único", price: 3000, cost: null, stock: 10, low_stock_threshold: null, active: true }),
+    creditMutation("stockdiary", { variant_id: variant.id, delta: 5, reason: "reposition", note: "Ajuste manual del member" }),
+    // sale group (variant/stockdiary WITH ref_ticket_id) → applies intact
+    creditMutation("ticket", { shift_id: shift, ticket_no: 1001, total: 3000, status: "completed" }, ticket),
+    creditMutation("ticket_line", { ticket_id: ticket, variant_id: variant.id, qty: 1, unit_price: 3000, subtotal: 3000 }),
+    creditMutation("payment", { ticket_id: ticket, shift_id: shift, method: "cash", amount: 3000, tendered: 3000, vuelto: 0, status: "confirmed" }),
+    creditMutation("variant", { product_id: product.id, name: "Único", price: 3000, cost: null, stock: 9, low_stock_threshold: null, active: true, ref_ticket_id: ticket }, variant.id),
+    creditMutation("stockdiary", { variant_id: variant.id, delta: -1, reason: "sale", ref_ticket_id: ticket }),
+  ];
+  const results = await pushMutations(app, member, mutations); // throws unless HTTP 200
+  expect(results.map(r => r.status)).toEqual(["rejected", "rejected", "rejected", "applied", "applied", "applied", "applied", "applied"]);
+  expect(results.slice(0, 3).every(r => r.reason === "validation")).toBe(true);
+  // catalog untouched by the rejected entries…
+  expect((await repo.products.list()).map(p => p.name)).not.toContain("Producto Nuevo Member");
+  expect((await repo.stockdiary.listByVariant(variant.id)).some(d => d.reason === "reposition")).toBe(false);
+  // …and the sale group landed whole (ticket + payment + movement + refresh).
+  expect(await repo.tickets.byUuid(ticket)).toMatchObject({ status: "completed", total: 3000 });
+  expect((await repo.payments.listByTicket((await repo.tickets.byUuid(ticket))!.id))).toHaveLength(1);
+  expect(await repo.stock.recount(variant.id)).toBe(9);
+  expect((await repo.productVariants.byUuid(variant.id))?.stock).toBe(9);
 });
 
 it("same-tenant customer, shift and optional linked-ticket validation; null attribution accepted", async () => {

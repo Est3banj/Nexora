@@ -6,8 +6,12 @@ import type { FastifyInstance } from "fastify";
 import { migrateSaleStage } from "../src/db/sale-stage";
 import { randomUUID } from "node:crypto";
 import { mutationEnvelopeSchema, type MutationEnvelope } from "@pos/shared";
+import { getAuth } from "../src/auth/auth";
 
-export function creditMutation(entity: string, payload: unknown, id = randomUUID(), ts = Date.now()): MutationEnvelope {
+// `id: string` (not the randomUUID template literal) so callers can pass an
+// EXISTING row id as the replay key (e.g. variant refreshes keyed by
+// variant.id) — the envelope schema still validates it as a uuid at parse.
+export function creditMutation(entity: string, payload: unknown, id: string = randomUUID(), ts = Date.now()): MutationEnvelope {
   return mutationEnvelopeSchema.parse({ entity, payload, client_uuid: id, client_ts: ts });
 }
 let creditTicketNo = 1000;
@@ -144,4 +148,48 @@ export async function signIn(
 
 export function authHeaders(actor: { cookie: string }) {
   return { cookie: actor.cookie };
+}
+
+/**
+ * roles-admin batch 2 · signs up a NEW user, adds them to `owner`'s org
+ * with `role` ("admin" | "member") via better-auth and activates that org —
+ * the pattern existing tests seeded inline (payments/void/credit-sync), now
+ * shared so the role matrix reads the same everywhere. The returned
+ * Actor's `orgId` IS `owner.orgId` (tenant comes ONLY from the session).
+ */
+export async function joinOrg(
+  app: FastifyInstance,
+  owner: Actor,
+  role: "admin" | "member",
+  email: string,
+): Promise<Actor> {
+  const password = "password1234";
+  const signUp = await app.inject({
+    method: "POST",
+    url: "/api/auth/sign-up/email",
+    payload: { email, password, name: email.split("@")[0] },
+  });
+  if (signUp.statusCode !== 200) {
+    throw new Error(`joinOrg sign-up failed: ${signUp.statusCode} ${signUp.body}`);
+  }
+  const userId = signUp.json().data?.user?.id ?? signUp.json().user?.id;
+  try {
+    await getAuth().api.addMember({
+      body: { organizationId: owner.orgId, userId, role },
+      headers: new Headers({ cookie: owner.cookie }),
+    });
+  } catch (err) {
+    throw new Error(`joinOrg addMember(${role}) failed: ${String(err)}`);
+  }
+  const cookie = await signIn(app, { email, password });
+  const setActive = await app.inject({
+    method: "POST",
+    url: "/api/auth/organization/set-active",
+    headers: { cookie },
+    payload: { organizationId: owner.orgId },
+  });
+  if (setActive.statusCode !== 200) {
+    throw new Error(`joinOrg set-active failed: ${setActive.statusCode} ${setActive.body}`);
+  }
+  return { email, password, userId, orgId: owner.orgId, cookie };
 }

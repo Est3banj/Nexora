@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { dbOne, wipeSalesAndCatalog } from "./helpers-db";
+import { createOrgUser } from "./helpers-auth";
 
 /**
  * M5 · Fiado en el cobro único (tasks 12.2 / 12.4 gate):
@@ -12,7 +13,8 @@ import { dbOne, wipeSalesAndCatalog } from "./helpers-db";
  * M6 · Clientes & Fiados (tasks 13.1 / 13.2 gate) live in the describes
  * below: accounts grid (Al Día incluida), alta 0/null/límite explícito,
  * búsqueda teléfono/acentos, Por Cobrar sigue filtrando balance > 0,
- * abono owner-only + recibo real + offline/replay.
+ * abono (cualquier rol verificado — roles-admin flip) + recibo real +
+ * offline/replay.
  */
 
 const evidence =
@@ -475,40 +477,38 @@ test.describe("M6 · Clientes & Fiados (13.1)", () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(375);
   });
 
-  test("member session sees balances but NO abono affordance", async ({ page }) => {
+  // roles-admin 2.10 · FLIP M6 — SUPERSESSION: fiado decision #6 ("member
+  // sees balances but NO abono affordance") → roles-admin decision #1
+  // (ANY verified role registers abonos). Server half: sync/route.ts no
+  // longer role-gates credit_abono (2.5); UI half: Credito.tsx pre-gate is
+  // `role !== null` (2.6). INTACT by design: the unverified-role case
+  // above (count 0 — null keeps hiding), void-row/void-sale 0 (toggle OFF)
+  // and the role label — now "Cajero" (5.3/5.8 flip, batch 5).
+  test("member session sees balances AND the abono affordance", async ({ page }) => {
     const org = await seedAccounts(page);
     ensureOpenShift(org);
-    /* real membership (role member) — server keeps the per-item gate (D4),
-     * the UI pre-gate must hide the form entirely (abonos spec §Member) */
-    const email = `member-m6-${Date.now()}@test.dev`;
-    const signup = await page.request.post("/api/auth/sign-up/email", {
-      data: { email, password: "member12345", name: "Cajera M6" },
-    });
-    expect(signup.ok()).toBe(true);
-    const userId = (await signup.json()).user.id as string;
-    dbOne(
-      `INSERT INTO member (id, "organizationId", "userId", role, "createdAt") VALUES ('${crypto.randomUUID()}', '${org}', '${userId}', 'member', now())`,
-    );
-    expect(
-      (
-        await page.request.post("/api/auth/organization/set-active", {
-          data: { organizationId: org },
-        })
-      ).ok(),
-    ).toBe(true);
+    /* real membership (role member) — server accepts their abonos
+     * (decision #1) and the UI pre-gate shows the form to any verified role */
+    await createOrgUser(page.request, org, "member", "member-m6");
 
     await page.goto("/");
     await expect(page.getByTestId("tab-sale")).toBeVisible();
-    /* prove the session really carries role=member (not an unverified role) */
+    /* prove the session really carries role=member (not an unverified role).
+     * roles-admin 5.8: the shop-vocabulary label is "Cajero" (5.3 flip —
+     * same lot as AppShell's label change, so the suite stays green). */
     await page.getByLabel("Cuenta y caja", { exact: true }).click();
-    await expect(page.getByTestId("member-role")).toHaveText("Miembro");
+    await expect(page.getByTestId("member-role")).toHaveText("Cajero");
     await page.getByLabel("Cuenta y caja", { exact: true }).click();
     await page.getByTestId("tab-credito").click();
     /* balances visible to every role … */
     await expect(page.getByTestId("client-card")).toHaveCount(2);
     await expect(page.getByTestId("total-debt")).toContainText("50.000");
-    /* … but NO abono registration affordance at all */
-    await expect(page.getByTestId("client-abono")).toHaveCount(0);
+    /* … and the abono affordance too (FLIP 0 → visible): BOTH cards expose
+     * it — one button per card (Legacy stays disabled at saldo 0) */
+    await expect(page.getByTestId("client-abono")).toHaveCount(2);
+    await expect(
+      page.getByTestId("client-card").filter({ hasText: "Deudora Real" }).getByTestId("client-abono"),
+    ).toBeEnabled();
     await expect(page.getByTestId("client-new")).toBeVisible();
     await page.getByTestId("tab-tickets").click();
     await expect(page.getByTestId("ticket-void-row")).toHaveCount(0);

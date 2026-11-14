@@ -7,8 +7,7 @@ import { db, pool, closeDb } from "../src/db";
 import * as t from "../src/db/schema";
 import { scopedRepo } from "../src/db/scope";
 import { computeExpected, closeShift } from "../src/db/arqueo";
-import { getAuth } from "../src/auth/auth";
-import { buildTestApp, resetTables, createTenant, authHeaders, seedCustomer, pushCreditSale, pushMixedSale, pushAbono, type Actor } from "./helpers";
+import { buildTestApp, resetTables, createTenant, joinOrg, authHeaders, seedCustomer, pushCreditSale, pushMixedSale, pushAbono, type Actor } from "./helpers";
 
 let app: FastifyInstance;
 let owner: Actor;
@@ -26,13 +25,16 @@ function push(mutations: unknown[], actor = owner) {
 function annul(id: string, actor = owner, reason: unknown = "Error de cobro") {
   return app.inject({ method: "POST", url: `/api/sales/tickets/${id}/void`, headers: authHeaders(actor), payload: { reason } });
 }
-async function sale(method = "cash") {
-  const shift = await repo.shifts.createOpen();
+/** `opts` exists so a test can seed a SECOND sale: one open shift per tenant
+ * (shifts_open_per_tenant_uq) and unique ticket_no per tenant
+ * (tickets_tenant_ticket_no_uq). Defaults keep every existing call intact. */
+async function sale(method = "cash", opts: { shiftId?: string; ticketNo?: number } = {}) {
+  const shift = opts.shiftId ? { id: opts.shiftId } : await repo.shifts.createOpen();
   const { variant } = await repo.catalog.createProduct({ name: "Café", variant: { name: "Único", price: 4000, cost: 1500, stock: 10 } });
   const id = randomUUID();
   const env = (entity: string, payload: unknown, client_uuid: string = randomUUID()) => ({ entity, payload, client_uuid, client_ts: Date.now(), op: "upsert" });
   const envelopes = [
-    env("ticket", { shift_id: shift.id, ticket_no: 1, total: 8000, status: method === "cash" ? "completed" : "transfer_pending" }, id),
+    env("ticket", { shift_id: shift.id, ticket_no: opts.ticketNo ?? 1, total: 8000, status: method === "cash" ? "completed" : "transfer_pending" }, id),
     env("ticket_line", { ticket_id: id, variant_id: variant.id, qty: 2, unit_price: 4000, subtotal: 8000 }),
     env("payment", { ticket_id: id, shift_id: shift.id, method, amount: 8000, tendered: method === "cash" ? 10000 : null, vuelto: method === "cash" ? 2000 : null, status: method === "cash" ? "confirmed" : "pending" }),
     env("stockdiary", { variant_id: variant.id, delta: -2, reason: "sale", ref_ticket_id: id, note: "Venta #1" }),
@@ -165,17 +167,47 @@ it("validates reason and rejects client-controlled status, amount, or reversal d
   expect(await balances(s.variant.id)).toMatchObject({ stock: 8 });
 });
 
-it("enforces owner-only 403 and tenant 404 on server", async () => {
+// roles-admin 2.9 · tier matrix on the toggle-OFF path (VD:Toggle OFF —
+// today's behavior) + non-regressions: authorization precedes evidence
+// probing, the `abonos_exist` explicit block keeps its precedence, and the
+// member's forged sync push stays per-item rejected. Bodies UNCHANGED.
+it("enforces tier 403/2xx (member/admin/owner) and tenant 404 on server", async () => {
   const s = await sale();
   const other = await createTenant(app, { email: "other@tenant.test", orgSlug: "other" });
   expect((await annul(s.id, other)).statusCode).toBe(404);
-  const member = await createTenant(app, { email: "member@tenant.test", orgSlug: "member" });
-  await getAuth().api.addMember({ body: { organizationId: owner.orgId, userId: member.userId, role: "member" }, headers: new Headers(authHeaders(owner)) });
-  await app.inject({ method: "POST", url: "/api/auth/organization/set-active", headers: authHeaders(member), payload: { organizationId: owner.orgId } });
-  expect((await annul(s.id, member)).statusCode).toBe(403);
+
+  const member = await joinOrg(app, owner, "member", "void-member@test.dev");
+  const denied = await annul(s.id, member);
+  expect(denied.statusCode).toBe(403);
+  expect(denied.json()).toEqual({ error: "owner_only" });
+  // authorization precedes evidence probing: the 403 leaks nothing and
+  // NOTHING is mutated (still `completed`, stock untouched).
+  expect((await repo.tickets.byUuid(s.id))?.status).toBe("completed");
   const forbidden = { ...s.envelopes[0], payload: { ...(s.envelopes[0].payload as object), status: "voided" } };
   expect((await push([forbidden], member)).json().results[0].reason).toBe("validation");
   expect(await balances(s.variant.id)).toMatchObject({ stock: 8 });
+
+  // admin behaves identically to owner on the tier gate (D1 parity)
+  const admin = await joinOrg(app, owner, "admin", "void-admin@test.dev");
+  expect((await annul(s.id, admin)).statusCode).toBe(200);
+  expect((await repo.tickets.byUuid(s.id))?.status).toBe("voided");
+
+  // owner tier on a FRESH ticket (both tiers reach voidSale) — same shift
+  // (only one open per tenant) + unique ticket_no
+  const s2 = await sale("cash", { shiftId: s.shift.id, ticketNo: 2 });
+  expect((await annul(s2.id, owner)).statusCode).toBe(200);
+  expect((await repo.tickets.byUuid(s2.id))?.status).toBe("voided");
+
+  // abonos_exist precedence intact: the member gets the AUTHORIZATION 403
+  // (never the business error); the owner still gets the explicit block.
+  const customer = await seedCustomer(app, owner);
+  const credit = await pushCreditSale(app, owner, { customer, amount: 35000, shift: s2.shift.id });
+  await pushAbono(app, owner, { customer, amount: 5000, method: "cash", shift: s2.shift.id, ticket: credit.ticket });
+  const memberOnAbonos = await annul(credit.ticket, member);
+  expect(memberOnAbonos.statusCode).toBe(403);
+  expect(memberOnAbonos.json()).toEqual({ error: "owner_only" });
+  expect((await annul(credit.ticket)).json()).toEqual({ error: "abonos_exist" });
+  expect((await repo.tickets.byUuid(credit.ticket))?.status).toBe("completed");
 });
 
 it("refuses a partially synced sale instead of inventing compensation", async () => {

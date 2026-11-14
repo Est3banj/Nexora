@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PGlite } from "@electric-sql/pglite";
-import { paymentMethodLabel } from "@pos/shared";
+import { paymentMethodLabel, formatTicketNo } from "@pos/shared";
 import {
   confirmLocalPayment,
   getLocalTicket,
   listLocalTickets,
   type LocalTicketRow,
 } from "../db/local";
-import { ReceiptPreview } from "../components/ReceiptPreview";
-import { annulTicket } from "../db/annul";
+import { ReceiptPreview, pickReceiptIdentity } from "../components/ReceiptPreview";
+import { annulTicket, AnnulError } from "../db/annul";
 import { ticketHasAbonos } from "../db/void-sale";
-import { useActiveMemberRole } from "../hooks/useActiveMemberRole";
+import { isDueñoHint, type RoleHint } from "../components/navigation";
 import { scopedFetch } from "../sync/scoped-fetch";
+import type { PublicSettings } from "../lib/settings";
 /* D2-7 print template + M5 receipt print rules (58/80mm) — module is
  * statically imported by App, so the sheet is present from first boot. */
 import "./ticket-print.css";
@@ -32,7 +33,10 @@ const when = (iso: string) =>
 type Props = {
   db: PGlite;
   tenantId: string;
-  userId: string;
+  /** Role hint lifted from App (roles-admin 5.2) — never authority. */
+  role: RoleHint;
+  /** Cached tenant settings (3.10): annul-code toggle + receipt identity. */
+  settings: PublicSettings;
   refreshToken: number;
   tenantName?: string;
   showToast?: (msg: string) => void;
@@ -81,7 +85,8 @@ function estadoBadge(t: LocalTicketRow): { label: string; cls: string } {
 export function Tickets({
   db,
   tenantId,
-  userId,
+  role,
+  settings,
   refreshToken,
   tenantName,
   showToast,
@@ -109,7 +114,27 @@ export function Tickets({
   const [online, setOnline] = useState(
     typeof navigator === "undefined" ? true : navigator.onLine !== false,
   );
-  const isOwner = useActiveMemberRole(tenantId, userId, online) === "owner";
+  /* ── roles-admin 5.6 · afforance matrix (design D6) ────────────────
+   * void     → Dueño tier, OR member while `require_annul_code` is ON
+   *            (decision #2: with the toggle ON any verified role annuls
+   *            WITH the code; toggle OFF = dueño tier only). `null` → hidden
+   *            (fail-closed: unverified never sees a money action).
+   * transfer → Dueño tier ONLY (matrix silent → status quo, D6). */
+  const canVoid = isDueñoHint(role) || (role === "member" && settings.require_annul_code);
+  const canConfirmTransfer = isDueñoHint(role);
+  /* Code field: rendered while the CACHED toggle is ON. `codeForced` is the
+   * staleness fallback — the server answered `annul_code_required` while the
+   * cache said OFF, so the field is revealed in the error path (never a dead
+   * end). Value lives in component state only, cleared on open/close. */
+  const [voidCode, setVoidCode] = useState("");
+  const [codeForced, setCodeForced] = useState(false);
+  const codeRef = useRef<HTMLInputElement>(null);
+  const codeRequired = settings.require_annul_code || codeForced;
+  /* Focus the revealed field AFTER the staleness fallback mounts it (state →
+   * commit → effect; a raw rAF could beat the DOM update). */
+  useEffect(() => {
+    if (codeForced) codeRef.current?.focus();
+  }, [codeForced]);
 
   /* Command palette / campana hand-off: ticket picked → open its preview. */
   useEffect(() => {
@@ -157,7 +182,7 @@ export function Tickets({
   }
 
   async function openVoid(t: { id: string; ticket_no: number }) {
-    if (!isOwner) return;
+    if (!canVoid) return;
     if (await ticketHasAbonos(db, tenantId, t.id)) {
       showToast?.("No se puede anular: este cliente tiene abonos registrados.");
       return;
@@ -165,6 +190,10 @@ export function Tickets({
     setVoidTarget(t);
     setReason("");
     setConfirmErr(null);
+    /* Fresh dialog = fresh code state (the code is never remembered across
+     * attempts — it is short-lived anyway, TTL 15 min). */
+    setVoidCode("");
+    setCodeForced(false);
     dialog.current?.showModal();
   }
 
@@ -216,7 +245,13 @@ export function Tickets({
     setVoiding(true);
     setConfirmErr(null);
     try {
-      await annulTicket(db, tenantId, voidTarget.id, reason.trim());
+      await annulTicket(
+        db,
+        tenantId,
+        voidTarget.id,
+        reason.trim(),
+        codeRequired ? voidCode.trim() : undefined,
+      );
       dialog.current?.close();
       showToast?.("Venta anulada · stock restituido. Registrá por fuera de NEXORA cualquier reintegro de dinero.");
       await refresh();
@@ -225,6 +260,13 @@ export function Tickets({
       }
       onMutated?.();
     } catch (err) {
+      /* Staleness fallback (D3/R4): the cached toggle said OFF but the
+       * server demands a code → reveal + focus the field instead of
+       * leaving the operator with a message and no way to comply. */
+      if (err instanceof AnnulError && err.kind === "code_required") {
+        setCodeForced(true);
+        setVoidCode("");
+      }
       setConfirmErr(err instanceof Error ? err.message : "La anulación necesita conexión; podés seguir vendiendo offline");
     } finally {
       setVoiding(false);
@@ -268,7 +310,7 @@ export function Tickets({
    * shared ReceiptPreview from task 12.3. */
   const previewActions = detail ? (
     <>
-      {isOwner && detail.ticket.method === "transfer" &&
+      {canConfirmTransfer && detail.ticket.method === "transfer" &&
         detail.ticket.status !== "voided" &&
         detail.ticket.pay_status === "pending" && (
           <button
@@ -289,7 +331,7 @@ export function Tickets({
             {confirming ? "Confirmando…" : "Confirmar transferencia"}
           </button>
         )}
-      {isOwner && detail.ticket.status !== "voided" && (
+      {canVoid && detail.ticket.status !== "voided" && (
         <button
           className="btn danger void-trigger"
           data-testid="void-sale"
@@ -322,9 +364,13 @@ export function Tickets({
           La anulación necesita conexión. Podés seguir vendiendo offline.
         </p>
       )}
+      {/* roles-admin 5.6 · static copy is tier+code-aware: it must describe
+       * WHICH rule applies now (toggle OFF = dueño tier; toggle ON = code
+       * for any verified role), never a single hard-coded tier. */}
       <p className="muted">
-        Solo el dueño puede anular ventas sincronizadas de un turno abierto. Las
-        cajas cerradas no se modifican.
+        {settings.require_annul_code
+          ? "Anulaciones con código de anulación: cualquier rol verificado puede anular con el código vigente (vence a los 15 minutos). Las cajas cerradas no se modifican."
+          : "Solo el dueño o un administrador puede anular ventas sincronizadas de un turno abierto. Las cajas cerradas no se modifican."}
       </p>
     </>
   ) : null;
@@ -398,7 +444,10 @@ export function Tickets({
                     className={t.status === "voided" ? "voided" : ""}
                     onClick={() => openPreview(t.id)}
                   >
-                    <td data-testid="ticket-no">#{t.ticket_no}</td>
+                    {/* Display-only prefix (5.7): the stored integer
+                     * sequence never changes — formatTicketNo composes the
+                     * label with the cached `ticket_prefix`. */}
+                    <td data-testid="ticket-no">#{formatTicketNo(settings.ticket_prefix, t.ticket_no)}</td>
                     <td className="mono">{when(t.created_at)}</td>
                     <td>
                       <span className={`ticket-badge ${method.cls}`}>
@@ -425,7 +474,7 @@ export function Tickets({
                       >
                         Ver
                       </button>
-                      {isOwner && t.status !== "voided" && (
+                      {canVoid && t.status !== "voided" && (
                         <button
                           type="button"
                           className="icon-button row-void"
@@ -453,6 +502,7 @@ export function Tickets({
       <ReceiptPreview
         open={previewId !== null && detail !== null}
         data={detail ? { kind: "sale", detail, tenantName } : null}
+        identity={pickReceiptIdentity(settings)}
         onClose={() => setPreviewId(null)}
       >
         {previewActions}
@@ -467,6 +517,11 @@ export function Tickets({
         aria-describedby="void-description"
         onCancel={(e) => {
           if (voiding) e.preventDefault();
+        }}
+        onClose={() => {
+          /* Code never survives the dialog (state-only, D3/H4). */
+          setVoidCode("");
+          setCodeForced(false);
         }}
       >
         <form
@@ -495,6 +550,25 @@ export function Tickets({
             onChange={(e) => setReason(e.target.value)}
             disabled={voiding}
           />
+          {codeRequired && (
+            <div>
+              <label htmlFor="void-code">Código de anulación</label>
+              <input
+                id="void-code"
+                ref={codeRef}
+                data-testid="void-code"
+                className="mono"
+                autoComplete="off"
+                autoCapitalize="characters"
+                spellCheck={false}
+                placeholder="Código de 8 caracteres"
+                maxLength={64}
+                value={voidCode}
+                onChange={(e) => setVoidCode(e.target.value)}
+                disabled={voiding}
+              />
+            </div>
+          )}
           {confirmErr && (
             <p role="alert" data-testid="void-error">
               {confirmErr}
@@ -513,7 +587,12 @@ export function Tickets({
               type="submit"
               className="btn danger"
               data-testid="void-confirm"
-              disabled={voiding || !online || reason.trim().length < 3}
+              disabled={
+                voiding ||
+                !online ||
+                reason.trim().length < 3 ||
+                (codeRequired && voidCode.trim().length === 0)
+              }
             >
               {voiding ? "Anulando…" : "Confirmar anulación total"}
             </button>

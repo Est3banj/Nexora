@@ -12,10 +12,11 @@ import {
   type LocalCustomer,
 } from "../db/local";
 import { useSync } from "../hooks/useSync";
-import { useActiveMemberRole } from "../hooks/useActiveMemberRole";
+import { type RoleHint } from "../components/navigation";
 import { ClientModal } from "../components/ClientModal";
 import { AbonoModal, type AbonoResult } from "../components/AbonoModal";
-import { ReceiptPreview, type ReceiptData } from "../components/ReceiptPreview";
+import { ReceiptPreview, pickReceiptIdentity, type ReceiptData } from "../components/ReceiptPreview";
+import type { PublicSettings } from "../lib/settings";
 
 /**
  * M6 ·13.1/13.2 — Clientes & Cuentas por Cobrar (Fiados).
@@ -30,9 +31,12 @@ import { ReceiptPreview, type ReceiptData } from "../components/ReceiptPreview";
  *  - negative balances are surfaced for reconciliation, NEVER clamped to
  *    zero nor labelled Al Día (reports spec §Complete customer accounts);
  *  - Nuevo/Editar via ClientModal (explicit limit, soft delete/reactivate);
- *  - Registrar Abono is OWNER-ONLY (pre-gate role from useActiveMemberRole;
- *    the server per-item rejection stays authoritative) and disabled with a
- *    reason when the balance is 0 (abonos spec §All paid customer);
+ *  - Registrar Abono: ANY verified role — owner, admin AND member
+ *    (roles-admin decision #1, supersedes fiado #6 "owner-only"); the
+ *    pre-gate is `role !== null` so an UNVERIFIED role keeps hiding it
+ *    (server per-item rejection stays authoritative regardless) and
+ *    disabled with a reason when the balance is 0 (abonos spec §All paid
+ *    customer);
  *  - detail dialog lists the customer's tickets AND their own-table abonos;
  *  - offline-first: reads run on PGlite, staleness banner while the queue
  *    is pending, over-limit state visible locally (and after server sync).
@@ -52,7 +56,10 @@ type Props = {
   db: PGlite;
   tenantId: string;
   refreshToken: number;
-  userId: string;
+  /** Role hint lifted from App (roles-admin 5.2) — never authority. */
+  role: RoleHint;
+  /** Cached tenant settings (3.10): default credit limit + receipt identity. */
+  settings: PublicSettings;
   tenantName?: string;
   showToast: (msg: string, kind?: "success" | "info" | "warning" | "error") => void;
   onMutated: () => void;
@@ -68,14 +75,21 @@ export function Credito({
   db,
   tenantId,
   refreshToken,
-  userId,
+  role,
+  settings,
   tenantName,
   showToast,
   onMutated,
 }: Props) {
   const sync = useSync();
-  const role = useActiveMemberRole(tenantId, userId, sync.online);
-  const isOwner = role === "owner";
+  // roles-admin 2.6 · FLIP de abonos (decisión #1 — supersede fiado #6):
+  // el form (:335) y el modal (:427) se renderizan IFF `role !== null`
+  // (cualquier rol VERIFICADO, member incluido). `null` (rol no verificado)
+  // sigue ocultando → e2e "unverified role never exposes collection
+  // controls" (count 0) queda verde. Transfer-confirm NO se toca acá
+  // (sigue dueño-tier en Tickets.tsx / Sale.tsx). El fetch del rol vive en
+  // App (5.2) — este componente sólo consume el hint.
+  const canRegisterAbono = role !== null;
 
   const [rows, setRows] = useState<CustomerAccountRow[]>([]);
   const [inactive, setInactive] = useState<LocalCustomer[]>([]);
@@ -332,7 +346,7 @@ export function Credito({
                 )}
 
                 <footer className="client-actions">
-                  {isOwner && (
+                  {canRegisterAbono && (
                     <>
                       <button
                         type="button"
@@ -412,6 +426,11 @@ export function Credito({
         db={db}
         tenantId={tenantId}
         customer={modal.customer}
+        /* roles-admin 5.10 / D4b — UI pre-fill ONLY: the cached default seeds
+         * the field for NEW customers; an explicit value (or an explicit 0)
+         * the operator types is never overwritten, and the server still never
+         * injects defaults (local.ts CREDIT_LIMIT_REQUIRED untouched). */
+        defaultLimit={settings.default_credit_limit}
         onClose={() => setModal({ open: false, customer: null })}
         onSaved={(saved) => {
           setModal({ open: false, customer: null });
@@ -424,7 +443,7 @@ export function Credito({
       />
 
       <AbonoModal
-        open={isOwner && abonoTarget !== null}
+        open={canRegisterAbono && abonoTarget !== null}
         db={db}
         tenantId={tenantId}
         account={abonoTarget}
@@ -435,6 +454,7 @@ export function Credito({
       <ReceiptPreview
         open={receipt !== null}
         data={receipt}
+        identity={pickReceiptIdentity(settings)}
         onClose={() => setReceipt(null)}
       />
     </section>

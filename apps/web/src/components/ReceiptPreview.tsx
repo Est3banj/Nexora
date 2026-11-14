@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { paymentMethodLabel } from "@pos/shared";
+import { formatTicketNo, paymentMethodLabel } from "@pos/shared";
+import type { PublicSettings } from "../lib/settings";
 /* Receipt print rules (58/80mm) travel with the component that owns
  * printing — Vite dedupes the sheet Tickets also imports. */
 import "../screens/ticket-print.css";
@@ -10,10 +11,19 @@ import "../screens/ticket-print.css";
  * HTML 720–764) — ONE component, two discriminants:
  *
  *  - `sale`: persisted ticket meta + lines + payments array + change,
- *    rendered from `getLocalTicket` (real data, no fabricated cashier,
- *    NIT, address or fiscal hash — prototype sample identity is forbidden).
+ *    rendered from `getLocalTicket` (real data — the identity below comes
+ *    ONLY from configured settings, never fabricated: no invented cashier,
+ *    NIT, address or fiscal hash; the prototype sample identity stays
+ *    forbidden).
  *  - `abono`: distinct collection receipt (ID/method/customer/amount/
- *    resulting balance) — an abono is NEVER a sale (abonos spec).
+ *    resulting balance) — an abono is NEVER a sale (abonos spec), but it
+ *    carries the SAME configured identity header (receipt-identity §Abono
+ *    receipt carries identity too).
+ *
+ * roles-admin 5.7 / design D8 — `identity` (optional): ONLY configured
+ * values render, field by field; ABSENT settings (or all-null fields) keep
+ * today's honest blank header byte-for-byte. `iva_pct` is NEVER rendered —
+ * no IVA row, no fiscal claim (B1 deferral, decision #11).
  *
  * Print is REAL: `window.print()` + ticket-print.css 58/80mm rules.
  * «Cerrar» and «Imprimir» are separate buttons (prototype's combined
@@ -23,6 +33,33 @@ import "../screens/ticket-print.css";
  * IVA DEFERRED (B1): no fiscal rows, no «IVA19% incluido», no exemption
  * claim — prices/totals stay exactly as persisted.
  */
+
+/** The six receipt-identity slots the tenant can configure (D8). */
+export type ReceiptIdentity = {
+  store_name?: string | null;
+  nit?: string | null;
+  address?: string | null;
+  phone?: string | null;
+  footer?: string | null;
+  ticket_prefix?: string | null;
+};
+
+/**
+ * Hosts (Venta, Tickets reprint, Credito abono) map the cached settings
+ * state through this helper — one place, so no surface can forget a field.
+ * All-null settings produce the same all-null identity as `undefined`,
+ * i.e. the honest blank header.
+ */
+export function pickReceiptIdentity(settings: PublicSettings): ReceiptIdentity {
+  return {
+    store_name: settings.store_name,
+    nit: settings.nit,
+    address: settings.address,
+    phone: settings.phone,
+    footer: settings.ticket_footer,
+    ticket_prefix: settings.ticket_prefix,
+  };
+}
 
 const cop = (n: number) =>
   new Intl.NumberFormat("es-CO", {
@@ -92,12 +129,15 @@ export type ReceiptData =
 type Props = {
   open: boolean;
   data: ReceiptData | null;
+  /** Configured tenant identity (D8) — optional so an absent/unknown
+   * settings state renders exactly today's blank header. */
+  identity?: ReceiptIdentity;
   onClose: () => void;
   /** Action slot (Tickets: confirm-transfer / void-sale) — outside the paper. */
   children?: ReactNode;
 };
 
-export function ReceiptPreview({ open, data, onClose, children }: Props) {
+export function ReceiptPreview({ open, data, identity, onClose, children }: Props) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   /* Paper width: thermal rolls come in 58mm and 80mm — the toggle changes
    * the actual print CSS (data-print-width), not a fake label. */
@@ -124,7 +164,15 @@ export function ReceiptPreview({ open, data, onClose, children }: Props) {
       data-testid={data.kind === "sale" ? "ticket-detail" : "abono-detail"}
     >
       <div className="receipt-head">
-        <h4>{data.tenantName || "NEXORA"}</h4>
+        {/* D8: store name falls back to the org tenant name, then NEXORA —
+         * the same blank-identity behavior as before when nothing is set. */}
+        <h4>{identity?.store_name || data.tenantName || "NEXORA"}</h4>
+        {/* Header lines render ONLY when configured (verbatim, no
+         * placeholders, no invented values — partial config = partial
+         * header). */}
+        {identity?.nit && <p className="receipt-meta-line" data-testid="receipt-nit">NIT: {identity.nit}</p>}
+        {identity?.address && <p className="receipt-meta-line" data-testid="receipt-address">{identity.address}</p>}
+        {identity?.phone && <p className="receipt-meta-line" data-testid="receipt-phone">{identity.phone}</p>}
         {data.kind === "sale" && (
           <p className="receipt-meta-line">ID: {data.detail.ticket.id}</p>
         )}
@@ -135,7 +183,9 @@ export function ReceiptPreview({ open, data, onClose, children }: Props) {
           <div className="receipt-meta">
             <div className="row space-between">
               <span>TICKET:</span>
-              <strong>#{data.detail.ticket.ticket_no}</strong>
+              {/* Display-only prefix via the shared helper (5.7): the stored
+               * integer sequence and its unique index stay untouched. */}
+              <strong>#{formatTicketNo(identity?.ticket_prefix ?? null, data.detail.ticket.ticket_no)}</strong>
             </div>
             <div className="row space-between">
               <span>FECHA:</span>
@@ -209,6 +259,9 @@ export function ReceiptPreview({ open, data, onClose, children }: Props) {
           </div>
 
           <div className="receipt-foot">
+            {/* Configured footer sits ABOVE the thanks line; absent → today's
+             * markup exactly (no empty <p>, no placeholder). */}
+            {identity?.footer && <p data-testid="receipt-footer">{identity.footer}</p>}
             <p className="receipt-thanks">¡Gracias por su compra!</p>
           </div>
         </>
@@ -251,6 +304,8 @@ export function ReceiptPreview({ open, data, onClose, children }: Props) {
           </div>
 
           <div className="receipt-foot">
+            {/* Same identity header/footer as the sale receipt (D8). */}
+            {identity?.footer && <p data-testid="receipt-footer">{identity.footer}</p>}
             <p className="receipt-thanks">Abono registrado — no es una venta.</p>
           </div>
         </>

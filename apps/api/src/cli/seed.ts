@@ -2,6 +2,7 @@ import { getAuth } from "../auth/auth";
 import { config } from "../config";
 import { closeDb, db } from "../db";
 import { ensureAuthTables } from "../db/bootstrap";
+import { initBaseline } from "../db/init-baseline";
 import { scopedRepo } from "../db/scope";
 
 /**
@@ -89,6 +90,8 @@ const DEMO_PRODUCTS = [
 
 async function main(): Promise<void> {
   await ensureAuthTables();
+  // Seed may run against a database the API has never booted on.
+  await initBaseline();
   const headers = await signInOrSignUp();
   const tenantId = await ensureOrg(headers);
   const repo = scopedRepo(db, tenantId);

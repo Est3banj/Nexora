@@ -33,11 +33,19 @@ type Props = {
   tenantId: string;
   /** null → alta nueva · row → editar (incluye reactivar) */
   customer: LocalCustomer | null;
+  /**
+   * roles-admin 5.10 / D4b — cached `default_credit_limit`, used as the
+   * INITIAL value of the limit field for NEW customers only (UI pre-fill;
+   * the server never injects defaults). The operator can still clear it
+   * (empty → the required-limit validation fires exactly as before) or
+   * type an explicit 0 (stays 0 — never overwritten by the default).
+   */
+  defaultLimit?: number | null;
   onClose: () => void;
   onSaved: (customer: LocalCustomer) => void;
 };
 
-export function ClientModal({ open, db, tenantId, customer, onClose, onSaved }: Props) {
+export function ClientModal({ open, db, tenantId, customer, defaultLimit, onClose, onSaved }: Props) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const busyRef = useRef(false);
   const [busy, setBusy] = useState(false);
@@ -60,8 +68,16 @@ export function ClientModal({ open, db, tenantId, customer, onClose, onSaved }: 
       dialog.showModal();
       setName(customer?.name ?? "");
       setPhone(customer?.phone ?? "");
-      setLimit(customer?.credit_limit == null ? "" : String(customer.credit_limit));
-      setLimitNone(customer?.credit_limit === null && customer != null);
+      if (customer) {
+        setLimit(customer.credit_limit == null ? "" : String(customer.credit_limit));
+        setLimitNone(customer.credit_limit === null);
+      } else {
+        /* Alta: pre-fill con el default cacheado (5.10). Sólo es el valor
+         * INICIAL — borrarlo vuelve a disparar la validación obligatoria y
+         * un 0 explícito se guarda como 0 (semántica intacta). */
+        setLimit(defaultLimit == null ? "" : String(defaultLimit));
+        setLimitNone(false);
+      }
       setNotes(customer?.notes ?? "");
       setActive(customer?.active ?? true);
       setError(null);

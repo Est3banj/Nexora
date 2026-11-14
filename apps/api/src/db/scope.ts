@@ -6,6 +6,16 @@ import * as t from "./schema";
 import type { Db } from "./index";
 import * as reportsDb from "./reports";
 import * as arqueoDb from "./arqueo";
+import {
+  ANNUL_CODE_TTL_MIN,
+  hmacAnnulCode,
+  loadTenantSettings,
+  randomAnnulCode,
+  toPublicSettings,
+  verifyAnnulCode,
+  type PublicSettings,
+  type SettingsPatch,
+} from "./settings";
 
 /**
  * scopedRepo — task D1-4 / design §5.
@@ -87,6 +97,21 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
     if (!category) throw Object.assign(new Error("invalid_category"), { statusCode: 404 });
   }
   return {
+    authMembers: {
+      /** Auth tables are managed by better-auth; target lookup is tenant-bound BEFORE SDK mutations. */
+      async byId(id: string) {
+        const result = await db.execute<{ id: string; userId: string; role: string }>(sql`
+          SELECT id, "userId", role FROM member
+          WHERE "organizationId" = ${tenantId} AND id = ${id}`);
+        return result.rows[0];
+      },
+      /** Compensate ONLY a newly signed-up account that never acquired a membership. */
+      async discardUnassignedUser(userId: string) {
+        const result = await db.execute(sql`DELETE FROM "user" u WHERE u.id = ${userId}
+          AND NOT EXISTS (SELECT 1 FROM member m WHERE m."userId" = u.id) RETURNING id`);
+        return result.rows.length === 1;
+      },
+    },
     categories: {
       list(opts: { active?: boolean; limit?: number } = {}) {
         const conds: SQL[] = [eq(t.categories.tenant_id, tenantId)];
@@ -1228,6 +1253,120 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
           })
           .returning({ id: t.auditLog.id });
         return rows[0];
+      },
+    },
+
+    /**
+     * roles-admin 3.4 + 4.2 · tenant settings (server-only, D4) + annul
+     * code lifecycle (D3). Tenant-scoped like everything else here:
+     * `tenantId` comes from the session, never a payload. `upsert` is a PK
+     * upsert (one row per tenant) that stamps `updated_at`/`updated_by` and
+     * writes the `settings.update` audit with meta = the patch itself
+     * (precedent: void-sale.ts:66 audit insert) — the patch is
+     * display/toggle config, never a secret. `generateAnnulCode` /
+     * `checkAnnulCode` own the single-active-code invariant.
+     */
+    settings: {
+      async get(): Promise<PublicSettings> {
+        return loadTenantSettings(db, tenantId);
+      },
+      async upsert(patch: SettingsPatch, userId: string): Promise<PublicSettings> {
+        const ts = now();
+        // `null` clears a field; `undefined` must never reach drizzle (an
+        // undefined key in a spread would turn into SET col = DEFAULT churn).
+        const clean = Object.fromEntries(
+          Object.entries(patch).filter(([, v]) => v !== undefined),
+        ) as SettingsPatch;
+        const rows = await db
+          .insert(t.tenantSettings)
+          .values({ tenant_id: tenantId, ...clean, updated_at: ts, updated_by: userId })
+          .onConflictDoUpdate({
+            target: t.tenantSettings.tenant_id,
+            // partial patch: omitted fields keep their stored value (or the
+            // column default on first insert — defaults = current behavior)
+            set: { ...clean, updated_at: ts, updated_by: userId },
+          })
+          .returning();
+        await db.insert(t.auditLog).values({
+          id: randomUUID(),
+          tenant_id: tenantId,
+          actor: userId,
+          action: "settings.update",
+          meta: clean as Record<string, unknown>,
+        });
+        return toPublicSettings(rows[0]);
+      },
+      /**
+       * roles-admin 4.2 / design D3 — rotation = overwrite the three code
+       * columns of the tenant's SINGLE settings row: the previous hash dies
+       * with it, so there is exactly one active code per tenant BY
+       * CONSTRUCTION (one row per tenant, no overlap window). The plaintext
+       * leaves the server exactly once, here; only HMAC/expires/created_by
+       * are persisted. Audit meta carries `{expires_at, created_by}` —
+       * NEVER the code or the hash.
+       */
+      async generateAnnulCode(
+        userId: string,
+      ): Promise<{ code: string; expires_at: string }> {
+        const code = randomAnnulCode();
+        const hash = hmacAnnulCode(code);
+        const expiresAt = new Date(Date.now() + ANNUL_CODE_TTL_MIN * 60_000);
+        const ts = now();
+        await db
+          .insert(t.tenantSettings)
+          .values({
+            tenant_id: tenantId,
+            annul_code_hash: hash,
+            annul_code_expires_at: expiresAt,
+            annul_code_created_by: userId,
+            updated_at: ts,
+            updated_by: userId,
+          })
+          .onConflictDoUpdate({
+            target: t.tenantSettings.tenant_id,
+            // Only the code columns churn: toggles/identity keep their value.
+            set: {
+              annul_code_hash: hash,
+              annul_code_expires_at: expiresAt,
+              annul_code_created_by: userId,
+              updated_at: ts,
+              updated_by: userId,
+            },
+          });
+        const expiresIso = expiresAt.toISOString();
+        await db.insert(t.auditLog).values({
+          id: randomUUID(),
+          tenant_id: tenantId,
+          actor: userId,
+          action: "annul_code.rotate",
+          meta: { expires_at: expiresIso, created_by: userId },
+        });
+        return { code, expires_at: expiresIso };
+      },
+      /**
+       * roles-admin 4.2 / design D3 — the ONLY validator, called solely by
+       * the void route (online-only; no sync entity, no client cache).
+       * Order is the contract: missing row / no hash / no code → `required`;
+       * HMAC mismatch (timingSafeEqual) → `mismatch`; `expires_at <= now()`
+       * → `expired`.
+       */
+      async checkAnnulCode(
+        code: string | undefined,
+      ): Promise<{ ok: true } | { error: "required" | "mismatch" | "expired" }> {
+        const rows = await db
+          .select({
+            hash: t.tenantSettings.annul_code_hash,
+            expires_at: t.tenantSettings.annul_code_expires_at,
+          })
+          .from(t.tenantSettings)
+          .where(eq(t.tenantSettings.tenant_id, tenantId))
+          .limit(1);
+        const row = rows[0];
+        if (!row?.hash || !code) return { error: "required" };
+        if (!verifyAnnulCode(row.hash, code)) return { error: "mismatch" };
+        if (!row.expires_at || row.expires_at.getTime() <= Date.now())
+          return { error: "expired" };
+        return { ok: true };
       },
     },
   };

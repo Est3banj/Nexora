@@ -114,6 +114,12 @@ describe("D4-2 · platform-admin gates", () => {
     });
     expect(res.statusCode).toBe(201);
     const body = res.json();
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(body).toEqual({
+      tenant: { id: expect.any(String), name: "Tienda Granizados", slug: "tienda-granizados" },
+      first_user: { id: expect.any(String), email: "shop@granizados.test" },
+      audit: { id: expect.any(String) },
+    });
     expect(body.tenant.name).toBe("Tienda Granizados");
     expect(body.first_user.email).toBe("shop@granizados.test");
     expect(body.audit.id).toBeTruthy();
@@ -183,6 +189,21 @@ describe("D4-2 · platform-admin gates", () => {
     expect(second.statusCode).toBe(409);
     expect(await countOrgs()).toBe(afterFirst); // failed attempt adds no org
   });
+
+  it("platform flag is rechecked on every request, independent of active tenant", async () => {
+    const founder = await platformAdminActor();
+    await pool.query(`UPDATE session SET "activeOrganizationId" = NULL WHERE "userId" = $1`, [founder.userId]);
+    expect((await app.inject({ method: "GET", url: "/api/founder/sync-status", headers: authHeaders(founder) })).statusCode).toBe(200);
+    await pool.query(`UPDATE "user" SET "platformAdmin" = false WHERE id = $1`, [founder.userId]);
+    const before = await countOrgs();
+    for (const method of ["GET", "POST"] as const) {
+      const denied = await app.inject({ method, url: method === "GET" ? "/api/founder/sync-status" : "/api/founder/tenants",
+        headers: authHeaders(founder), ...(method === "POST" ? { payload: { name: "Revoked", email: "revoked@test.dev", password: "secret1234" } } : {}) });
+      expect(denied.statusCode).toBe(403);
+      expect(denied.json()).toEqual({ error: "forbidden" });
+    }
+    expect(await countOrgs()).toBe(before);
+  });
 });
 
 describe("D4-2 · sync-status metadata only + tenant isolation", () => {
@@ -250,6 +271,7 @@ describe("D4-2 · sync-status metadata only + tenant isolation", () => {
       tenants: Array<{
         tenant_id: string;
         name: string;
+        slug: string;
         users: number;
         pending: number;
         last_sync: Date | null;
@@ -261,6 +283,10 @@ describe("D4-2 · sync-status metadata only + tenant isolation", () => {
     const rowA = tenants.find((t) => t.tenant_id === tenantA.orgId)!;
     const rowB = tenants.find((t) => t.tenant_id === tenantB.orgId)!;
     expect(rowA.pending).toBe(7);
+    expect(rowA.slug).toBe("org-sync-a");
+    expect(rowB.slug).toBe("org-sync-b");
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(Object.keys(res.json())).toEqual(["tenants"]);
     expect(rowB.pending).toBe(2);
     // no single row may surface the merged total (spec: never 9 on one row)
     expect(tenants.every((t) => t.pending !== 9)).toBe(true);
@@ -274,7 +300,7 @@ describe("D4-2 · sync-status metadata only + tenant isolation", () => {
     expect(raw).not.toContain("A0"); // payload names from sync_log must not leak
     for (const t of tenants) {
       expect(Object.keys(t).sort()).toEqual(
-        ["errors", "last_error", "last_sync", "name", "pending", "tenant_id", "users"].sort(),
+        ["errors", "last_error", "last_sync", "name", "slug", "pending", "tenant_id", "users"].sort(),
       );
     }
   });

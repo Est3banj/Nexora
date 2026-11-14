@@ -1,13 +1,17 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildTestApp } from "./helpers";
-import { closeDb } from "../src/db";
+import { eq } from "drizzle-orm";
+import { authHeaders, buildTestApp, createTenant } from "./helpers";
+import { closeDb, db } from "../src/db";
+import * as t from "../src/db/schema";
 
 /**
  * Security hardening (audit 2026-11):
  *  - security headers on every response
  *  - rate-limit skips in test env (suite must not throttle)
  *  - production config refuses dev secrets (unit-tested via config module)
+ *  - roles-admin 4.7: settings / annul-code responses byte-scanned for the
+ *    HMAC column and the plaintext (VD:Settings never leak the secret)
  */
 
 let app: FastifyInstance;
@@ -51,5 +55,56 @@ describe("production config guards", () => {
     expect(nodeEnv === "production" && secret === devSecret).toBe(
       process.env.BETTER_AUTH_SECRET === devSecret,
     );
+  });
+});
+
+describe("annul-code leak scan (roles-admin 4.7)", () => {
+  it("settings and annul-code responses carry neither the hash nor the plaintext", async () => {
+    const owner = await createTenant(app, { email: "sec-annul@test.dev", orgSlug: "sec-annul" });
+    const put = await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      headers: authHeaders(owner),
+      payload: { require_annul_code: true },
+    });
+    expect(put.statusCode).toBe(200);
+
+    // The generate response is the ONLY place the plaintext may appear.
+    const gen = await app.inject({
+      method: "POST",
+      url: "/api/settings/annul-code",
+      headers: authHeaders(owner),
+    });
+    expect(gen.statusCode).toBe(200);
+    const { code } = gen.json();
+    const rows = await db
+      .select()
+      .from(t.tenantSettings)
+      .where(eq(t.tenantSettings.tenant_id, owner.orgId));
+    const hash = rows[0].annul_code_hash!;
+    expect(hash).toBeTruthy();
+    expect(hash).not.toBe(code);
+
+    // byte-scan of the RAW body strings — substring level, not JSON paths
+    expect(gen.body).toContain(code);
+    expect(gen.body).not.toContain("annul_code_hash");
+    expect(gen.body).not.toContain(hash);
+
+    const get = await app.inject({ method: "GET", url: "/api/settings", headers: authHeaders(owner) });
+    expect(get.statusCode).toBe(200);
+    expect(get.body).not.toContain("annul_code_hash");
+    expect(get.body).not.toContain(hash);
+    expect(get.body).not.toContain(code);
+
+    const putAgain = await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      headers: authHeaders(owner),
+      payload: { store_name: "Escaneada" },
+    });
+    expect(putAgain.statusCode).toBe(200);
+    expect(putAgain.body).not.toContain("annul_code_hash");
+    expect(putAgain.body).not.toContain(hash);
+    expect(putAgain.body).not.toContain(code);
   });
 });

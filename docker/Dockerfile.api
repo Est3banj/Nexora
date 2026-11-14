@@ -1,4 +1,32 @@
-# Skeleton — D4-5 (deploy). Multi-stage build for apps/api.
+# NEXORA API image — Partition B (deploy prep).
+# STATUS: prepared, build/deploy UNVERIFIED (no `docker build` was executed).
+#
+# Runtime model: there is NO compiled output. `apps/api` runs from TypeScript
+# sources through tsx (`start` = `tsx src/server.ts`) and `@pos/shared`
+# resolves to its TypeScript entrypoint (packages/shared/package.json →
+# ./src/index.ts), so the workspace sources must be present in the image.
+#
+# WHY THERE IS NO `pnpm --filter @pos/api build` HERE:
+# @pos/api has no build script at all (scripts: dev / start / typecheck /
+# test / seed / tenant-create / owner-provision / sync-status / backup-status
+# / db:*). The previous `pnpm --filter @pos/api build` line was a phantom
+# step that failed every build.
+#
+# WHY tsx SURVIVES: tsx is a devDependency of @pos/api, and
+# `pnpm install --frozen-lockfile --filter @pos/api...` installs dev
+# dependencies too — NODE_ENV=production is only set in the runtime stage,
+# AFTER the install. The runtime stage copies the whole /app tree
+# (node_modules included), so tsx, typescript and the workspace links are
+# all there.
+#   DO NOT add `pnpm install --prod` / `--omit=dev` here without first moving
+#   `tsx` to "dependencies" AND refreshing pnpm-lock.yaml: a prod-only
+#   install drops tsx and the container cannot start.
+#
+# WHY `corepack prepare`: the runtime CMD runs pnpm, and pnpm is resolved by
+# corepack from the root `packageManager` field (pnpm@9.15.9). Without the
+# explicit prepare, the FIRST pnpm call inside a running container would
+# download pnpm from the network — a surprise dependency at boot time. Keep
+# this version in sync with package.json#packageManager.
 FROM node:20-alpine AS build
 WORKDIR /app
 RUN corepack enable
@@ -6,12 +34,13 @@ COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY packages/shared ./packages/shared
 COPY apps/api ./apps/api
 RUN pnpm install --frozen-lockfile --filter @pos/api...
-RUN pnpm --filter @pos/api build
 
 FROM node:20-alpine
 WORKDIR /app
-RUN corepack enable
+RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
 ENV NODE_ENV=production
 COPY --from=build /app ./
 EXPOSE 3000
+# .env is excluded by .dockerignore: production config arrives as real
+# environment variables (see docker/compose.yml + docker/.env.example).
 CMD ["pnpm", "--filter", "@pos/api", "start"]

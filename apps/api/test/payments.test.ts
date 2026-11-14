@@ -8,6 +8,7 @@ import {
   authHeaders,
   buildTestApp,
   createTenant,
+  joinOrg,
   resetTables,
   signIn,
   type Actor,
@@ -16,16 +17,18 @@ import { closeDb, db } from "../src/db";
 import { scopedRepo } from "../src/db/scope";
 
 /**
- * D2-6 · Transfer confirmation endpoint (owner-only, strict transition)
- * AC (sales spec §Bank-transfer + tenancy §Owner confirms):
+ * D2-6 · Transfer confirmation endpoint (Dueño-tier, strict transition)
+ * AC (sales spec §Bank-transfer + tenancy §Owner confirms + auth-roles):
  *  - created pending → owner confirms → confirmed + confirmed_at
- *  - member CANNOT confirm (403)
+ *  - admin confirms too (roles-admin 2.3 tier parity)
+ *  - member CANNOT confirm (403 owner_only — regression, body UNCHANGED)
  *  - no silent revert: confirming twice / un-confirming → rejected
  *  - unauthenticated → 401, unknown id → 404
  */
 
 let app: FastifyInstance;
 let owner: Actor;
+let admin: Actor;
 let member: Actor;
 let repo: ReturnType<typeof scopedRepo>;
 
@@ -71,6 +74,7 @@ beforeEach(async () => {
   await resetTables();
   owner = await createTenant(app, { email: "pay@tenant.test", orgSlug: "org-pay" });
   member = await createMember(owner.orgId);
+  admin = await joinOrg(app, owner, "admin", "pay-admin@test.dev");
   repo = scopedRepo(db, owner.orgId);
 });
 
@@ -130,6 +134,20 @@ describe("POST /api/payments/:id/confirm", () => {
     const payment = await repo.payments.byUuid(paymentId);
     expect(payment?.status).toBe("pending");
     expect(payment?.confirmed_at).toBeNull();
+  });
+
+  // roles-admin 2.3 · AU:Owner and admin confirm transfers, member cannot —
+  // admin is dueño-tier now (`!isDueño`), body/response shape untouched.
+  it("an ADMIN confirms a pending transfer (tier parity with owner)", async () => {
+    const { ticketId, paymentId } = await seedPendingTransfer();
+    const res = await confirm(paymentId, admin);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().payment.status).toBe("confirmed");
+    expect(res.json().payment.confirmed_at).not.toBeNull();
+
+    const payment = await repo.payments.byUuid(paymentId);
+    expect(payment?.status).toBe("confirmed");
+    expect((await repo.tickets.byUuid(ticketId))?.status).toBe("completed");
   });
 
   it("no silent revert: a confirmed payment cannot be re-confirmed / un-confirmed", async () => {

@@ -17,12 +17,13 @@ import {
 } from "../db/local";
 import { annulTicket, AnnulError } from "../db/annul";
 import { ticketHasAbonos } from "../db/void-sale";
-import { useActiveMemberRole } from "../hooks/useActiveMemberRole";
+import { isDueñoHint, type RoleHint } from "../components/navigation";
 import { useSale } from "../hooks/useSale";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { PaymentModal, type PayMethod } from "../components/PaymentModal";
-import { ReceiptPreview, type ReceiptData } from "../components/ReceiptPreview";
+import { ReceiptPreview, pickReceiptIdentity, type ReceiptData } from "../components/ReceiptPreview";
 import { ProductIcon } from "../components/ProductIcon";
+import type { PublicSettings } from "../lib/settings";
 
 const cop = (n: number) =>
   new Intl.NumberFormat("es-CO", {
@@ -34,7 +35,10 @@ const cop = (n: number) =>
 type Props = {
   db: PGlite;
   tenantId: string;
-  userId: string;
+  /** Role hint lifted from App (roles-admin 5.2) — never authority. */
+  role: RoleHint;
+  /** Cached tenant settings (3.10): annul-code toggle + receipt identity. */
+  settings: PublicSettings;
   tenantName?: string;
   refreshToken: number;
   showToast: (msg: string) => void;
@@ -52,7 +56,8 @@ const LOW_STOCK_BADGE = 5;
 export function Sale({
   db,
   tenantId,
-  userId,
+  role,
+  settings,
   tenantName,
   refreshToken,
   showToast,
@@ -111,7 +116,10 @@ export function Sale({
     id: string;
     ticket_no: number;
   } | null>(null);
-  const isOwner = useActiveMemberRole(tenantId, userId, online) === "owner";
+  /* ── roles-admin 5.6 · afforance matrix (design D6, mirrors Tickets) ──
+   * void → Dueño tier OR member while `require_annul_code` is ON; `null`
+   * (unverified) → hidden. Never a disabled button pretending to exist. */
+  const canVoid = isDueñoHint(role) || (role === "member" && settings.require_annul_code);
   const [voidTarget, setVoidTarget] = useState<{
     id: string;
     ticket_no: number;
@@ -119,7 +127,17 @@ export function Sale({
   const [voidReason, setVoidReason] = useState("");
   const [voidBusy, setVoidBusy] = useState(false);
   const [voidErr, setVoidErr] = useState<string | null>(null);
+  /* Code field: shown while the cached toggle is ON; `voidCodeForced` is
+   * the staleness fallback (server said `annul_code_required` while the
+   * cache said OFF → reveal + focus instead of a dead end). */
+  const [voidCode, setVoidCode] = useState("");
+  const [voidCodeForced, setVoidCodeForced] = useState(false);
+  const voidCodeRef = useRef<HTMLInputElement>(null);
+  const codeRequired = settings.require_annul_code || voidCodeForced;
   const voidDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    if (voidCodeForced) voidCodeRef.current?.focus();
+  }, [voidCodeForced]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -442,6 +460,8 @@ export function Sale({
       return "El cliente excede su límite de crédito";
     if (code === "MIXED_AMOUNT_INVALID")
       return "El efectivo ahora debe ser menor al total";
+    if (code === "NEGATIVE_STOCK")
+      return "Stock insuficiente: el comercio no permite ventas con stock negativo";
     return "No se pudo registrar la venta";
   }
 
@@ -513,7 +533,7 @@ export function Sale({
 
   /* ── Quick annul (Batch B): same auditable core as Tickets ──────── */
   async function openVoid(t: { id: string; ticket_no: number }) {
-    if (!isOwner) return;
+    if (!canVoid) return;
     if (await ticketHasAbonos(db, tenantId, t.id)) {
       showToast("No se puede anular: este cliente tiene abonos registrados.");
       return;
@@ -521,6 +541,9 @@ export function Sale({
     setVoidTarget(t);
     setVoidReason("");
     setVoidErr(null);
+    /* Fresh dialog = fresh code state (never remembered across attempts). */
+    setVoidCode("");
+    setVoidCodeForced(false);
     voidDialog.current?.showModal();
   }
 
@@ -529,7 +552,13 @@ export function Sale({
     setVoidBusy(true);
     setVoidErr(null);
     try {
-      await annulTicket(db, tenantId, voidTarget.id, voidReason.trim());
+      await annulTicket(
+        db,
+        tenantId,
+        voidTarget.id,
+        voidReason.trim(),
+        codeRequired ? voidCode.trim() : undefined,
+      );
       voidDialog.current?.close();
       showToast("Venta anulada · stock restituido. Registrá por fuera de NEXORA cualquier reintegro de dinero.");
       setLastSale(null);
@@ -537,6 +566,12 @@ export function Sale({
       setView("browse");
       onCommitted();
     } catch (err) {
+      /* Staleness fallback (D3/R4): cache said OFF, server demands the code
+       * → reveal + focus the field so the operator can comply. */
+      if (err instanceof AnnulError && err.kind === "code_required") {
+        setVoidCodeForced(true);
+        setVoidCode("");
+      }
       // AnnulError carries the operator message; anything else is a
       // network/timeout failure — never leak fetch internals.
       setVoidErr(
@@ -555,6 +590,11 @@ export function Sale({
       aria-labelledby="void-quick-title"
       onCancel={(e) => {
         if (voidBusy) e.preventDefault();
+      }}
+      onClose={() => {
+        /* Code never survives the dialog (state-only, D3/H4). */
+        setVoidCode("");
+        setVoidCodeForced(false);
       }}
     >
       <form
@@ -583,6 +623,25 @@ export function Sale({
           onChange={(e) => setVoidReason(e.target.value)}
           disabled={voidBusy}
         />
+        {codeRequired && (
+          <div>
+            <label htmlFor="void-quick-code">Código de anulación</label>
+            <input
+              id="void-quick-code"
+              ref={voidCodeRef}
+              data-testid="void-quick-code"
+              className="mono"
+              autoComplete="off"
+              autoCapitalize="characters"
+              spellCheck={false}
+              placeholder="Código de 8 caracteres"
+              maxLength={64}
+              value={voidCode}
+              onChange={(e) => setVoidCode(e.target.value)}
+              disabled={voidBusy}
+            />
+          </div>
+        )}
         {voidErr && (
           <p role="alert" data-testid="void-quick-error">
             {voidErr}
@@ -601,7 +660,12 @@ export function Sale({
             type="submit"
             className="btn danger"
             data-testid="void-quick-confirm"
-            disabled={voidBusy || !online || voidReason.trim().length < 3}
+            disabled={
+              voidBusy ||
+              !online ||
+              voidReason.trim().length < 3 ||
+              (codeRequired && voidCode.trim().length === 0)
+            }
           >
             {voidBusy ? "Anulando…" : "Confirmar anulación total"}
           </button>
@@ -682,20 +746,33 @@ export function Sale({
           >
             Imprimir
           </button>
-          <button
-            className="btn ghost void-trigger"
-            data-testid="void-last-sale"
-            disabled={!isOwner || !online || voidBusy}
-            title={!isOwner ? "Solo el dueño puede anular" : !online ? "Se necesita conexión" : undefined}
-            onClick={() => openVoid({ id: lastSale.id, ticket_no: lastSale.ticketNo })}
-          >
-            Anular esta venta
-          </button>
+          {/* roles-admin 5.6: the affordance renders ONLY when the matrix
+           * allows it (Dueño tier, or member with the annul-code toggle ON);
+           * `null`/member-with-toggle-off → hidden, not a dead disabled
+           * button. Copy is tier+code-aware. */}
+          {canVoid && (
+            <button
+              className="btn ghost void-trigger"
+              data-testid="void-last-sale"
+              disabled={!online || voidBusy}
+              title={
+                !online
+                  ? "Se necesita conexión"
+                  : settings.require_annul_code
+                    ? "Requiere el código de anulación vigente"
+                    : "Solo el dueño o un administrador puede anular"
+              }
+              onClick={() => openVoid({ id: lastSale.id, ticket_no: lastSale.ticketNo })}
+            >
+              Anular esta venta
+            </button>
+          )}
         </div>
         {voidDialogEl}
         <ReceiptPreview
           open={receipt !== null}
           data={receipt}
+          identity={pickReceiptIdentity(settings)}
           onClose={() => setReceipt(null)}
         />
       </div>
@@ -814,12 +891,18 @@ export function Sale({
             </p>
           )}
 
-          {lastTicket && (
+          {lastTicket && canVoid && (
             <button
               className="btn ghost void-trigger"
               data-testid="void-last-quick"
-              disabled={!isOwner || !online || voidBusy}
-              title={!online ? "Se necesita conexión" : undefined}
+              disabled={!online || voidBusy}
+              title={
+                !online
+                  ? "Se necesita conexión"
+                  : settings.require_annul_code
+                    ? "Requiere el código de anulación vigente"
+                    : "Solo el dueño o un administrador puede anular"
+              }
               onClick={() => openVoid(lastTicket)}
             >
               Anular última venta #{lastTicket.ticket_no}

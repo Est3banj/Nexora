@@ -1,6 +1,7 @@
 import { pathToFileURL } from "node:url";
 import { closeDb } from "../db";
 import { ensureAuthTables } from "../db/bootstrap";
+import { initBaseline } from "../db/init-baseline";
 import { createTenantWithFirstUser, FounderError } from "../founder/service";
 
 /**
@@ -29,6 +30,10 @@ export function parseTenantCreateArgs(argv: string[]): TenantCreateArgs {
   const flags: Record<string, string> = {};
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
+    // pnpm/npm forward the `--` separator itself: the documented
+    // `pnpm --filter @pos/api tenant-create -- --name …` reaches us as
+    // ["--", "--name", …]. Skip it instead of rejecting the whole call.
+    if (arg === "--") continue;
     if (!arg.startsWith("--")) {
       throw new FounderError(`unexpected argument: ${arg}`, 2);
     }
@@ -83,6 +88,9 @@ const isMain =
 if (isMain) {
   try {
     await ensureAuthTables();
+    // A fresh database may have been created by this CLI alone (no API boot
+    // yet): audit_log and the business tables must exist first.
+    await initBaseline();
     await runTenantCreate(process.argv.slice(2));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -34,3 +34,21 @@ export function paymentMethodLabel(methods: string | string[] | null): string {
   if (labels.length === 1) return labels[0];
   return `Mixto (${labels.map((label) => label.toLowerCase()).join(" + ")})`;
 }
+
+/**
+ * Ticket DISPLAY number (roles-admin 5.7 / design D8) — receipt header,
+ * receipt TICKET row and the Tickets list cell all compose through this one
+ * helper so the prefix can never drift between surfaces.
+ *
+ * `ticket_no` is an INTEGER SEQUENCE with a unique index: this function is
+ * display-only, it never touches storage. `null`/empty/whitespace prefix →
+ * the bare number ("123"); configured prefix → "NX-123". No fabricated
+ * prefix, ever (receipt-identity §Prefix shows, sequence untouched).
+ */
+export function formatTicketNo(
+  prefix: string | null | undefined,
+  no: number,
+): string {
+  const p = (prefix ?? "").trim();
+  return p ? `${p}-${no}` : String(no);
+}

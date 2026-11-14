@@ -1,0 +1,27 @@
+/* Composition only: shared NEXORA tokens/primitives remain the source of truth. */
+.admin-screen { min-width: 0; padding-bottom: var(--space-16); }
+.admin-screen button { scroll-margin-block: var(--space-16); }
+.admin-heading h2, .admin-toolbar h3 { margin: 0; }
+.admin-tabs { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-bottom: var(--space-6); }
+.admin-tabs button { min-height: var(--tap); flex: 1 1 auto; }
+.admin-stack { display: grid; gap: var(--space-4); min-width: 0; }
+.admin-toolbar, .admin-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.admin-actions { justify-content: flex-end; }
+.admin-grid, .admin-metrics { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
+.admin-screen .card { padding: var(--space-4); min-width: 0; }
+.admin-screen label, .admin-dialog label { display: grid; gap: var(--space-2); min-width: 0; font-size: var(--text-sm); }
+.admin-screen input:not([type=checkbox]), .admin-screen select, .admin-dialog input, .admin-dialog select { width: 100%; min-width: 0; min-height: var(--tap); font-size: var(--text-base); }
+.admin-screen small, .admin-dialog small { display: block; color: var(--muted); font-size: var(--text-xs); font-weight: 400; }
+.admin-screen fieldset { margin: 0; border: 1px solid var(--border); }
+.admin-screen legend { padding: 0 var(--space-2); font-weight: 700; }
+.admin-screen .admin-toggle { display: flex; align-items: flex-start; gap: var(--space-3); min-height: var(--tap); }
+.admin-toggle input { margin-top: var(--space-1); flex: none; width: 20px; height: 20px; accent-color: var(--primary); }
+.admin-list { list-style: none; padding: 0; margin: 0; }
+.admin-list li { display: flex; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-3) 0; border-bottom: 1px solid var(--border); }
+.admin-screen td, .admin-screen p, .admin-list li { overflow-wrap: anywhere; }
+.admin-list strong, .admin-metrics .kpi-value { font-family: var(--font-mono); }
+.admin-metrics .kpi { display: grid; gap: var(--space-2); }
+.admin-dialog { width: min(448px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: var(--space-6); overflow-y: auto; }
+.admin-secret { display: block; padding: var(--space-4); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-accent); color: var(--text); font: 600 var(--text-lg)/1.5 var(--font-mono); overflow-wrap: anywhere; user-select: text; }
+@media (min-width: 640px) { .admin-grid, .admin-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1280px) { .admin-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); } }

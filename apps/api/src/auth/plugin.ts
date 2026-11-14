@@ -2,7 +2,7 @@ import fp from "fastify-plugin";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { fromNodeHeaders } from "better-auth/node";
 import { getAuth } from "./auth";
-import type { RequestCtx, Role } from "./ctx";
+import { isDueño, type RequestCtx, type Role } from "./ctx";
 
 /**
  * Auth plugin (task D1-3): resolves `{userId, tenantId, role, platformAdmin}`
@@ -11,7 +11,7 @@ import type { RequestCtx, Role } from "./ctx";
  * - 401 when there is no session at all.
  * - 403 `no_active_tenant` when the session has no active organization or no
  *   membership in it (tenancy-auth: user with no membership has no tenant).
- * - Role comes from better-auth's org membership (`owner|member`).
+ * - Role comes from better-auth's org membership (`owner|admin|member`).
  * - tenantId NEVER comes from body/query/header.
  */
 async function authenticate(req: FastifyRequest): Promise<RequestCtx | null> {
@@ -31,7 +31,20 @@ async function authenticate(req: FastifyRequest): Promise<RequestCtx | null> {
       const active = (await getAuth().api.getActiveMemberRole({ headers })) as {
         role?: string;
       };
-      role = active?.role === "owner" ? "owner" : active?.role === "member" ? "member" : null;
+      // roles-admin 1.2 · H1 fix: better-auth 1.7.19 org roles are exactly
+      // admin|member|owner (crud-members.d.mts:420; defaultRoles in
+      // access/statement.mjs:71-74). The old `owner|member, else null` map
+      // turned `admin` into null, and `tenantId && role` below then DROPPED
+      // the tenant → total lockout (403 no_active_tenant) for admin members.
+      // Unknown roles still fail closed to null (spec: unrecognized → no tenant).
+      role =
+        active?.role === "owner"
+          ? "owner"
+          : active?.role === "admin"
+            ? "admin"
+            : active?.role === "member"
+              ? "member"
+              : null;
     } catch {
       // stale active org / membership revoked → no role (spec: no membership → no tenant)
       role = null;
@@ -75,6 +88,24 @@ export const authPlugin = fp(async (app) => {
       // on the user passes this gate (design §4).
       if (!ctx.platformAdmin) {
         return reply.code(403).send({ error: "forbidden" });
+      }
+    },
+  );
+
+  // roles-admin 1.4 · Dueño-tier gate for NEW endpoints (batch 2+).
+  // Chain it after requireAuth: `preHandler: [app.requireAuth, app.requireDueño]`
+  // — requireAuth resolves req.ctx (session, tenant, role). Fails closed if
+  // ctx is missing (mis-wired route → no tenant, never a silent pass).
+  // The legacy owner_only bodies (sales.ts:12, payments.ts:23) do NOT use
+  // this decorator on purpose: they migrate in Batch 2, zero test churn now.
+  app.decorate(
+    "requireDueño",
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      if (!req.ctx) {
+        return reply.code(403).send({ error: "no_active_tenant" });
+      }
+      if (!isDueño(req.ctx.role)) {
+        return reply.code(403).send({ error: "forbidden", detail: "dueño_only" });
       }
     },
   );

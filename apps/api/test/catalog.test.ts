@@ -5,6 +5,7 @@ import {
   authHeaders,
   buildTestApp,
   createTenant,
+  joinOrg,
   resetTables,
   type Actor,
 } from "./helpers";
@@ -297,5 +298,101 @@ describe("stock movements (stockdiary)", () => {
       payload: { delta: 1, reason: "x", note: "y" },
     });
     expect(res.statusCode).toBe(404);
+  });
+});
+
+/* ── roles-admin 2.1 · Dueño-tier REST gates ─────────────────────────── */
+
+describe("Dueño-tier REST gates (roles-admin 2.1)", () => {
+  let member: Actor;
+  let admin: Actor;
+
+  beforeEach(async () => {
+    member = await joinOrg(app, owner, "member", "cat-member@test.dev");
+    admin = await joinOrg(app, owner, "admin", "cat-admin@test.dev");
+  });
+
+  /** The 7 MUTATIONS of catalog.ts — one inject each, in route order. */
+  async function mutationChain(actor: Actor, tag: string) {
+    const headers = authHeaders(actor);
+    const category = await app.inject({
+      method: "POST",
+      url: "/api/catalog/categories",
+      headers,
+      payload: { name: `Cat ${tag}` },
+    });
+    const categoryId =
+      category.statusCode === 201 ? category.json().category.id : randomUUID();
+    const patchCategory = await app.inject({
+      method: "PATCH",
+      url: `/api/catalog/categories/${categoryId}`,
+      headers,
+      payload: { name: `Cat ${tag} editada` },
+    });
+    const product = await app.inject({
+      method: "POST",
+      url: "/api/catalog/products",
+      headers,
+      payload: { name: `Prod ${tag}`, variant: { name: "Único", price: 1000, stock: 5 } },
+    });
+    const ok = product.statusCode === 201;
+    const productId = ok ? product.json().product.id : randomUUID();
+    const variantId = ok ? product.json().variant.id : randomUUID();
+    const addVariant = await app.inject({
+      method: "POST",
+      url: `/api/catalog/products/${productId}/variants`,
+      headers,
+      payload: { name: "Extra", price: 2000, stock: 2 },
+    });
+    const patchProduct = await app.inject({
+      method: "PATCH",
+      url: `/api/catalog/products/${productId}`,
+      headers,
+      payload: { active: false },
+    });
+    const patchVariant = await app.inject({
+      method: "PATCH",
+      url: `/api/catalog/variants/${variantId}`,
+      headers,
+      payload: { price: 1100 },
+    });
+    const stockAdjust = await app.inject({
+      method: "POST",
+      url: `/api/catalog/variants/${variantId}/stock-adjust`,
+      headers,
+      payload: { delta: 1, reason: "reposition", note: "gate" },
+    });
+    return [category, patchCategory, product, addVariant, patchProduct, patchVariant, stockAdjust];
+  }
+
+  it("member 403 on ALL 7 mutations, nothing persists (CT:Member product create rejected)", async () => {
+    const results = await mutationChain(member, "member");
+    expect(results).toHaveLength(7);
+    for (const res of results) {
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toEqual({ error: "forbidden", detail: "dueño_only" });
+    }
+    expect(await repo.products.list()).toEqual([]);
+    expect(await repo.categories.list()).toEqual([]);
+  });
+
+  it("admin and owner succeed on ALL 7 mutations (CT:Admin and owner product create succeed)", async () => {
+    for (const [actor, tag] of [[admin, "admin"], [owner, "owner"]] as const) {
+      const results = await mutationChain(actor, tag);
+      expect(results.map(r => r.statusCode), tag).toEqual([201, 200, 201, 201, 200, 200, 201]);
+    }
+    expect((await repo.products.list()).map(p => p.name).sort()).toEqual(
+      ["Prod admin", "Prod owner"].sort(),
+    );
+  });
+
+  it("GETs stay open to members (CT:Member catalog reads still work)", async () => {
+    await mutationChain(owner, "leeme");
+    for (const url of ["/api/catalog/products", "/api/catalog/categories", "/api/catalog/sale-items"]) {
+      const res = await app.inject({ method: "GET", url, headers: authHeaders(member) });
+      expect(res.statusCode, url).toBe(200);
+    }
+    expect((await app.inject({ method: "GET", url: "/api/catalog/products", headers: authHeaders(member) }))
+      .json().products.map((p: { name: string }) => p.name)).toContain("Prod leeme");
   });
 });

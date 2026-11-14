@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PGlite } from "@electric-sql/pglite";
-import { FIADO_MIGRATION_SQL, LOCAL_SCHEMA_SQL, PROTOTYPE_MIGRATION_SQL } from "@pos/shared";
+import { FIADO_MIGRATION_SQL, LOCAL_SCHEMA_SQL, MUTATION_ENTITIES, PROTOTYPE_MIGRATION_SQL } from "@pos/shared";
 import type { Pool } from "pg";
 
 /**
@@ -220,6 +220,30 @@ describe("local PGlite ↔ server Drizzle parity", () => {
     expect(find("products", "client_uuid")).toBe("uuid");
     expect(find("tickets", "ticket_no")).toBe("integer");
     expect(find("sync_log", "client_ts")).toBe("bigint");
+  });
+
+  it("tenant_settings is SERVER-ONLY: absent from SHARED_TABLES, local DDL and MUTATION_ENTITIES (anti-drift, roles-admin 3.11)", async () => {
+    // Deliberate absence, not a forgotten table (sync spec §tenant_settings
+    // is not a sync entity): the parity contract, the PGlite mirror and the
+    // sync entity union must never learn about tenant_settings. If ANY of
+    // these fails, someone added it to a plumbing enumeration on purpose —
+    // update the spec first, never this test casually.
+    expect(
+      (SHARED_TABLES as readonly string[]).includes("tenant_settings"),
+      "tenant_settings must NOT join SHARED_TABLES (server-only, design D4)",
+    ).toBe(false);
+
+    const localRows = await columnsOf("local");
+    expect(
+      localRows.some((r) => r.table_name === "tenant_settings"),
+      "tenant_settings must NOT exist in the local PGlite DDL",
+    ).toBe(false);
+
+    expect(MUTATION_ENTITIES).not.toContain("tenant_settings");
+    expect(MUTATION_ENTITIES).not.toContain("settings");
+    // baseline enumerations intact (plumbing non-regression)
+    expect(MUTATION_ENTITIES).toContain("customer");
+    expect(MUTATION_ENTITIES).toContain("credit_abono");
   });
 });
 

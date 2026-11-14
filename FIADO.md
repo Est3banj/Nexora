@@ -28,7 +28,7 @@
 
 ### Gates de permisos
 
-- **Abono: owner-only.** En UI el formulario solo se renderiza con rol `owner` verificado (server sigue siendo autoridad; rol desconocido → nunca owner). En sync, el rechazo es **por ítem** en la ruta (`rejected: validation`), NO HTTP 403: un abono de miembro no debe matar el lote de venta del miembro (D4).
+- **Abono: cualquier rol verificado de la tienda** (miembro, admin o dueño). *Historial: fiado #6 decidió owner-only; lo revirtió roles-admin decisión #1 — el cajero cobra abonos en el mostrador (matriz del usuario). Rol sin verificar (`null`) → sin formulario.* En sync, la validación de datos (cliente, saldo, turno) es **por ítem** en la ruta (`rejected: validation`), NO HTTP 403: un abono inválido no debe matar el lote de venta del miembro (D4). El gate de dueño-aplicación quedó solo donde el usuario lo mantuvo: altas de usuario, generación de códigos y confirmación de transferencias.
 - **Anulación: 409 `abonos_exist` a nivel de cliente** — ver `ANULACIONES.md`. Precedencia `not_found → shift_closed → abonos_exist → incomplete_sale`.
 - **Ventas:** el cliente debe existir (tenant-scoped) antes de aplicar la venta de crédito; el server rechaza el grupo y el cliente reordena/reintenta (H7).
 

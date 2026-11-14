@@ -11,6 +11,7 @@ import {
 import { closeDb, db } from "../src/db";
 import { scopedRepo } from "../src/db/scope";
 import * as t from "../src/db/schema";
+import { DEFAULT_SETTINGS } from "../src/db/settings";
 
 /**
  * D4-3 · Full isolation sweep — 12 original+fiado tables [MERGE GATE][CROSS]
@@ -482,6 +483,46 @@ describe("D4-3 · founder endpoints rejected for tenant owner", () => {
       headers: authHeaders(tenantA),
     });
     expect(status.statusCode).toBe(403);
+  });
+});
+
+describe("roles-admin 3.11 · settings cross-tenant (SY:Cross-tenant settings not enumerable)", () => {
+  it("A's settings row is invisible to B via repo.settings.get AND via GET /api/settings", async () => {
+    const repoA = scopedRepo(db, tenantA.orgId);
+    await repoA.settings.upsert(
+      { store_name: "Segreta de A", nit: "900111222", enable_fiado: false },
+      tenantA.userId,
+    );
+    expect(await repoA.settings.get()).toMatchObject({
+      store_name: "Segreta de A",
+      nit: "900111222",
+      enable_fiado: false,
+    });
+
+    // B's scoped repo sees only defaults — no A field disclosed
+    const repoB = scopedRepo(db, tenantB.orgId);
+    expect(await repoB.settings.get()).toEqual(DEFAULT_SETTINGS);
+
+    // B's HTTP session likewise (tenant comes ONLY from the session)
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/settings",
+      headers: authHeaders(tenantB),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().settings).toEqual(DEFAULT_SETTINGS);
+    expect(JSON.stringify(res.json())).not.toContain("Segreta de A");
+
+    // and B cannot overwrite A's row through its own session (PK is scoped)
+    const write = await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      headers: authHeaders(tenantB),
+      payload: { store_name: "De B" },
+    });
+    expect(write.statusCode).toBe(200);
+    expect(await repoA.settings.get()).toMatchObject({ store_name: "Segreta de A" });
+    expect(await repoB.settings.get()).toMatchObject({ store_name: "De B" });
   });
 });
 

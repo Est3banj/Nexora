@@ -411,6 +411,50 @@ export const auditLog = pgTable(
   (t) => [index("audit_log_tenant_created_idx").on(t.tenant_id, t.created_at)],
 );
 
+// Server-only per-tenant settings (roles-admin 3.1 / design D4). Same
+// "server-only" lineage as `syncSaleOperations` above: NOT in
+// `local-schema.ts`, NOT in `SHARED_TABLES`/`EXPECTED_INDEXES`, NOT in
+// `BUSINESS_TABLES`, no rehydrate key, no sync entity — its absence from
+// the parity contract is deliberate and pinned by negative assertions
+// (test/schema-contract.test.ts, task 3.11). One row per tenant, PK point
+// lookup only — NO secondary indexes.
+export const tenantSettings = pgTable(
+  "tenant_settings",
+  {
+    // PK = tenant_id (no surrogate id): one settings row per tenant by
+    // construction, so upsert is a plain ON CONFLICT on the PK.
+    tenant_id: uuid("tenant_id").primaryKey(),
+    store_name: text("store_name"),
+    nit: text("nit"),
+    address: text("address"),
+    phone: text("phone"),
+    ticket_footer: text("ticket_footer"),
+    /** display-only prefix (e.g. "NX") — never touches ticket_no sequence */
+    ticket_prefix: text("ticket_prefix"),
+    /** STORED ONLY, 0..100; no math anywhere (B1/IVA deferred) */
+    iva_pct: integer("iva_pct"),
+    /** UI pre-fill only — the server never injects it (design D4b) */
+    default_credit_limit: integer("default_credit_limit"),
+    // Defaults = CURRENT behavior: absent row → oversell allowed, fiado on,
+    // annul code off (spec settings §Absent row = current behavior).
+    allow_negative_stock: boolean("allow_negative_stock").notNull().default(true),
+    require_annul_code: boolean("require_annul_code").notNull().default(false),
+    enable_fiado: boolean("enable_fiado").notNull().default(true),
+    /** HMAC hex of the annul code — NEVER leaves the server (D3/D4) */
+    annul_code_hash: text("annul_code_hash"),
+    annul_code_expires_at: timestamp("annul_code_expires_at", { withTimezone: true }),
+    annul_code_created_by: uuid("annul_code_created_by"),
+    updated_at: updatedAt(),
+    updated_by: uuid("updated_by"),
+  },
+  (t) => [
+    check(
+      "tenant_settings_iva_pct_ck",
+      sql`${t.iva_pct} IS NULL OR (${t.iva_pct} BETWEEN 0 AND 100)`,
+    ),
+  ],
+);
+
 export type Product = typeof products.$inferSelect;
 export type ProductVariant = typeof productVariants.$inferSelect;
 export type Ticket = typeof tickets.$inferSelect;
@@ -420,3 +464,4 @@ export type StockDiary = typeof stockdiary.$inferSelect;
 export type SyncLogEntry = typeof syncLog.$inferSelect;
 export type Customer = typeof customers.$inferSelect;
 export type CreditAbono = typeof creditAbonos.$inferSelect;
+export type TenantSettings = typeof tenantSettings.$inferSelect;
