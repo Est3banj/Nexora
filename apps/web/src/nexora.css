@@ -63,6 +63,11 @@ table { width: 100%; border-collapse: collapse; }
 .nexora-shell .app-frame { display: flex; flex: 1; min-height: 0; width: 100%; max-width: none; margin: 0; }
 .nexora-shell .app-header { position: relative; flex: none; min-height: var(--topbar); padding: 10px 16px; background: var(--glass); backdrop-filter: blur(12px); box-shadow: var(--shadow); gap: 12px; z-index: 4; }
 .app-header h1 { margin: 0; font-size: 16px; line-height: 24px; font-weight: 700; letter-spacing: -.025em; min-width: 0; color: var(--text); }
+/* Mobile: the sidebar brand is hidden here — carry the real favicon logo
+   in the header so the brand is visible on every screen. Hidden on
+   desktop where the sidebar already shows it. */
+.header-logo { width: 32px; height: 32px; border-radius: 8px; object-fit: cover; flex: none; }
+@media (min-width: 1024px) { .header-logo { display: none; } }
 /* design-rules cardTitle [16,24,700] + semantic.text for in-screen headings;
    dialogs keep their own title sizes (payment20 / product·client·abono18). */
 .nexora-shell .screen .card h3,
@@ -115,7 +120,7 @@ table { width: 100%; border-collapse: collapse; }
   .nexora-shell { flex-direction: row; }
   .nexora-shell .shell-sidebar { display: flex; flex-direction: column; width: var(--sidebar); min-height: 0; border-right: 1px solid rgb(226 232 240 / 80%); border-bottom: 0; }
   .shell-brand { display: flex; align-items: center; gap: 12px; padding: 22px 20px; }
-  .shell-mark { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; background: linear-gradient(to top right,#4f46e5,#6366f1); color: #fff; font-size: 24px; font-weight: 300; box-shadow: 0 4px 6px rgb(79 70 229 / 20%); }
+  .shell-mark { display: block; width: 40px; height: 40px; border-radius: 12px; object-fit: cover; box-shadow: 0 4px 6px rgb(79 70 229 / 20%); }
   .shell-brand strong { display: block; color: var(--text); font-size: 20px; line-height: 24px; }
   .shell-brand div > span { display: inline-block; background: #eef2ff; color: #4f46e5; border: 1px solid #e2e8f0; border-radius: 999px; padding: 0 8px; font-size: 10px; letter-spacing: .05em; }
   .nexora-shell .tabbar { flex-direction: column; overflow: auto; min-height: 0; padding: 0 12px; gap: 4px; }

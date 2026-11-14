@@ -64,7 +64,7 @@ export function AppShell({ db, tenantId, user, tenantName, tab, nav, role, refre
   </div>;
   return <div className="app nexora-shell">
     <aside className="shell-sidebar">
-      <div className="shell-brand"><span className="shell-mark" aria-hidden="true">N</span><div><strong>NEXORA</strong><span>POS</span></div></div>
+      <div className="shell-brand"><img src="/icon-192.png" alt="" className="shell-mark" /><div><strong>NEXORA</strong><span>POS</span></div></div>
       <nav className="tabbar" aria-label="Navegación principal">{nav.map(item => {
         const Icon = icons[item.tab];
         return <button key={item.tab} className={tab === item.tab ? "active" : ""} aria-current={tab === item.tab ? "page" : undefined} data-testid={`tab-${item.tab}`} onClick={() => onNavigate(item.tab)}><Icon size={20} aria-hidden="true" /><span>{item.label}</span></button>;
@@ -75,7 +75,7 @@ export function AppShell({ db, tenantId, user, tenantName, tab, nav, role, refre
       {/* Title comes from the FILTERED nav (roles-admin 5.3): a tab the
        * matrix hides has no title here — the guard in App renders the
        * access-denied fallback instead of a protected heading. */}
-      <header className="app-header"><h1>{nav.find(item => item.tab === tab)?.title}</h1><div className="shell-header-tools">
+      <header className="app-header"><img src="/icon-192.png" alt="" className="header-logo" /><h1>{nav.find(item => item.tab === tab)?.title}</h1><div className="shell-header-tools">
         <BogotaClock />
         <span className={`net-status ${sync.online ? "net-online" : "net-offline"}`} data-testid="net-status">{sync.online ? "en línea" : "sin conexión"}</span>
         <span className={`badge ${sync.pending ? "badge-pending" : "badge-ok"}`} data-testid="pending-badge" title="Mutaciones pendientes de sincronizar">{sync.pending ? `${sync.pending} pendientes` : "sinc."}</span>

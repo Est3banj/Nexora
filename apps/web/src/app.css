@@ -1770,12 +1770,13 @@ select {
   margin-right: 6px;
 }
 
+/* Real favicon logo — clearly visible in the login hero (user request) */
 .login-logo {
-  width: 48px;
-  height: 48px;
+  width: 64px;
+  height: 64px;
   object-fit: contain;
-  vertical-align: -12px;
-  margin-right: 8px;
+  vertical-align: -16px;
+  margin-right: 10px;
 }
 
 .brand-logo {
@@ -1784,14 +1785,6 @@ select {
   object-fit: contain;
   vertical-align: -4px;
   margin-right: 6px;
-}
-
-.login-logo {
-  width: 48px;
-  height: 48px;
-  object-fit: contain;
-  vertical-align: -12px;
-  margin-right: 8px;
 }
 
 .login-title {
