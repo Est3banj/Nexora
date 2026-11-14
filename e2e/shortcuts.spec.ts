@@ -95,7 +95,7 @@ test.describe("Batch B — shortcuts + quick annul", () => {
       .toBe("transfer:pending");
   });
 
-  test("Anular última venta from the order panel (desktop)", async ({ page }) => {
+  test("Anular esta venta from the success screen (desktop)", async ({ page }) => {
     wipeSalesAndCatalog();
     await page.setViewportSize({ width: 1440, height: 900 });
     await login(page);
@@ -112,12 +112,11 @@ test.describe("Batch B — shortcuts + quick annul", () => {
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("sale-success")).toBeVisible();
     await page.getByTestId("receipt-close").click();
-    await page.getByTestId("new-sale").click();
 
-    /* the quick-void trigger surfaces the latest non-voided ticket */
-    const quick = page.getByTestId("void-last-quick");
+    /* quick-void lives ONLY on the success screen now (user removed it
+     * from the order panel — the cart stays a cart) */
+    const quick = page.getByTestId("void-last-sale");
     await expect(quick).toBeVisible();
-    await expect(quick).toContainText("#1");
     await quick.click();
 
     await page.getByTestId("void-quick-reason").fill("Cobro duplicado por error");
@@ -127,7 +126,8 @@ test.describe("Batch B — shortcuts + quick annul", () => {
     expect(dbOne("SELECT status FROM tickets")).toBe("voided");
     /* stock was10, sold 1 → 9; annulment restores → 10 */
     expect(dbOne("SELECT stock FROM product_variants")).toBe("10");
-    /* no non-voided ticket remains → trigger disappears */
+    /* annulment clears lastSale → success screen and its trigger are gone */
+    await expect(page.getByTestId("sale-success")).toHaveCount(0);
     await expect(quick).toHaveCount(0);
   });
 

@@ -183,6 +183,30 @@ for (const width of [1440, 375]) {
       const cols = await page.evaluate(() => getComputedStyle(document.querySelector('[data-testid="sale-grid"]')!).gridTemplateColumns.split(" ").length);
       expect(cols).toBe(width >= 1280 ? 4 : width >= 640 ? 3 : 2);
 
+      /* Static full-height order panel (user request): the PANEL never
+       * scrolls — only the item list does — and quick-void was removed
+       * from the cart (it lives on the success screen only). */
+      if (width >= 1024) {
+        await page.getByTestId("sale-item").first().click();
+        await expect(page.getByTestId("cart-count")).toContainText("1 ítems");
+        const geom = await page.evaluate(() => {
+          const panel = document.querySelector('[data-testid="order-panel"]')!;
+          const list = document.querySelector(".order-lines")!;
+          return {
+            panelOverflow: getComputedStyle(panel).overflow,
+            panelH: panel.getBoundingClientRect().height,
+            listOverflow: getComputedStyle(list).overflowY,
+            vh: innerHeight,
+          };
+        });
+        expect(geom.panelOverflow).toBe("hidden");
+        expect(geom.panelH).toBeGreaterThan(geom.vh - 160);
+        expect(geom.listOverflow).toBe("auto");
+        await expect(page.getByTestId("void-last-quick")).toHaveCount(0);
+        await page.getByTestId("cart-clear").click();
+        await expect(page.locator(".order-empty")).toBeVisible();
+      }
+
       /* category filter ANDs with the search; «Todos» keeps the search text */
       await page.getByTestId("category-chip").filter({ hasText: "Bebidas" }).click();
       await expect(page.getByTestId("sale-item")).toHaveCount(1);

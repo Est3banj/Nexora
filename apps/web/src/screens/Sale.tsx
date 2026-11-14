@@ -112,10 +112,6 @@ export function Sale({
   const [online, setOnline] = useState(
     typeof navigator === "undefined" ? true : navigator.onLine !== false,
   );
-  const [lastTicket, setLastTicket] = useState<{
-    id: string;
-    ticket_no: number;
-  } | null>(null);
   /* ── roles-admin 5.6 · afforance matrix (design D6, mirrors Tickets) ──
    * void → Dueño tier OR member while `require_annul_code` is ON; `null`
    * (unverified) → hidden. Never a disabled button pretending to exist. */
@@ -153,19 +149,11 @@ export function Sale({
 
   useEffect(() => {
     let alive = true;
-    Promise.all([
-      listSaleItems(db, tenantId),
-      listCategories(db, tenantId),
-      db.query<{ id: string; ticket_no: number }>(
-        "SELECT id, ticket_no FROM tickets WHERE tenant_id=$1 AND status<>'voided' ORDER BY ticket_no DESC LIMIT 1",
-        [tenantId],
-      ),
-    ])
-      .then(([rows, cats, last]) => {
+    Promise.all([listSaleItems(db, tenantId), listCategories(db, tenantId)])
+      .then(([rows, cats]) => {
         if (!alive) return;
         setItems(rows);
         setCategories(cats.filter((c) => c.active));
-        setLastTicket(last.rows[0] ?? null);
       })
       .catch(() => {
         if (alive) setItems([]);
@@ -890,25 +878,6 @@ export function Sale({
               {error}
             </p>
           )}
-
-          {lastTicket && canVoid && (
-            <button
-              className="btn ghost void-trigger"
-              data-testid="void-last-quick"
-              disabled={!online || voidBusy}
-              title={
-                !online
-                  ? "Se necesita conexión"
-                  : settings.require_annul_code
-                    ? "Requiere el código de anulación vigente"
-                    : "Solo el dueño o un administrador puede anular"
-              }
-              onClick={() => openVoid(lastTicket)}
-            >
-              Anular última venta #{lastTicket.ticket_no}
-            </button>
-          )}
-          {voidDialogEl}
         </aside>
         <PaymentModal
           open={payOpen}

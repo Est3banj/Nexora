@@ -933,14 +933,18 @@ dialog .row, .ticket-actions { flex-wrap: wrap; }
   min-width: 0;
 }
 
+/* Static full-height order panel (user request + prototype): the panel
+ * itself never scrolls — header and footer stay pinned and ONLY the item
+ * list scrolls when it overflows. */
 .sale-order {
   display: none;
   flex-direction: column;
   gap: 12px;
   position: sticky;
   top: 16px;
-  max-height: calc(100vh - 120px);
-  overflow-y: auto;
+  height: calc(100dvh - 112px);
+  max-height: none;
+  overflow: hidden;
   margin-bottom: 0;
 }
 
@@ -948,6 +952,7 @@ dialog .row, .ticket-actions { flex-wrap: wrap; }
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: none;
 }
 
 .order-head h3 {
@@ -1001,6 +1006,7 @@ dialog .row, .ticket-actions { flex-wrap: wrap; }
   display: flex;
   flex-direction: column;
   align-items: center;
+  flex: 1;
   gap: 4px;
 }
 
@@ -1015,6 +1021,8 @@ dialog .row, .ticket-actions { flex-wrap: wrap; }
   color: var(--muted);
 }
 
+/* The ONLY scrolling region of the order panel — grows to fill, scrolls
+ * only when the items overflow (prototype cart-items behavior). */
 .order-lines {
   list-style: none;
   margin: 0;
@@ -1022,6 +1030,10 @@ dialog .row, .ticket-actions { flex-wrap: wrap; }
   display: flex;
   flex-direction: column;
   gap: 10px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /* Cart line = its own card (prototype renderCart: rounded-xl border card,
