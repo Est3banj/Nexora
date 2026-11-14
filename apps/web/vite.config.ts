@@ -9,6 +9,12 @@ export default defineConfig({
       registerType: "autoUpdate",
       includeAssets: ["favicon.svg", "fonts/*.woff2", "fonts/*-OFL.txt"],
       workbox: {
+        // PGlite's postgres.wasm (~8.09 MB) MUST be precached: the POS has
+        // to boot offline on first install at the shop. Workbox's2 MiB
+        // default rejects it and fails the whole build (found by the first
+        // production smoke build,2026-11-13).12 MiB leaves headroom for a
+        // future PGlite bump instead of failing silently again.
+        maximumFileSizeToCacheInBytes: 12 * 1024 * 1024,
         // App-shell fallback for navigations — EXCEPT the API: a request
         // under /api/ must reach the network, never index.html. (/api/auth/*
         // and /api/settings are covered by the same prefix.)
