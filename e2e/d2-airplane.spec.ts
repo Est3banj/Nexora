@@ -73,7 +73,7 @@ test.describe("D2 gate — airplane mode → reload → reconnect → one copy",
 
     /* ---------------- login (online) + seed a local product ---------- */
     await page.goto("/");
-    await page.getByTestId("login-email").fill("owner@demo.test");
+    await page.getByTestId("login-identifier").fill("owner@demo.test");
     await page.getByTestId("login-password").fill("demo12345");
     await page.getByTestId("login-submit").click();
     await expect(page.getByTestId("tab-sale")).toBeVisible();
@@ -91,7 +91,13 @@ test.describe("D2 gate — airplane mode → reload → reconnect → one copy",
     await expect(
       page.getByTestId("product-item").filter({ hasText: "Granizado Aereo" }),
     ).toBeVisible();
-    await expect(page.getByTestId("pending-badge")).toContainText("pendientes");
+    /* The header badge no longer prints the queued count as its label: an
+       aborted ACK settles it into "Error de sinc." while the count lives in
+       the title. Assert the queue itself — that is what this step proves. */
+    await expect(page.getByTestId("pending-badge")).toHaveAttribute(
+      "title",
+      /\d+ cambios pendientes/,
+    );
     await context.unroute(SYNC_GLOB);
 
     /* baseline: drain the catalog mutations so the offline queue starts

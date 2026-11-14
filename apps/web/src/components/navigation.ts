@@ -9,17 +9,22 @@
  * deliberately ABSENT — it is an account-menu entry outside the tenant shell
  * (D7), never a tab (batch 6/7 territory). */
 export const NAVIGATION = [
-  { tab: "sale", label: "Venta / POS", title: "Venta Rápida (POS)", tier: "all" },
-  { tab: "arqueo", label: "Caja & Arqueo", title: "Arqueo & Turnos de Caja", tier: "all" },
-  { tab: "tickets", label: "Tickets & Historial", title: "Historial de Comprobantes", tier: "all" },
-  { tab: "catalog", label: "Catálogo", title: "Gestión de Inventario y Catálogo", tier: "all" },
-  { tab: "dashboard", label: "Panel / Dashboard", title: "Panel de Control Principal", tier: "dueno" },
-  { tab: "reports", label: "Reportes", title: "Reportes y Analítica", tier: "dueno" },
-  { tab: "credito", label: "Clientes & Fiados", title: "Clientes & Cuentas por Cobrar (Fiados)", tier: "all", requiresFiado: true },
-  { tab: "admin", label: "Administración", title: "Administración", tier: "dueno" },
+  { tab: "sale", label: "Venta / POS", shortLabel: "POS", group: "Operación", title: "Venta Rápida (POS)", tier: "all" },
+  { tab: "arqueo", label: "Caja & Arqueo", shortLabel: "Caja", group: "Operación", title: "Arqueo & Turnos de Caja", tier: "all" },
+  { tab: "tickets", label: "Tickets & Historial", shortLabel: "Tickets", group: "Operación", title: "Historial de Comprobantes", tier: "all" },
+  { tab: "catalog", label: "Catálogo", shortLabel: "Catálogo", group: "Gestión", title: "Gestión de Inventario y Catálogo", tier: "all" },
+  { tab: "dashboard", label: "Panel / Dashboard", shortLabel: "Panel", group: "Gestión", title: "Panel de Control Principal", tier: "dueno" },
+  { tab: "reports", label: "Reportes", shortLabel: "Reportes", group: "Gestión", title: "Reportes y Analítica", tier: "dueno" },
+  { tab: "credito", label: "Clientes & Fiados", shortLabel: "Fiados", group: "Operación", title: "Clientes & Cuentas por Cobrar (Fiados)", tier: "all", requiresFiado: true },
+  { tab: "admin", label: "Administración", shortLabel: "Admin", group: "Gestión", title: "Administración", tier: "dueno" },
 ] as const;
 export type AppTab = (typeof NAVIGATION)[number]["tab"];
 export type NavItem = (typeof NAVIGATION)[number];
+
+/** Presentation only; always partition the already permission-filtered matrix. */
+export function compactNavigation(nav: NavItem[]) {
+  return { primary: nav.slice(0, 4), secondary: nav.slice(4) };
+}
 
 /** Display hint of the active org role — `null` = unknown / not yet verified. */
 export type RoleHint = "owner" | "admin" | "member" | null;

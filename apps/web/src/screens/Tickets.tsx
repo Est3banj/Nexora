@@ -96,6 +96,12 @@ export function Tickets({
   onOpenAccount,
 }: Props) {
   const [tickets, setTickets] = useState<LocalTicketRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [retry, setRetry] = useState(0);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState(false);
+  const [previewRetry, setPreviewRetry] = useState(0);
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -156,12 +162,15 @@ export function Tickets({
   }, []);
 
   const refresh = useCallback(async () => {
-    setTickets(await listLocalTickets(db, tenantId));
+    setLoading(true);
+    try { setTickets(await listLocalTickets(db, tenantId)); setLoadError(false); }
+    catch { setLoadError(true); }
+    finally { setLoading(false); }
   }, [db, tenantId]);
 
   useEffect(() => {
     void refresh();
-  }, [refresh, refreshToken]);
+  }, [refresh, refreshToken, retry]);
 
   useEffect(() => {
     if (!previewId) {
@@ -170,11 +179,12 @@ export function Tickets({
     }
     let alive = true;
     setHasAbonos(true);
+    setDetail(null); setPreviewLoading(true); setPreviewError(false);
     void Promise.all([getLocalTicket(db, tenantId, previewId), ticketHasAbonos(db, tenantId, previewId)]).then(([ticket, blocked]) => {
-      if (alive) { setDetail(ticket); setHasAbonos(blocked); }
-    });
+      if (alive) { setDetail(ticket); setHasAbonos(blocked); setPreviewError(!ticket); }
+    }).catch(() => { if (alive) setPreviewError(true); }).finally(() => { if (alive) setPreviewLoading(false); });
     return () => { alive = false; };
-  }, [db, tenantId, previewId, refreshToken]);
+  }, [db, tenantId, previewId, refreshToken, previewRetry]);
 
   function openPreview(id: string) {
     setConfirmErr(null);
@@ -273,16 +283,21 @@ export function Tickets({
     }
   }
 
+  const queryFeedback = <>
+    {loading && <p role="status">Consultando comprobantes…</p>}
+    {loadError && <p role="alert">No se pudieron consultar los comprobantes. <button className="btn" onClick={() => setRetry(n => n + 1)}>Reintentar comprobantes</button></p>}
+  </>;
   if (tickets.length === 0) {
     return (
       <div className="screen tickets">
         <h2>Tickets</h2>
-        <div className="empty-state" data-testid="empty-tickets">
+        {queryFeedback}
+        {!loading && !loadError && <div className="empty-state" data-testid="empty-tickets">
           <h2>Sin ventas todavía</h2>
           <p className="muted">
             Los tickets aparecen acá después de la primera venta en este dispositivo.
           </p>
-        </div>
+        </div>}
       </div>
     );
   }
@@ -364,19 +379,14 @@ export function Tickets({
           La anulación necesita conexión. Podés seguir vendiendo offline.
         </p>
       )}
-      {/* roles-admin 5.6 · static copy is tier+code-aware: it must describe
-       * WHICH rule applies now (toggle OFF = dueño tier; toggle ON = code
-       * for any verified role), never a single hard-coded tier. */}
-      <p className="muted">
-        {settings.require_annul_code
-          ? "Anulaciones con código de anulación: cualquier rol verificado puede anular con el código vigente (vence a los 15 minutos). Las cajas cerradas no se modifican."
-          : "Solo el dueño o un administrador puede anular ventas sincronizadas de un turno abierto. Las cajas cerradas no se modifican."}
-      </p>
     </>
   ) : null;
 
   return (
     <div className="screen tickets">
+      {queryFeedback}
+      {previewId && previewLoading && <p role="status">Consultando comprobante…</p>}
+      {previewId && previewError && <div role="alert"><p>No se pudo abrir el comprobante.</p><button className="btn" onClick={() => setPreviewRetry(n => n + 1)}>Reintentar detalle</button><button className="btn ghost" onClick={() => setPreviewId(null)}>Cancelar consulta</button></div>}
       <div className="tickets-toolbar">
         <h2 style={{ margin: 0 }}>Tickets ({visible.length})</h2>
         <input
@@ -420,7 +430,7 @@ export function Tickets({
       )}
 
       {visible.length > 0 && (
-        <div className="table-scroll tickets-table-wrap">
+        <div className="table-scroll tickets-table-wrap" role="region" aria-label="Historial de comprobantes, desplazamiento horizontal" tabIndex={0}>
           <table className="tickets-table" data-testid="tickets-table">
             <thead>
               <tr>
@@ -514,7 +524,7 @@ export function Tickets({
       <dialog
         ref={dialog}
         aria-labelledby="void-title"
-        aria-describedby="void-description"
+        aria-describedby="void-description void-guide"
         onCancel={(e) => {
           if (voiding) e.preventDefault();
         }}
@@ -537,6 +547,15 @@ export function Tickets({
             Se anula toda la venta y se restituye el stock una sola vez. El
             historial se conserva. No realiza un reintegro bancario ni de
             efectivo.
+          </p>
+          {/* roles-admin 5.6 · tier+code-aware guide at the DECISION point:
+           * describes WHICH rule applies now (toggle OFF = dueño tier;
+           * toggle ON = code for any verified role), never one hard-coded
+           * tier. Was a permanent paragraph on the whole list — moved here. */}
+          <p className="muted" id="void-guide">
+            {settings.require_annul_code
+              ? "Cualquier rol verificado anula con el código vigente (vence a los 15 minutos). Las cajas cerradas no se modifican."
+              : "Solo el dueño o un administrador puede anular. Las cajas cerradas no se modifican."}
           </p>
           <label htmlFor="void-reason">Motivo obligatorio</label>
           <textarea

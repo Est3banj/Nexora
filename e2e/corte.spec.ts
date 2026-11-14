@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { wipeSalesAndCatalog } from "./helpers-db";
+import { navigate } from "./helpers-navigation";
 
 /**
  * Batch D — Corte de caja imprimible (térmica 58/80mm):
@@ -12,7 +13,7 @@ import { wipeSalesAndCatalog } from "./helpers-db";
 
 async function login(page: import("@playwright/test").Page) {
   await page.goto("/");
-  await page.getByTestId("login-email").fill("owner@demo.test");
+  await page.getByTestId("login-identifier").fill("owner@demo.test");
   await page.getByTestId("login-password").fill("demo12345");
   await page.getByTestId("login-submit").click();
   await expect(page.getByTestId("tab-sale")).toBeVisible();
@@ -26,7 +27,7 @@ test.describe("Batch D — corte de caja", () => {
     await login(page);
 
     /* no sales yet → button exists but is disabled */
-    await page.getByTestId("tab-reports").click();
+    await navigate(page, "reports");
     await expect(page.getByTestId("corte-print")).toBeDisabled();
     await expect(page.getByTestId("export-excel")).toBeDisabled();
 
@@ -53,7 +54,7 @@ test.describe("Batch D — corte de caja", () => {
     await expect(page.getByTestId("sale-success")).toBeVisible();
     await page.getByTestId("receipt-close").click();
 
-    await page.getByTestId("tab-reports").click();
+    await navigate(page, "reports");
     const corte = page.getByTestId("corte-print");
     await expect(corte).toBeEnabled();
     /* headless print() is a no-op — must not crash or hang */

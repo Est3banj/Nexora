@@ -62,9 +62,9 @@ export function Consola({ onBack }: { onBack: () => void }) {
     <aside className="consola-sidebar">
       <div className="consola-brand"><ShieldCheck aria-hidden="true" size={32} /><div><strong>NEXORA</strong><span>Consola de plataforma</span></div></div>
       <nav aria-label="Consola de plataforma" className="consola-nav">
-        {views.map(({ id, label, icon: Icon }) => <button key={id} className="btn ghost" aria-current={view === id ? "page" : undefined}
+        {views.map(({ id, label, icon: Icon }) => <button key={id} className="btn ghost" aria-label={label} title={label} aria-current={view === id ? "page" : undefined}
           data-testid={`consola-nav-${id}`} onClick={() => { setView(id); setCreated(null); heading.current?.focus(); }}>
-          <Icon size={20} aria-hidden="true" />{label}
+          <Icon size={20} aria-hidden="true" /><span>{label}</span>
         </button>)}
       </nav>
       <button className="btn ghost consola-back" data-testid="consola-back" onClick={onBack}><ArrowLeft size={18} aria-hidden="true" />Volver a la app</button>

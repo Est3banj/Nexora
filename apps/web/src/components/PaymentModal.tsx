@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PGlite } from "@electric-sql/pglite";
 import { Banknote, BookMarked, CheckCircle2, Smartphone } from "lucide-react";
+import type { PublicSettings } from "../lib/settings";
 import {
   createLocalCustomer,
   customerAccountById,
@@ -124,6 +125,7 @@ function CashSection({
 }
 
 type Props = {
+  settings: Pick<PublicSettings, "enable_fiado" | "allow_negative_stock">;
   open: boolean;
   db: PGlite;
   tenantId: string;
@@ -148,6 +150,7 @@ type Props = {
 };
 
 export function PaymentModal({
+  settings,
   open,
   db,
   tenantId,
@@ -168,6 +171,13 @@ export function PaymentModal({
 }: Props) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [customers, setCustomers] = useState<LocalCustomer[]>([]);
+  const [customersLoading, setCustomersLoading] = useState(false);
+  const [customersError, setCustomersError] = useState(false);
+  const [accountError, setAccountError] = useState(false);
+  const [queryRetry, setQueryRetry] = useState(0);
+  useEffect(() => {
+    if (!settings.enable_fiado && method === "credit") onMethodChange("cash");
+  }, [settings.enable_fiado, method, onMethodChange]);
   const [customerSearch, setCustomerSearch] = useState("");
   const [customerId, setCustomerId] = useState("");
   const [cashPart, setCashPart] = useState("");
@@ -237,17 +247,18 @@ export function PaymentModal({
   useEffect(() => {
     if (!open) return;
     let alive = true;
+    setCustomersLoading(true);
     listLocalCustomers(db, tenantId, customerSearch)
       .then((rows) => {
-        if (alive) setCustomers(rows);
+        if (alive) { setCustomers(rows); setCustomersError(false); }
       })
       .catch(() => {
-        if (alive) setCustomers([]);
-      });
+        if (alive) setCustomersError(true);
+      }).finally(() => { if (alive) setCustomersLoading(false); });
     return () => {
       alive = false;
     };
-  }, [open, db, tenantId, customerSearch]);
+  }, [open, db, tenantId, customerSearch, queryRetry]);
 
   /* Account (balance + limit) for the selected client — the client-side
    * credit gate reads the SAME derived balance as the commit (9.7). */
@@ -258,12 +269,14 @@ export function PaymentModal({
     }
     let alive = true;
     setAccountLoading(true);
+    setAccount(null);
+    setAccountError(false);
     customerAccountById(db, tenantId, customerId)
       .then((row) => {
         if (alive) setAccount(row);
       })
       .catch(() => {
-        if (alive) setAccount(null);
+        if (alive) { setAccount(null); setAccountError(true); }
       })
       .finally(() => {
         if (alive) setAccountLoading(false);
@@ -271,7 +284,7 @@ export function PaymentModal({
     return () => {
       alive = false;
     };
-  }, [open, method, customerId, db, tenantId]);
+  }, [open, method, customerId, db, tenantId, queryRetry]);
 
   const cashAmount = cashPart === "" ? 0 : Number(cashPart);
   const creditPart = total - cashAmount;
@@ -287,7 +300,7 @@ export function PaymentModal({
     if (!customerId) return "Seleccioná un cliente para vender a crédito.";
     if (cashPartInvalid)
       return "El efectivo ahora debe ser un entero COP ≥ 0 y menor al total — para cobrar todo en efectivo usá Efectivo.";
-    if (!account) return accountLoading ? "Consultando cuenta…" : null;
+    if (!account) return accountLoading ? "Consultando cuenta…" : "Cuenta no disponible. Reintentá la consulta antes de cobrar.";
     if (!account.active) return "El cliente debe estar activo.";
     if (account.credit_limit === null)
       return "Configurá el límite de crédito del cliente antes de vender a crédito.";
@@ -297,7 +310,8 @@ export function PaymentModal({
   }, [method, customerId, cashPartInvalid, account, accountLoading, creditPart]);
 
   const confirmDisabled =
-    busy || newBusy || (method === "credit" && (limitBlock !== null || !account));
+    busy || newBusy || (!settings.allow_negative_stock && oversell.length > 0) ||
+    (method === "credit" && (!settings.enable_fiado || limitBlock !== null || !account || accountLoading));
 
   async function createClient() {
     if (newBusyRef.current) return;
@@ -356,6 +370,7 @@ export function PaymentModal({
        * (and errors) in the DOM — strict-mode selectors would see them. */}
       {open && (
         <>
+      <div className="payment-body">
       <div className="payment-head">
         <div>
           <h3 id="payment-title">Procesar Cobro NEXORA</h3>
@@ -374,16 +389,14 @@ export function PaymentModal({
       </div>
 
       {/* 3-method switcher — prototype pay-method-btn grammar (icon over label) */}
-      <div className="pay-switch" role="tablist" aria-label="Método de pago">
+      <div className="pay-switch" role="group" aria-label="Método de pago">
         <button
           type="button"
-          role="tab"
           id="pay-tab-cash"
-          aria-controls="pay-panel-cash"
-          aria-selected={method === "cash"}
+          aria-pressed={method === "cash"}
           className={`pay-method-btn${method === "cash" ? " active" : ""}`}
           data-testid="pay-cash"
-          disabled={busy}
+          disabled={busy || newBusy}
           onClick={() => onMethodChange("cash")}
         >
           <Banknote size={18} aria-hidden="true" />
@@ -393,13 +406,11 @@ export function PaymentModal({
         </button>
         <button
           type="button"
-          role="tab"
           id="pay-tab-transfer"
-          aria-controls="pay-panel-transfer"
-          aria-selected={method === "transfer"}
+          aria-pressed={method === "transfer"}
           className={`pay-method-btn${method === "transfer" ? " active" : ""}`}
           data-testid="pay-transfer"
-          disabled={busy}
+          disabled={busy || newBusy}
           onClick={() => onMethodChange("transfer")}
         >
           <Smartphone size={18} aria-hidden="true" />
@@ -407,20 +418,18 @@ export function PaymentModal({
             Transferencia <kbd className="pay-kbd">F2</kbd>
           </span>
         </button>
-        <button
+        {settings.enable_fiado && <button
           type="button"
-          role="tab"
           id="pay-tab-credit"
-          aria-controls="pay-panel-credit"
-          aria-selected={method === "credit"}
+          aria-pressed={method === "credit"}
           className={`pay-method-btn${method === "credit" ? " active" : ""}`}
           data-testid="pay-fiado"
-          disabled={busy}
+          disabled={busy || newBusy}
           onClick={() => onMethodChange("credit")}
         >
           <BookMarked size={18} aria-hidden="true" />
           <span>Fiado (Crédito)</span>
-        </button>
+        </button>}
       </div>
 
       {/* Total a Cobrar */}
@@ -435,7 +444,7 @@ export function PaymentModal({
         <div className="warn-banner" data-testid="oversell-warning" role="status">
           Stock insuficiente:{" "}
           {oversell.map((l) => `${l.label} (quedan ${l.stock})`).join(", ")}
-          . Podés vender igual — el saldo quedará en negativo.
+          {settings.allow_negative_stock ? ". Podés vender igual — el saldo quedará en negativo." : ". Este comercio no permite ventas sin stock. Ajustá la orden para continuar."}
         </div>
       )}
 
@@ -469,7 +478,7 @@ export function PaymentModal({
       </div>
 
       {method === "cash" && (
-        <div role="tabpanel" id="pay-panel-cash" aria-labelledby="pay-tab-cash">
+        <div role="region" id="pay-panel-cash" aria-labelledby="pay-tab-cash">
           <CashSection total={total} tendered={tendered} setTendered={onTenderedChange} />
         </div>
       )}
@@ -478,7 +487,7 @@ export function PaymentModal({
         <div
           className="transfer-note"
           data-testid="transfer-note"
-          role="tabpanel"
+          role="region"
           id="pay-panel-transfer"
           aria-labelledby="pay-tab-transfer"
         >
@@ -493,8 +502,8 @@ export function PaymentModal({
         </div>
       )}
 
-      {method === "credit" && (
-        <div className="fiado-section" data-testid="fiado-section">
+      {method === "credit" && settings.enable_fiado && (
+        <div className="fiado-section" data-testid="fiado-section" role="region" aria-labelledby="pay-tab-credit">
           <div className="fiado-group" role="group" aria-labelledby="fiado-step-1">
             <h4 className="fiado-step" id="fiado-step-1">
               <span className="step-num" aria-hidden="true">1</span> Cliente
@@ -505,15 +514,17 @@ export function PaymentModal({
               value={customerSearch} disabled={busy || newBusy}
               onChange={(e) => { setCustomerSearch(e.target.value); setCustomerId(""); }} />
             <label htmlFor="fiado-client">Cliente fiado</label>
+            {customersLoading && <p role="status">Consultando clientes…</p>}
+            {customersError && <p role="alert">No se pudieron consultar los clientes. <button className="btn" onClick={() => setQueryRetry(n => n + 1)}>Reintentar clientes</button></p>}
             <select
             id="fiado-client"
             data-testid="fiado-client"
             value={customerId}
-            disabled={busy}
+            disabled={busy || newBusy || customersLoading || customersError}
             onChange={(e) => setCustomerId(e.target.value)}
           >
             <option value="">
-              {customers.length === 0
+              {customersError ? "Consulta no disponible" : customersLoading ? "Consultando clientes…" : customers.length === 0
                 ? "Sin clientes activos — creá uno abajo"
                 : "Seleccioná un cliente…"}
             </option>
@@ -551,6 +562,7 @@ export function PaymentModal({
                 <label htmlFor="fiado-new-phone">Teléfono (opcional)</label>
                 <input
                   id="fiado-new-phone"
+                  type="tel"
                   data-testid="fiado-new-phone"
                   value={newPhone}
                   maxLength={40}
@@ -614,6 +626,7 @@ export function PaymentModal({
             </div>
           )}
 
+          {accountError && <p role="alert">No se pudo consultar la cuenta. <button className="btn" onClick={() => setQueryRetry(n => n + 1)}>Reintentar cuenta</button></p>}
           <label className="fiado-mixed-toggle">
             <input
               type="checkbox"
@@ -668,6 +681,7 @@ export function PaymentModal({
           {error}
         </p>
       )}
+      </div>
 
       <div className="pay-footer">
       {method === "transfer" ? (
@@ -675,7 +689,7 @@ export function PaymentModal({
           type="button"
           className="btn primary big pay-confirm"
           data-testid="checkout-transfer"
-          disabled={busy}
+          disabled={confirmDisabled}
           aria-busy={busy}
           onClick={onConfirmTransfer}
         >

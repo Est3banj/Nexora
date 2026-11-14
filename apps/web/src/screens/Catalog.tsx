@@ -28,9 +28,10 @@ export function Catalog({ db, tenantId, role, refreshToken, showToast, onMutated
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<LocalProduct | null>(null);
   const refresh = useCallback(async () => {
+    setLoading(true);
     try {
       const [rows, cats] = await Promise.all([listProducts(db, tenantId), listCategories(db, tenantId)]);
-      setProducts(rows); setCategories(cats);
+      setProducts(rows); setCategories(cats); setError(null);
     } catch (err) { setError(catalogError(err)); }
     finally { setLoading(false); }
   }, [db, tenantId]);
@@ -62,7 +63,7 @@ export function Catalog({ db, tenantId, role, refreshToken, showToast, onMutated
       </div>
       {canWrite && <button className="btn primary" data-testid="product-new" onClick={() => { setEditing(null); setOpen(true); }}><Plus size={16} aria-hidden="true" /> Nuevo Producto</button>}
     </div>
-    {error && <p className="error" role="alert" data-testid="catalog-error">{error}</p>}
+    {error && <p className="error" role="alert" data-testid="catalog-error">{error} <button className="btn" onClick={() => void refresh()}>Reintentar catálogo</button></p>}
     {loading && <p role="status">Cargando catálogo…</p>}
     <div className="catalog-cards" aria-busy={loading}>
       {visible.map(p => <article className="catalog-tile" data-testid="product-item" key={p.id}>
@@ -76,7 +77,7 @@ export function Catalog({ db, tenantId, role, refreshToken, showToast, onMutated
         {canWrite && <button className="btn catalog-edit" data-testid="product-edit" onClick={() => { setEditing(p); setOpen(true); }}><SquarePen size={14} aria-hidden="true" /> Editar</button>}
       </article>)}
     </div>
-    {!loading && !visible.length && <div className="empty-state" data-testid="empty-catalog-note"><h2>{products.length ? "Sin resultados" : "Catálogo vacío"}</h2><p>{products.length ? "Probá otra búsqueda o categoría." : "Creá el primer producto con Nuevo Producto para empezar a vender."}</p></div>}
+    {!loading && !error && !visible.length && <div className="empty-state" data-testid="empty-catalog-note"><h2>{products.length ? "Sin resultados" : "Catálogo vacío"}</h2><p>{products.length ? "Probá otra búsqueda o categoría." : canWrite ? "Creá el primer producto con Nuevo Producto para empezar a vender." : "El dueño o administrador puede cargar productos para empezar a vender."}</p></div>}
     {canWrite && <details className="catalog-categories"><summary>Administrar categorías</summary><form onSubmit={e => { e.preventDefault(); if (newCategory.trim()) void mutate(async () => { await createLocalCategory(db, tenantId, { name: newCategory.trim() }); setNewCategory(""); }, "Categoría creada (pendiente de sync)"); }}><label htmlFor="new-category">Nueva categoría</label><div className="row gap"><input id="new-category" data-testid="new-category-name" maxLength={60} required value={newCategory} onChange={e => setNewCategory(e.target.value)} /><button className="btn" data-testid="category-create" disabled={busy}>Agregar</button></div></form></details>}
     <ProductModal open={open} product={editing} categories={categories} db={db} tenantId={tenantId} onClose={() => setOpen(false)} onSaved={() => { setOpen(false); void refresh(); onMutated(); showToast(`${editing ? "Producto actualizado" : "Producto creado"} (pendiente de sync)`); }} />
   </section>;

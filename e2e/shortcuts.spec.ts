@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { dbOne, wipeSalesAndCatalog } from "./helpers-db";
+import { navigate } from "./helpers-navigation";
 
 /**
  * Batch B — peak-hour shortcuts + quick annul from Venta:
@@ -14,7 +15,7 @@ import { dbOne, wipeSalesAndCatalog } from "./helpers-db";
 
 async function login(page: import("@playwright/test").Page) {
   await page.goto("/");
-  await page.getByTestId("login-email").fill("owner@demo.test");
+  await page.getByTestId("login-identifier").fill("owner@demo.test");
   await page.getByTestId("login-password").fill("demo12345");
   await page.getByTestId("login-submit").click();
   await expect(page.getByTestId("tab-sale")).toBeVisible();
@@ -65,7 +66,7 @@ test.describe("Batch B — shortcuts + quick annul", () => {
     await page.getByTestId("receipt-close").click();
 
     /* confirmed cash sale → Panel shows the hour-of-day profile */
-    await page.getByTestId("tab-dashboard").click();
+    await navigate(page, "dashboard");
     await expect(page.getByTestId("dash-hours")).toBeVisible();
     await expect(page.locator(".hour-bar.peak")).toHaveCount(1);
 

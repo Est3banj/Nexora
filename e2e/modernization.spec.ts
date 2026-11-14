@@ -3,6 +3,7 @@ import { dbOne, wipeSalesAndCatalog } from "./helpers-db";
 import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { navigate } from "./helpers-navigation";
 
 const XLSX = createRequire(new URL("../apps/web/package.json", import.meta.url))("xlsx");
 
@@ -82,7 +83,7 @@ for (const width of [1440, 375]) {
         await expect.poll(() => page.locator(".shell-clock").innerText()).not.toBe(before);
       } else expect((await page.locator(".shell-sidebar").boundingBox())!.height).toBeLessThan(90);
       for (const tab of ["sale", "arqueo", "tickets", "catalog", "dashboard", "reports", "admin", "credito"]) {
-        await page.getByTestId(`tab-${tab}`).click();
+        await navigate(page, tab);
         await expect(page.getByTestId(`tab-${tab}`)).toHaveAttribute("aria-current", "page");
         expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
       }
@@ -389,7 +390,7 @@ for (const width of [1440, 375]) {
     // boot-race empty state (the product was created via API above).
     await expect(page.getByTestId("sale-item")).toHaveCount(1);
     for (const tab of ["sale", "arqueo", "tickets", "catalog", "dashboard", "reports", "credito"]) {
-      await page.getByTestId(`tab-${tab}`).click();
+      await navigate(page, tab);
       await expect(page.getByTestId(`tab-${tab}`)).toHaveAttribute("aria-current", "page");
       if (tab === "arqueo") await expect(page.locator(".cash-screen")).toHaveAttribute("aria-busy", "false");
       if (tab === "tickets") await expect(page.getByTestId("ticket-item")).toHaveCount(2);
@@ -483,7 +484,7 @@ for (const width of [1440, 375]) {
     await page.getByTestId("checkout-cancel").click();
     await page.keyboard.press("F1");
     await page.keyboard.press("F3");
-    await expect(page.getByTestId("pay-cash")).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("pay-cash")).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByTestId("checkout-confirm")).toBeFocused();
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("receipt-preview")).toBeVisible();
@@ -535,7 +536,7 @@ for (const width of [1440, 375]) {
         (gen_random_uuid(),'${tenant}',gen_random_uuid(),'${customer}',5000,'cash','2026-11-03T17:00:00Z'),
         (gen_random_uuid(),'${tenant}',gen_random_uuid(),'${customer}',3000,'transfer','2026-11-03T17:00:00Z');`.replace(/\n/g, " "));
       await page.goto("/");
-      await page.getByTestId("tab-dashboard").click();
+      await navigate(page, "dashboard");
       await expect(page.getByTestId("period-today")).toHaveAttribute("aria-pressed", "true");
       await expect(page.getByTestId("kpi-revenue")).toContainText("65.000");
       await expect(page.getByTestId("kpi-credit")).toContainText("55.000");
@@ -552,7 +553,7 @@ for (const width of [1440, 375]) {
       await expect(page.getByTestId("period-label")).toContainText("2026-10-01 — 2026-10-03");
       await page.getByTestId("period-7d").click();
       await expect(page.getByTestId("period-label")).toContainText("2026-10-28 — 2026-11-03");
-      await page.getByTestId("tab-reports").click();
+      await navigate(page, "reports");
       await expect(page.getByTestId("sales-total")).toContainText("65.000");
       await page.getByTestId("report-from").fill("2026-11-03");
       await page.getByTestId("report-to").fill("2026-11-03");

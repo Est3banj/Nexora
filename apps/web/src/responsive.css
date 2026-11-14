@@ -1,0 +1,265 @@
+/* NEXORA responsive rules — source of truth for the UI audit (2026-11).
+ * Palette, type, radii and motion remain in nexora.css.
+ * Mobile <640: four destinations + More, icons only.
+ * Tablet 640–1023: all permitted destinations, icon + short label.
+ * Desktop >=1024: grouped sidebar. These same boundaries are used by AppShell.
+ * Bottom navigation is IN FLOW; checkout reserves its own space in the scroller.
+ */
+:root {
+  --navigation-size: 64px;
+  --navigation-height: calc(var(--navigation-size) + env(safe-area-inset-bottom, 0px));
+  --checkout-height: 80px;
+  --header-height: 88px;
+}
+.nexora-shell .shell-sidebar {
+  order: 2;
+  height: var(--navigation-height);
+  padding: 0 0 env(safe-area-inset-bottom, 0px);
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.nexora-shell .tabbar {
+  display: flex;
+  height: calc(var(--navigation-size) - 1px);
+  padding: 4px 8px;
+  gap: 4px;
+  overflow: visible;
+}
+.nexora-shell .tabbar button {
+  flex: 1 1 0;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 4px;
+  margin: 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  border: 0;
+  border-radius: 12px;
+  font-size: 11px;
+  line-height: 16px;
+}
+.nexora-shell .tabbar button span { display: none; }
+.nexora-shell .tabbar button.active { background: var(--surface-accent); box-shadow: inset 0 -3px var(--primary); }
+.nexora-shell .app-frame { order: 1; }
+.nexora-shell .app-header {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  grid-template-rows: 44px 20px;
+  height: calc(var(--header-height) + env(safe-area-inset-top, 0px));
+  min-height: calc(var(--header-height) + env(safe-area-inset-top, 0px));
+  padding: calc(8px + env(safe-area-inset-top, 0px)) 16px 8px;
+  gap: 4px 8px;
+}
+.app-header h1 { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shell-header-tools { gap: 8px; grid-column: 3; grid-row: 1; }
+/* One quiet rail, in flow: no detached badges beneath account controls.
+ * Uses the existing semantic palette and 4/8px spacing; no new motion. */
+.shell-status { grid-column: 1 / -1; grid-row: 2; display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; font: 500 11px/20px var(--font-sans); }
+.shell-status > span { display: flex; align-items: center; gap: 4px; min-width: 0; white-space: nowrap; }
+.shell-status-connection { flex: none; }
+.shell-status-sync { border-inline-start: 1px solid var(--border); padding-inline-start: 8px; }
+.shell-status svg { flex: none; }
+.shell-status-label { overflow: hidden; text-overflow: ellipsis; }
+.shell-status .is-online { color: var(--success); }
+.shell-status .is-offline, .shell-status .is-pending { color: #92600a; }
+.shell-status .is-error { color: var(--danger); }
+.shell-clock { display: none; }
+.mobile-account summary { width: 44px; }
+.mobile-account .shell-account { max-height: calc(100dvh - var(--header-height) - var(--navigation-height) - 24px); overflow: auto; overscroll-behavior: contain; }
+.nexora-shell .app-main { padding: 16px; scroll-padding-block: 16px; }
+.nexora-shell .cart-bar {
+  left: 0;
+  right: 0;
+  bottom: var(--navigation-height);
+  width: 100%;
+  max-width: none;
+  height: var(--checkout-height);
+  padding: 12px 16px;
+  transform: none;
+  gap: 8px;
+}
+.cart-bar > span { font-size: 12px; }
+.cart-bar > strong { min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+.cart-bar .btn { flex: none; min-width: 96px; }
+.nexora-shell .app-main:has(.cart-bar) { padding-bottom: calc(var(--checkout-height) + 16px); }
+.toast {
+  inset: calc(var(--header-height) + env(safe-area-inset-top, 0px) + 8px) 16px auto auto;
+  width: max-content;
+  max-width: min(460px, calc(100vw - 32px));
+}
+.toast > span { min-width: 0; overflow-wrap: anywhere; }
+.more-navigation { width: min(448px, calc(100vw - 32px)); }
+.more-navigation h2 { margin: 0; font-size: 18px; }
+.more-navigation nav { display: grid; gap: 8px; margin-top: 16px; }
+.more-navigation nav button { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 12px; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 12px; text-align: left; }
+.more-navigation nav button.active { color: var(--primary); background: var(--surface-accent); border-color: var(--primary); }
+.nav-group-title { display: block; margin: 12px 12px 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+
+/* Local overflow is deliberate; the screen itself must never scroll sideways. */
+.screen { min-width: 0; max-width: 100%; }
+.pos-toolbar { flex-wrap: wrap; }
+.pos-search-wrap { min-width: min(200px, 100%); }
+.pos-chips { flex: 1 1 100%; min-width: 0; max-width: 100%; }
+.sale-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.sale-tile { min-width: 0; }
+.tile-product, .tile-variant, .tile-sku { overflow-wrap: anywhere; }
+.tile-stock { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.tile-top { flex-wrap: wrap; }
+.tile-price { min-width: 0; overflow-wrap: anywhere; }
+.tile-add { flex: none; }
+.sale-order { height: calc(100dvh - 136px); max-height: calc(100dvh - 136px); }
+.nexora-shell .app-main:has(.sale-layout) { container-type: size; }
+.sale-order { height: 100cqh; max-height: 100cqh; }
+.order-head, .order-sub, .order-total, .sale-order > .pay-cta { flex-shrink: 0; }
+.order-head { flex-wrap: wrap; }
+.order-line { flex-wrap: wrap; }
+.order-line-info { flex-basis: 100%; }
+.order-line-total { margin-left: auto; }
+.order-line-label { white-space: normal; overflow-wrap: anywhere; }
+.cart-clear, .order-line-remove, .qty-btn, .pos-chip, .cat-chip,
+.payment-x, .modal-x, .pay-summary-head .btn.small, .quick-cash-btn,
+.receipt-widths button, .seg button, .fiado-new-link { min-height: 44px; }
+.payment-x, .modal-x, .order-line-remove, .qty-btn { min-width: 44px; }
+.payment-modal[open], .client-modal[open], .product-modal[open], .abono-modal[open],
+.client-detail-modal[open], .cash-movement-modal { padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px)); }
+.pay-summary .line { gap: 12px; align-items: start; }
+.pay-summary .line-label { min-width: 0; overflow-wrap: anywhere; }
+.pay-summary .line-amount { flex: none; white-space: nowrap; }
+.cash-pair { grid-template-columns: minmax(0, 1fr); }
+.change-display { gap: 8px; flex-wrap: wrap; }
+.change-display strong, .pay-total, .abono-balance { overflow-wrap: anywhere; }
+.pay-switch:has(> button:nth-child(2):last-child) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.fiado-mixed-toggle, .check-row { min-height: 44px; }
+.fiado-mixed-toggle input { min-height: 18px; }
+.modal-actions { flex-wrap: wrap; }
+.client-grid { grid-template-columns: minmax(0, 1fr); }
+.client-card, .client-head > div { min-width: 0; }
+.client-head { flex-wrap: wrap; }
+.client-head h3, .client-head p, .detail-summary, .detail-list li, .receipt-head h4,
+.receipt-foot, .receipt-meta .row > :last-child { overflow-wrap: anywhere; min-width: 0; }
+.client-money .row, .detail-list li { flex-wrap: wrap; gap: 4px 12px; }
+.client-money strong, .client-money .row > span:last-child { overflow-wrap: anywhere; min-width: 0; }
+.credit-search-row { flex-wrap: wrap; }
+.credit-search-row .search-input { min-width: 0; flex-basis: 200px; }
+.receipt-meta .row { align-items: start; }
+.receipt-meta .row > :first-child { flex: none; }
+.receipt-items .row { gap: 8px; align-items: start; }
+.receipt-items .row > :last-child { flex: none; white-space: nowrap; }
+.receipt-item-name { min-width: 0; }
+.table-scroll { min-width: 0; overscroll-behavior-x: contain; }
+.table-scroll:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.table-scroll table { min-width: max-content; }
+.tickets-table { min-width: 760px; }
+.cash-ledger table { min-width: 560px; }
+.report-card { overflow: hidden; }
+.rpt-table td:not(.n) { max-width: 320px; white-space: normal; overflow-wrap: anywhere; }
+.cash-history-note, .cash-ledger td:last-child { white-space: normal; overflow-wrap: anywhere; }
+.report-table-heading { flex-wrap: wrap; }
+.report-table-heading h3 { min-width: 0; overflow-wrap: anywhere; }
+.cash-movement-modal .seg { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.admin-metrics .kpi-value, .consola-metric strong { overflow-wrap: anywhere; }
+.admin-actions .btn { min-width: 0; white-space: normal; }
+.cash-breakdown { min-width: 0; }
+.cash-breakdown > div { flex-wrap: wrap; }
+
+/* Caja composes against usable content width (the desktop sidebar takes 256px).
+ * Forms stay readable; financial tables get the remaining/full row instead. */
+.cash-screen { container: cash / inline-size; }
+.cash-screen .cash-grid { grid-template-columns: minmax(0, 1fr); }
+.cash-system, .cash-expected-top > div { min-width: 0; }
+.cash-screen .cash-count { grid-column: auto; grid-row: auto; order: 0; width: 100%; max-width: 640px; }
+.cash-screen .cash-ledger, .cash-screen .cash-history { grid-column: 1 / -1; order: 0; }
+.cash-screen .cash-banner-actions .btn { white-space: normal; }
+.cash-screen h3, .cash-status { overflow-wrap: anywhere; }
+.cash-status svg, .cash-section-title svg { flex: none; }
+.cash-screen .cash-form input { min-height: 44px; }
+.cash-screen .cash-form textarea { min-height: 88px; resize: vertical; }
+.cash-screen .cash-breakdown { padding-inline: 0; }
+.cash-screen .cash-breakdown > div > span { min-width: 0; overflow-wrap: anywhere; }
+/* Fixed layout bounds long unbroken names/notes without shrinking money columns.
+ * On narrow screens the named, keyboard-focusable region owns horizontal scroll. */
+.cash-screen table { width: 100%; table-layout: fixed; min-width: 960px; }
+.cash-history th:nth-child(1) { width: 160px; }
+.cash-history th:nth-child(2) { width: 160px; }
+.cash-history th:nth-child(3), .cash-history th:nth-child(4) { width: 140px; }
+.cash-history th:nth-child(5) { width: 180px; }
+.cash-screen td { overflow-wrap: anywhere; }
+.cash-history-note { min-width: 0; max-width: none; }
+.cash-screen .cash-ledger table { min-width: 640px; }
+.cash-ledger th:first-child { width: 160px; }
+.cash-ledger th:nth-child(2) { width: 200px; }
+
+@container cash (min-width: 1000px) {
+  .cash-screen .cash-grid-active { grid-template-columns: minmax(0, 1fr) minmax(320px, 400px); }
+  .cash-grid-active .cash-count { max-width: none; }
+}
+@container cash (min-width: 1200px) {
+  .cash-screen .cash-grid-opening { grid-template-columns: 360px minmax(0, 1fr); }
+  .cash-grid-opening .cash-opening { max-width: none; }
+  .cash-grid-opening .cash-history { grid-column: 2; }
+}
+
+@media (max-width: 639px) {
+  .grid-2, .product-number-grid, .product-code-category { grid-template-columns: minmax(0, 1fr); }
+  .product-modal .product-number-grid label { min-height: 0; }
+  .payment-modal[open] { padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px)); }
+  .pay-footer { margin-bottom: calc(-16px - env(safe-area-inset-bottom, 0px)); padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
+}
+@media (min-width: 640px) {
+  /* Actions reserve their own height: a sticky child of the scrolling dialog
+   * can paint over cash fields, especially with its negative bottom margin.
+   * Only the body scrolls; native keyboard focus cannot land behind actions. */
+  .payment-modal[open] { padding: 0; gap: 0; overflow: hidden; }
+  .payment-modal[open] > .payment-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    min-height: 0;
+    flex-shrink: 1;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: var(--space-6) var(--space-6) var(--space-4);
+  }
+  .payment-modal .pay-footer {
+    position: static;
+    margin: 0;
+    padding: var(--space-4) var(--space-6);
+  }
+  :root { --header-height: 64px; }
+  .nexora-shell .app-header { display: flex; padding: env(safe-area-inset-top, 0px) 16px 0; gap: 8px; }
+  .shell-status { flex: 0 1 auto; font-size: 12px; }
+  .nexora-shell .tabbar button span { display: block; }
+  .sale-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .client-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cash-pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (min-width: 768px) and (max-width: 1023px) {
+  .nexora-shell { flex-direction: column; }
+  .nexora-shell .shell-sidebar { width: 100%; display: block; }
+  .shell-brand { display: none; }
+  .nexora-shell .tabbar { flex-direction: row; }
+  .nexora-shell .app-frame { width: 100%; }
+}
+@media (min-width: 1024px) {
+  :root { --navigation-height: 0px; }
+  .nexora-shell .shell-sidebar { order: 0; height: auto; padding: env(safe-area-inset-top, 0px) 0 0; border-top: 0; }
+  .nexora-shell .tabbar { height: auto; flex: 1; overflow-y: auto; flex-direction: column; padding: 0 12px; }
+  .nexora-shell .tabbar button { width: 100%; flex-direction: row; justify-content: flex-start; padding: 10px 12px; gap: 12px; font-size: 14px; }
+  .nexora-shell .tabbar button.active { background: var(--active-nav); box-shadow: inset 3px 0 var(--primary); }
+  .nexora-shell .app-header { padding-inline: 24px; }
+  .nexora-shell .app-main { padding: 24px; }
+  .client-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (min-width: 1280px) {
+  .shell-clock { display: flex; }
+  .sale-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (hover: hover) and (pointer: fine) {
+  .tickets-table tbody tr:hover td { background: var(--surface-2); }
+  .fiado-new-link:hover { opacity: .8; }
+}
+@media print {
+  .nexora-shell .shell-sidebar, .more-navigation { display: none; }
+  .nexora-shell .app-main { container-type: normal; }
+}

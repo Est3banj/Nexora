@@ -67,6 +67,7 @@ export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
   const [low, setLow] = useState<LowStockRow[]>([]);
   const [hours, setHours] = useState<SalesByHourRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
 
   const [loading, setLoading] = useState(true);
   const ranges = dashboardRanges(period);
@@ -102,7 +103,7 @@ export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
     }
     void refresh();
     return () => { active = false; };
-  }, [db, tenantId, from, to, prevFrom, prevTo, refreshToken]);
+  }, [db, tenantId, from, to, prevFrom, prevTo, refreshToken, retry]);
 
   const gross = summary ? summary.revenue - summary.cogs : 0;
   const avgTicket =
@@ -156,6 +157,7 @@ export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
           <button
             className={period === "30d" ? "active" : ""}
             data-testid="period-30d"
+            aria-pressed={period === "30d"}
             onClick={() => setPeriod("30d")}
           >
             30 días
@@ -178,6 +180,7 @@ export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
       {error && (
         <p className="error" data-testid="dash-error" role="alert">
           {error}
+          {" "}<button className="btn" disabled={loading} onClick={() => setRetry(n => n + 1)}>Reintentar indicadores</button>
         </p>
       )}
 

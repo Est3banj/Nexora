@@ -2307,9 +2307,6 @@ select {
   transition: background var(--dur) var(--ease-out);
 }
 
-.tickets-table tbody tr:hover td {
-  background: var(--surface-2);
-}
 
 .tickets-table tbody tr.voided td {
   opacity: 0.65;
@@ -2546,6 +2543,15 @@ select {
  * min-height:0) until only its header was visible. Content keeps its
  * natural size and the DIALOG scrolls instead (sticky footer stays). */
 .payment-modal[open] > * {
+  flex-shrink: 0;
+}
+
+/* Keep the existing mobile sheet's flex items and sticky scroll behavior. */
+.payment-body {
+  display: contents;
+}
+
+.payment-body > * {
   flex-shrink: 0;
 }
 
@@ -2879,9 +2885,6 @@ select {
   cursor: pointer;
 }
 
-.fiado-new-link:hover {
-  opacity: 0.8;
-}
 
 .fiado-new-link:focus-visible {
   outline: 2px solid var(--primary);
@@ -3740,6 +3743,8 @@ select {
 .reports .report-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .reports .report-views { align-self: flex-start; }
 .report-description { display: grid; gap: 4px; }
+.report-description summary { cursor: pointer; color: var(--muted); font-size: 12px; width: fit-content; }
+.report-description summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 4px; }
 .report-table-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .report-table-heading h3 { margin: 0; font-size: 14px; }
 .report-table-heading span { font: 11px/18px var(--font-mono); color: var(--muted); white-space: nowrap; }

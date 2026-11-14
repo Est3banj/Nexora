@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { sql } from "drizzle-orm";
 import { closeDb, db } from "../src/db";
-import { authHeaders, buildTestApp, createTenant, joinOrg, resetTables, signIn, type Actor } from "./helpers";
+import { authHeaders, buildTestApp, createTenant, joinOrg, resetTables, signIn, signInUsername, type Actor } from "./helpers";
 
 let app: FastifyInstance;
 let owner: Actor, admin: Actor, cashier: Actor;
@@ -16,7 +16,7 @@ beforeEach(async () => {
 });
 const list = (actor = owner) => app.inject({ method: "GET", url: "/api/admin/members", headers: authHeaders(actor) });
 const create = (payload: Record<string, unknown> = {}, actor = owner) => app.inject({ method: "POST", url: "/api/admin/users", headers: authHeaders(actor), payload: {
-  name: "Ana Pérez", email: "ana@test.dev", role: "member", ...payload,
+  name: "Ana Pérez", username: "ana.perez", password: "test-only-password-123", role: "member", ...payload,
 } });
 const patch = (id: string, role: string, actor = owner) => app.inject({ method: "PATCH", url: `/api/admin/members/${id}`, headers: authHeaders(actor), payload: { role } });
 const remove = (id: string, actor = owner) => app.inject({ method: "DELETE", url: `/api/admin/members/${id}`, headers: authHeaders(actor) });
@@ -32,21 +32,32 @@ describe("tenant-scoped employee BFF", () => {
       expect(res.statusCode).toBe(403); expect(res.json()).toEqual({ error: "forbidden", detail: "dueño_only" });
     }
     expect((await db.execute(sql`SELECT id, role FROM member ORDER BY id`)).rows).toEqual(before);
-    expect((await db.execute(sql`SELECT id FROM "user" WHERE email='ana@test.dev'`)).rows).toHaveLength(0);
+    expect((await db.execute(sql`SELECT id FROM "user" WHERE username='ana.perez'`)).rows).toHaveLength(0);
   });
 
-  it("creates a cashier → real login → correct tenant + role, without switching the manager session", async () => {
+  it("creates a cashier → real USERNAME login → correct tenant + role, without switching the manager session", async () => {
     const res = await create(); expect(res.statusCode).toBe(201);
-    const body = res.json(); expect(body.generated_password.length).toBeGreaterThanOrEqual(12);
+    const body = res.json();
+    // Members are identified by username; the email column holds the
+    // synthetic internal address better-auth still requires (no mail is sent).
+    expect(body.user.username).toBe("ana.perez");
+    expect(body.user.email).toBe("ana.perez@nexora.local");
     expect(res.headers["set-cookie"]).toBeUndefined();
-    expect(Object.keys(body.user).sort()).toEqual(["email", "id", "name"]);
+    expect(Object.keys(body.user).sort()).toEqual(["email", "id", "name", "username"]);
     expect(body).not.toHaveProperty("token");
-    const cookie = await signIn(app, { email: "ana@test.dev", password: body.generated_password });
+    expect(body).not.toHaveProperty("generated_password");
+    const cookie = await signInUsername(app, { username: "ana.perez", password: "test-only-password-123" });
     const active = await app.inject({ method: "POST", url: "/api/auth/organization/set-active", headers: { cookie }, payload: { organizationId: owner.orgId } });
     expect(active.statusCode).toBe(200);
     const role = await app.inject({ method: "GET", url: "/api/auth/organization/get-active-member-role", headers: { cookie } });
     expect(role.json()).toEqual({ role: "member" });
     expect((await app.inject({ method: "GET", url: "/api/catalog/products", headers: { cookie } })).statusCode).toBe(200);
+    // The synthetic address is an internal alias of the SAME credential: it is
+    // never displayed, never mailed and never used by the UI. Members sign in
+    // through /sign-in/username (asserted above); the alias exists only
+    // because better-auth's base user schema requires a unique email.
+    // The owner keeps the email path, untouched.
+    expect((await signIn(app, owner)).length).toBeGreaterThan(0);
     const session = await app.inject({ method: "GET", url: "/api/auth/get-session", headers: authHeaders(owner) });
     expect(session.json().user.id).toBe(owner.userId);
     expect((await list()).json().members.some((m: { userId: string }) => m.userId === body.user.id)).toBe(true);
@@ -54,20 +65,28 @@ describe("tenant-scoped employee BFF", () => {
     expect(Object.keys(listing)).toEqual(["members"]);
     for (const m of listing.members) {
       expect(Object.keys(m).sort()).toEqual(["createdAt", "id", "role", "user", "userId"]);
-      expect(Object.keys(m.user).sort()).toEqual(["email", "id", "name"]);
+      expect(Object.keys(m.user).sort()).toEqual(["email", "id", "name", "username"]);
+      if (m.userId === owner.userId) {
+        // Owner row: no username, real email — untouched by the change.
+        expect(m.user.username).toBeNull();
+        expect(m.user.email).toBe(owner.email);
+      }
     }
+    const createdRow = listing.members.find((m: { userId: string }) => m.userId === body.user.id);
+    expect(createdRow.user.username).toBe("ana.perez");
+    expect(createdRow.user.email).toBe("ana.perez@nexora.local");
     const audit = (await db.execute(sql`SELECT action,meta FROM audit_log WHERE action='member.create'`)).rows;
     expect(audit).toHaveLength(1);
     expect(JSON.stringify(audit)).not.toMatch(/password|code|hash/i);
-    expect(JSON.stringify(audit)).not.toContain(body.generated_password);
-    expect(JSON.stringify(listing)).not.toContain(body.generated_password);
+    expect(JSON.stringify(audit)).not.toContain("test-only-password-123");
+    expect(JSON.stringify(listing)).not.toContain("test-only-password-123");
   });
 
   it("admin can create a cashier; only owner can promote/demote; access changes on the next request", async () => {
-    const res = await create({ password: "test-only-password-123" }, admin);
+    const res = await create({}, admin);
     expect(res.statusCode).toBe(201); expect(res.json()).not.toHaveProperty("generated_password");
     const id = res.json().member.id;
-    const cookie = await signIn(app, { email: "ana@test.dev", password: "test-only-password-123" });
+    const cookie = await signInUsername(app, { username: "ana.perez", password: "test-only-password-123" });
     await app.inject({ method: "POST", url: "/api/auth/organization/set-active", headers: { cookie }, payload: { organizationId: owner.orgId } });
     const financial = () => app.inject({ method: "GET", url: "/api/admin/members", headers: { cookie } });
     expect((await financial()).statusCode).toBe(403);
@@ -88,7 +107,7 @@ describe("tenant-scoped employee BFF", () => {
 
   it("admin cannot create administrators or manage self/other admins, without signup or audit side effects", async () => {
     expect((await create({ role: "admin" }, admin)).statusCode).toBe(403);
-    expect((await db.execute(sql`SELECT id FROM "user" WHERE email='ana@test.dev'`)).rows).toHaveLength(0);
+    expect((await db.execute(sql`SELECT id FROM "user" WHERE username='ana.perez'`)).rows).toHaveLength(0);
     const id = await memberId(admin.userId);
     expect((await patch(id, "member", admin)).statusCode).toBe(403);
     expect((await remove(id, admin)).statusCode).toBe(403);
@@ -119,12 +138,19 @@ describe("tenant-scoped employee BFF", () => {
     expect((await db.execute(sql`SELECT id FROM audit_log`)).rows).toHaveLength(0);
   });
 
-  it("email_taken is 409; invalid owner role/body/password is 400, not an escalation", async () => {
-    expect((await create({ email: owner.email })).statusCode).toBe(409);
-    expect((await create({ email: owner.email })).json()).toEqual({ error: "email_taken" });
+  it("duplicate username is 409; invalid role/body/username/password is 400, not an escalation", async () => {
+    expect((await create()).statusCode).toBe(201);
+    const dup = await create();
+    expect(dup.statusCode).toBe(409);
+    expect(dup.json()).toEqual({ error: "username_taken" });
     expect((await create({ role: "owner" })).statusCode).toBe(400);
     expect((await create({ role: "Supervisor" })).statusCode).toBe(400);
     expect((await create({ password: "short" })).statusCode).toBe(400);
+    expect((await create({ username: "AB" })).statusCode).toBe(400);
+    expect((await create({ username: "ana@x" })).statusCode).toBe(400);
+    expect((await create({ username: "ana perez" })).statusCode).toBe(400);
+    expect((await create({ username: "Ana.Perez" })).statusCode).toBe(400);
+    expect((await create({ email: owner.email })).statusCode).toBe(400);
     expect((await create({ organizationId: "foreign" })).statusCode).toBe(400);
     expect((await patch(await memberId(cashier.userId), "owner")).statusCode).toBe(400);
   });
@@ -135,7 +161,7 @@ describe("tenant-scoped employee BFF", () => {
     const res = await create();
     expect(res.statusCode).toBe(409);
     expect(res.json()).toEqual({ error: "membership_create_failed", account_created: false });
-    expect((await db.execute(sql`SELECT id FROM "user" WHERE email='ana@test.dev'`)).rows).toHaveLength(0);
+    expect((await db.execute(sql`SELECT id FROM "user" WHERE username='ana.perez'`)).rows).toHaveLength(0);
     expect((await db.execute(sql`SELECT id FROM audit_log`)).rows).toHaveLength(0);
   });
 });

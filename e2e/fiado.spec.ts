@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { dbOne, wipeSalesAndCatalog } from "./helpers-db";
 import { createOrgUser } from "./helpers-auth";
+import { navigate } from "./helpers-navigation";
 
 /**
  * M5 · Fiado en el cobro único (tasks 12.2 / 12.4 gate):
@@ -22,7 +23,7 @@ const evidence =
 
 async function login(page: Page) {
   await page.goto("/");
-  await page.getByTestId("login-email").fill("owner@demo.test");
+  await page.getByTestId("login-identifier").fill("owner@demo.test");
   await page.getByTestId("login-password").fill("demo12345");
   await page.getByTestId("login-submit").click();
   await expect(page.getByTestId("tab-sale")).toBeVisible();
@@ -280,7 +281,7 @@ test.describe("M5 · cobro Fiado (modal único)", () => {
       .toBe("1");
 
     /* revenue = the sale only (20.000), never sale + abono (25.000) */
-    await page.getByTestId("tab-dashboard").click();
+    await navigate(page, "dashboard");
     await expect(page.getByTestId("kpi-revenue")).toContainText("20.000");
     await expect(page.getByTestId("kpi-revenue")).not.toContainText("25.000");
     // M8: collection reaches Caja and closes with its own stored note; it
@@ -332,7 +333,7 @@ test.describe("M6 · Clientes & Fiados (13.1)", () => {
     const org = await seedAccounts(page);
     dbOne(`UPDATE customers SET notes='Entregar después de las 18' WHERE tenant_id='${org}' AND name='Deudora Real'`);
     await login(page);
-    await page.getByTestId("tab-credito").click();
+    await navigate(page, "credito");
     const card = page.getByTestId("client-card").filter({ hasText: "Deudora Real" });
     await card.getByTestId("client-edit").click();
     await expect(page.getByTestId("client-notes")).toHaveValue("Entregar después de las 18");
@@ -362,7 +363,7 @@ test.describe("M6 · Clientes & Fiados (13.1)", () => {
     });
     await expect.poll(() => dbOne(`SELECT notes || ':' || phone || ':' || credit_limit || ':' || active FROM customers WHERE tenant_id='${org}' AND name='Deudora Real'`)).toBe("Nueva referencia vigente:3001234567:150000:true");
     await page.reload();
-    await page.getByTestId("tab-credito").click();
+    await navigate(page, "credito");
     await card.getByTestId("client-edit").click();
     await expect(page.getByTestId("client-notes")).toHaveValue("Nueva referencia vigente");
     await page.keyboard.press("Escape");
@@ -373,7 +374,7 @@ test.describe("M6 · Clientes & Fiados (13.1)", () => {
     await seedAccounts(page);
     await page.route("**/api/auth/organization/get-active-member-role**", route => route.fulfill({ status: 503, body: JSON.stringify({ message: "Unavailable" }), contentType: "application/json" }));
     await login(page);
-    await page.getByTestId("tab-credito").click();
+    await navigate(page, "credito");
     await expect(page.getByTestId("client-card")).toHaveCount(2);
     await expect(page.getByTestId("client-abono")).toHaveCount(0);
     await page.getByTestId("tab-tickets").click();
@@ -387,7 +388,7 @@ test.describe("M6 · Clientes & Fiados (13.1)", () => {
   }) => {
     const org = await seedAccounts(page);
     await login(page);
-    await page.getByTestId("tab-credito").click();
+    await navigate(page, "credito");
 
     /* ALL active accounts incl. zero-balance «Al Día» (9.2 accounts, not
      * the positive-only Por Cobrar report) — seeded: Legacy + Deudora */
@@ -507,7 +508,7 @@ test.describe("M6 · Clientes & Fiados (13.1)", () => {
     await page.getByLabel("Cuenta y caja", { exact: true }).click();
     await expect(page.getByTestId("member-role")).toHaveText("Cajero");
     await page.getByLabel("Cuenta y caja", { exact: true }).click();
-    await page.getByTestId("tab-credito").click();
+    await navigate(page, "credito");
     /* balances visible to every role … */
     await expect(page.getByTestId("client-card")).toHaveCount(2);
     await expect(page.getByTestId("total-debt")).toContainText("50.000");
@@ -544,7 +545,7 @@ test.describe("M6 · Abono modal + recibo (13.2)", () => {
     const org = await seedAccounts(page);
     dbOne(`UPDATE shifts SET status='closed' WHERE tenant_id='${org}'`);
     await login(page);
-    await page.getByTestId("tab-credito").click();
+    await navigate(page, "credito");
     const trigger = page.getByTestId("client-card").filter({ hasText: "Deudora Real" }).getByTestId("client-abono");
     await trigger.click();
     await expect(page.getByTestId("abono-amount")).toBeFocused();
@@ -580,7 +581,7 @@ test.describe("M6 · Abono modal + recibo (13.2)", () => {
     const org = await seedAccounts(page);
     ensureOpenShift(org);
     await login(page);
-    await page.getByTestId("tab-credito").click();
+    await navigate(page, "credito");
 
     const debt = page.getByTestId("client-card").filter({ hasText: "Deudora Real" });
     await expect(debt.getByTestId("client-balance")).toContainText("50.000");
@@ -695,7 +696,7 @@ test.describe("M6 · Abono modal + recibo (13.2)", () => {
     const org = await seedAccounts(page);
     ensureOpenShift(org);
     await login(page);
-    await page.getByTestId("tab-credito").click();
+    await navigate(page, "credito");
 
     /* offline: sync endpoint unreachable, app believes it has no network */
     await context.route("**/api/sync/**", (route) => route.abort());
@@ -716,7 +717,7 @@ test.describe("M6 · Abono modal + recibo (13.2)", () => {
     /* reload (still offline): the abono and its UUID survive locally */
     await page.reload();
     await expect(page.getByTestId("tab-sale")).toBeVisible();
-    await page.getByTestId("tab-credito").click();
+    await navigate(page, "credito");
     const afterReload = page
       .getByTestId("client-card")
       .filter({ hasText: "Deudora Real" });

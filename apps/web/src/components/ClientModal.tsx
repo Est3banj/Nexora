@@ -114,8 +114,7 @@ export function ClientModal({ open, db, tenantId, customer, defaultLimit, onClos
     if (editing && limitNone) {
       limitValue = null; // explicit clear — legacy "sin configurar"
     } else {
-      const digits = limit.replace(/[^\d]/g, "");
-      if (limit.trim() === "" || digits === "" || !/^\d+$/.test(limit.trim())) {
+      if (!/^\d+$/.test(limit.trim())) {
         setError(
           editing
             ? "El límite es un entero COP ≥ 0 (o marcá «Sin límite»)"
@@ -123,7 +122,7 @@ export function ClientModal({ open, db, tenantId, customer, defaultLimit, onClos
         );
         return;
       }
-      limitValue = Number(digits);
+      limitValue = Number(limit.trim());
       if (!Number.isInteger(limitValue) || limitValue < 0 || limitValue > 2147483647) {
         setError("El límite debe ser un entero COP entre 0 y 2.147.483.647");
         return;
@@ -217,7 +216,7 @@ export function ClientModal({ open, db, tenantId, customer, defaultLimit, onClos
             <div className="grid-2">
               <div>
                 <label htmlFor="client-phone">
-                  Teléfono / Celular{editing ? "" : " *"}
+                  Teléfono / Celular (opcional)
                 </label>
                 <input
                   id="client-phone"
@@ -241,10 +240,12 @@ export function ClientModal({ open, db, tenantId, customer, defaultLimit, onClos
                   className="mono"
                   inputMode="numeric"
                   value={limitNone ? "" : limit}
-                  maxLength={10}
+                  maxLength={32}
+                  aria-invalid={!limitNone && limit !== "" && (!/^\d+$/.test(limit.trim()) || Number(limit) > 2147483647)}
+                  aria-describedby={error ? "client-error" : undefined}
                   disabled={busy || limitNone}
                   placeholder="150000"
-                  onChange={(e) => setLimit(e.target.value.replace(/[^\d]/g, ""))}
+                  onChange={(e) => setLimit(e.target.value)}
                 />
               </div>
             </div>
@@ -310,7 +311,7 @@ export function ClientModal({ open, db, tenantId, customer, defaultLimit, onClos
             )}
 
             {error && (
-              <p className="error" role="alert" data-testid="client-error">
+              <p id="client-error" className="error" role="alert" data-testid="client-error">
                 {error}
               </p>
             )}

@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { dbOne, wipeSalesAndCatalog } from "./helpers-db";
+import { navigate } from "./helpers-navigation";
 
 /**
  * D3-5 · Reports UI + offline staleness (reports spec):
@@ -36,13 +37,13 @@ test.describe("D3-5 — reports UI + offline staleness", () => {
 
     /* ---------------- login (online) ---------------- */
     await page.goto("/");
-    await page.getByTestId("login-email").fill("owner@demo.test");
+    await page.getByTestId("login-identifier").fill("owner@demo.test");
     await page.getByTestId("login-password").fill("demo12345");
     await page.getByTestId("login-submit").click();
     await expect(page.getByTestId("tab-sale")).toBeVisible();
 
     /* ---------------- empty states (fresh local cache) ---------------- */
-    await page.getByTestId("tab-reports").click();
+    await navigate(page, "reports");
     await expect(page.getByTestId("empty-sales")).toBeVisible();
     /* no pending mutations yet → NO staleness banner */
     await expect(page.getByTestId("reports-staleness")).toHaveCount(0);
@@ -83,7 +84,7 @@ test.describe("D3-5 — reports UI + offline staleness", () => {
       .toContain("sinc.");
 
     /* queue clean → banner stays away */
-    await page.getByTestId("tab-reports").click();
+    await navigate(page, "reports");
     await expect(page.getByTestId("reports-staleness")).toHaveCount(0);
 
     /* ---------------- offline: local sale → stale report ---------------- */
@@ -104,7 +105,7 @@ test.describe("D3-5 — reports UI + offline staleness", () => {
     await page.getByTestId("receipt-close").click();
 
     /* report renders from LOCAL data with a visible staleness banner */
-    await page.getByTestId("tab-reports").click();
+    await navigate(page, "reports");
     const banner = page.getByTestId("reports-staleness");
     await expect(banner).toBeVisible();
     await expect(banner).toContainText("incompletos");

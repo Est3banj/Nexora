@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { PGlite } from "@electric-sql/pglite";
-import { BarChart3, Clock3, ContactRound, LayoutDashboard, LayoutGrid, LogOut, Receipt, Settings, ShoppingCart, Wallet } from "lucide-react";
+import { BarChart3, Check, Clock3, ContactRound, LayoutDashboard, LayoutGrid, LogOut, MoreHorizontal, Receipt, RefreshCw, Settings, ShoppingCart, TriangleAlert, Wallet, Wifi, WifiOff } from "lucide-react";
 import { getOpenShiftLocal, type LocalShift } from "../db/local";
 import { localLowStock, localPendingTransfers } from "../db/local-reports";
 import { useSync } from "../hooks/useSync";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { pushNow, retryPoison } from "../sync/queue";
 import { NotificationPopover, type ShellAlert } from "./NotificationPopover";
-import { type AppTab, type NavItem, type RoleHint } from "./navigation";
+import { compactNavigation, type AppTab, type NavItem, type RoleHint } from "./navigation";
 
 const icons = { sale: ShoppingCart, arqueo: Wallet, tickets: Receipt, catalog: LayoutGrid, dashboard: LayoutDashboard, reports: BarChart3, credito: ContactRound, admin: Settings };
 const cop = (n: number) => new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 0 }).format(n);
@@ -24,7 +24,31 @@ export function AppShell({ db, tenantId, user, tenantName, tab, nav, role, refre
   onVariant: (id: string) => void; onSignOut: () => Promise<void>; onConsola: () => void; children: ReactNode;
 }) {
   const sync = useSync();
-  const desktop = useMediaQuery("(min-width: 768px)");
+  // Connectivity and queue health are independent: online never implies synced.
+  const connectionLabel = sync.online ? "en línea" : "sin conexión";
+  const syncProblem = Boolean(sync.error || sync.failed || sync.poison);
+  const syncActive = sync.syncing || sync.inFlight > 0;
+  const syncLabel = sync.poison > 0 ? `${sync.poison} en revisión` : sync.error || sync.failed > 0 ? "Error de sinc." : syncActive ? "Sincronizando" : sync.pending > 0 ? `${sync.pending} pendientes` : "Sin pendientes de sinc.";
+  const syncDetail = `${syncLabel}. ${sync.pending} cambios pendientes, ${sync.failed} fallidos, ${sync.poison} requieren revisión, ${sync.inFlight} en envío${sync.error ? `. ${sync.error}` : ""}`;
+  const SyncIcon = syncProblem ? TriangleAlert : syncActive || sync.pending > 0 ? RefreshCw : Check;
+  const ConnectionIcon = sync.online ? Wifi : WifiOff;
+  const desktop = useMediaQuery("(min-width: 1024px)");
+  const mobile = useMediaQuery("(max-width: 639px)");
+  const moreDialog = useRef<HTMLDialogElement>(null);
+  const moreTrigger = useRef<HTMLButtonElement>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const { primary, secondary } = compactNavigation(nav);
+  const secondaryActive = secondary.some(item => item.tab === tab);
+  function closeMore() { moreDialog.current?.close(); setMoreOpen(false); }
+  useEffect(() => { moreDialog.current?.close(); setMoreOpen(false); }, [mobile, tab, nav.map(item => item.tab).join(",")]);
+  function destination(item: NavItem, fullLabel = false) {
+    const Icon = icons[item.tab];
+    return <button key={item.tab} className={tab === item.tab ? "active" : ""}
+      aria-label={item.label} title={item.label} aria-current={tab === item.tab ? "page" : undefined}
+      data-testid={`tab-${item.tab}`} onClick={() => { closeMore(); onNavigate(item.tab); }}>
+      <Icon size={20} aria-hidden="true" /><span>{fullLabel || desktop ? item.label : item.shortLabel}</span>
+    </button>;
+  }
   /* roles-admin 5.2/5.3 — the private `useActiveMemberRole` call is GONE:
    * App fetches the hint ONCE and passes `nav` + `role` down (no duplicate
    * get-active-member-role request, and the tabbar/header/palette all read
@@ -65,20 +89,37 @@ export function AppShell({ db, tenantId, user, tenantName, tab, nav, role, refre
   return <div className="app nexora-shell">
     <aside className="shell-sidebar">
       <div className="shell-brand"><img src="/icon-192.png" alt="" className="shell-mark" /><div><strong>NEXORA</strong><span>POS</span></div></div>
-      <nav className="tabbar" aria-label="Navegación principal">{nav.map(item => {
-        const Icon = icons[item.tab];
-        return <button key={item.tab} className={tab === item.tab ? "active" : ""} aria-current={tab === item.tab ? "page" : undefined} data-testid={`tab-${item.tab}`} onClick={() => onNavigate(item.tab)}><Icon size={20} aria-hidden="true" /><span>{item.label}</span></button>;
-      })}</nav>
+      <nav className="tabbar" aria-label="Navegación principal">
+        {desktop ? ["Operación", "Gestión"].map(group => <div className="nav-group" key={group}>
+          <span className="nav-group-title">{group}</span>{nav.filter(item => item.group === group).map(item => destination(item))}
+        </div>) : (mobile ? primary : nav).map(item => destination(item))}
+        {mobile && secondary.length > 0 && <button ref={moreTrigger} data-testid="nav-more" title="Más secciones"
+          aria-label={secondaryActive ? `Más secciones: ${nav.find(item => item.tab === tab)?.label}` : "Más secciones"}
+          aria-haspopup="dialog" aria-expanded={moreOpen} aria-controls="more-navigation" aria-current={secondaryActive ? "page" : undefined}
+          className={secondaryActive ? "active" : ""} onClick={() => { moreDialog.current?.showModal(); setMoreOpen(true); }}>
+          <MoreHorizontal size={20} aria-hidden="true" /><span>Más</span>
+        </button>}
+      </nav>
+      {mobile && secondary.length > 0 && <dialog ref={moreDialog} id="more-navigation" className="more-navigation" aria-labelledby="more-navigation-title"
+        onClose={() => { setMoreOpen(false); moreTrigger.current?.focus(); }} onCancel={() => setMoreOpen(false)}>
+        <div className="modal-head"><h2 id="more-navigation-title">Más secciones</h2><button className="icon-button" aria-label="Cerrar más secciones" onClick={closeMore}>✕</button></div>
+        <nav aria-label="Más secciones">{secondary.map(item => destination(item, true))}</nav>
+      </dialog>}
       {desktop && <div className="desktop-account">{account}</div>}
     </aside>
     <div className="app-frame">
       {/* Title comes from the FILTERED nav (roles-admin 5.3): a tab the
        * matrix hides has no title here — the guard in App renders the
        * access-denied fallback instead of a protected heading. */}
-      <header className="app-header"><img src="/icon-192.png" alt="" className="header-logo" /><h1>{nav.find(item => item.tab === tab)?.title}</h1><div className="shell-header-tools">
+      <header className="app-header"><img src="/icon-192.png" alt="" className="header-logo" /><h1 title={nav.find(item => item.tab === tab)?.title}>{nav.find(item => item.tab === tab)?.title}</h1>
+        <div className="shell-status" role="status" aria-live="polite" aria-atomic="true" aria-label={`${connectionLabel}. ${syncDetail}`} data-testid="shell-status" title={`${connectionLabel}. ${syncDetail}`}>
+          <span className={`shell-status-connection ${sync.online ? "is-online" : "is-offline"}`} data-testid="net-status"><ConnectionIcon size={14} aria-hidden="true" /><span>{connectionLabel}</span></span>
+          <span className={`shell-status-sync ${syncProblem ? "is-error" : syncActive || sync.pending > 0 ? "is-pending" : "is-online"}`} data-testid="pending-badge" title={syncDetail}>
+            <SyncIcon size={14} aria-hidden="true" /><span className="shell-status-label">{syncLabel}</span>
+          </span>
+        </div>
+        <div className="shell-header-tools">
         <BogotaClock />
-        <span className={`net-status ${sync.online ? "net-online" : "net-offline"}`} data-testid="net-status">{sync.online ? "en línea" : "sin conexión"}</span>
-        <span className={`badge ${sync.pending ? "badge-pending" : "badge-ok"}`} data-testid="pending-badge" title="Mutaciones pendientes de sincronizar">{sync.pending ? `${sync.pending} pendientes` : "sinc."}</span>
         <NotificationPopover alerts={alerts} error={error} loading={loading} onRetry={() => { setLoading(true); setError(false); setReload(n => n + 1); }} />
         {!desktop && <details className="mobile-account"><summary aria-label="Cuenta y caja">{initials}</summary>{account}</details>}
       </div></header>

@@ -63,6 +63,9 @@ export function AbonoModal({ open, db, tenantId, account, onClose, onRegistered 
   const [note, setNote] = useState("");
   const [ticketId, setTicketId] = useState("");
   const [tickets, setTickets] = useState<LocalTicketRow[]>([]);
+  const [ticketsLoading, setTicketsLoading] = useState(false);
+  const [ticketsError, setTicketsError] = useState(false);
+  const [ticketsRetry, setTicketsRetry] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const balance = account?.balance ?? 0;
@@ -92,17 +95,18 @@ export function AbonoModal({ open, db, tenantId, account, onClose, onRegistered 
   useEffect(() => {
     if (!open || !account) return;
     let alive = true;
+    setTicketsLoading(true);
     listLocalCustomerTickets(db, tenantId, account.customer_id)
       .then((rows) => {
-        if (alive) setTickets(rows);
+        if (alive) { setTickets(rows); setTicketsError(false); }
       })
       .catch(() => {
-        if (alive) setTickets([]);
-      });
+        if (alive) { setTickets([]); setTicketsError(true); }
+      }).finally(() => { if (alive) setTicketsLoading(false); });
     return () => {
       alive = false;
     };
-  }, [open, account, db, tenantId]);
+  }, [open, account, db, tenantId, ticketsRetry]);
 
   function requestClose() {
     if (busyRef.current) return;
@@ -206,6 +210,7 @@ export function AbonoModal({ open, db, tenantId, account, onClose, onRegistered 
                   type="button"
                   className={method === "cash" ? "active" : ""}
                   data-testid="abono-cash"
+                  aria-pressed={method === "cash"}
                   disabled={busy}
                   onClick={() => setMethod("cash")}
                 >
@@ -215,6 +220,7 @@ export function AbonoModal({ open, db, tenantId, account, onClose, onRegistered 
                   type="button"
                   className={method === "transfer" ? "active" : ""}
                   data-testid="abono-transfer"
+                  aria-pressed={method === "transfer"}
                   disabled={busy}
                   onClick={() => setMethod("transfer")}
                 >
@@ -250,11 +256,13 @@ export function AbonoModal({ open, db, tenantId, account, onClose, onRegistered 
 
             <div className="abono-field">
               <label htmlFor="abono-ticket">Aplicar a ticket (opcional)</label>
+              {ticketsLoading && <p role="status">Consultando tickets…</p>}
+              {ticketsError && <p role="alert">No se pudieron consultar los tickets. Podés registrar el abono sin aplicar. <button className="btn" onClick={() => setTicketsRetry(n => n + 1)}>Reintentar tickets</button></p>}
               <select
                 id="abono-ticket"
                 data-testid="abono-ticket"
                 value={ticketId}
-                disabled={busy}
+                disabled={busy || ticketsLoading || ticketsError}
                 onChange={(e) => setTicketId(e.target.value)}
               >
                 <option value="">Sin aplicar (cliente)</option>

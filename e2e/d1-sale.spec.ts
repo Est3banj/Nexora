@@ -25,7 +25,7 @@ test.describe("D1 gate — create → sell → ticket locally", () => {
 
     /* ---------------- login ---------------- */
     await page.goto("/");
-    await page.getByTestId("login-email").fill("owner@demo.test");
+    await page.getByTestId("login-identifier").fill("owner@demo.test");
     await page.getByTestId("login-password").fill("demo12345");
     await page.getByTestId("login-submit").click();
     await expect(page.getByTestId("tab-sale")).toBeVisible();
@@ -118,7 +118,7 @@ test.describe("D1 gate — create → sell → ticket locally", () => {
   test("underpayment is rejected without creating a ticket", async ({ page }) => {
     wipeSalesAndCatalog();
     await page.goto("/");
-    await page.getByTestId("login-email").fill("owner@demo.test");
+    await page.getByTestId("login-identifier").fill("owner@demo.test");
     await page.getByTestId("login-password").fill("demo12345");
     await page.getByTestId("login-submit").click();
     await expect(page.getByTestId("tab-sale")).toBeVisible();

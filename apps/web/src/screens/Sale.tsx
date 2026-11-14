@@ -66,6 +66,9 @@ export function Sale({
   onPendingProductUsed,
 }: Props) {
   const [items, setItems] = useState<SaleItem[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogError, setCatalogError] = useState(false);
+  const [catalogRetry, setCatalogRetry] = useState(0);
   const [categories, setCategories] = useState<LocalCategory[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [view, setView] = useState<View>("browse");
@@ -149,19 +152,21 @@ export function Sale({
 
   useEffect(() => {
     let alive = true;
+    setCatalogLoading(true);
     Promise.all([listSaleItems(db, tenantId), listCategories(db, tenantId)])
       .then(([rows, cats]) => {
         if (!alive) return;
         setItems(rows);
         setCategories(cats.filter((c) => c.active));
+        setCatalogError(false);
       })
       .catch(() => {
-        if (alive) setItems([]);
-      });
+        if (alive) setCatalogError(true);
+      }).finally(() => { if (alive) setCatalogLoading(false); });
     return () => {
       alive = false;
     };
-  }, [db, tenantId, view, lastSale, refreshToken]);
+  }, [db, tenantId, view, lastSale, refreshToken, catalogRetry]);
 
   /* Keyboard shortcuts for peak hours:
      F1 = efectivo exacto · F2 = transferencia · Enter = ir al cobro /
@@ -323,7 +328,9 @@ export function Sale({
     </p>
   ) : null;
 
-  const grid = items.length === 0 ? (
+  const grid = catalogError ? (
+    <div role="alert" data-testid="sale-catalog-error"><p>No se pudo consultar el catálogo. Tus cambios siguen guardados.</p><button className="btn" onClick={() => setCatalogRetry(n => n + 1)}>Reintentar catálogo</button></div>
+  ) : catalogLoading && items.length === 0 ? <p role="status">Consultando catálogo…</p> : items.length === 0 ? (
     <div className="empty-state" data-testid="empty-catalog">
       <h2>Sin productos</h2>
       <p className="muted">
@@ -881,6 +888,7 @@ export function Sale({
         </aside>
         <PaymentModal
           open={payOpen}
+          settings={settings}
           db={db}
           tenantId={tenantId}
           total={sale.total}
@@ -937,6 +945,7 @@ export function Sale({
       </div>
       <PaymentModal
         open={payOpen}
+        settings={settings}
         db={db}
         tenantId={tenantId}
         total={sale.total}

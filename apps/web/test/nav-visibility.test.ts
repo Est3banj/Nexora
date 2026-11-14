@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { NAVIGATION, isDueñoHint, visibleNav } from "../src/components/navigation";
+import { compactNavigation, NAVIGATION, isDueñoHint, visibleNav } from "../src/components/navigation";
 
 /**
  * roles-admin 5.9 · the settled matrix as a PURE test (menu-visibility
@@ -99,4 +99,16 @@ it("visibleNav returns a fresh array (callers may sort/filter freely)", () => {
   const a = visibleNav("owner");
   a.pop();
   expect(visibleNav("owner")).toHaveLength(8);
+});
+
+it("compact destinations partition each permission/feature matrix without hiding or granting entries", () => {
+  for (const role of [null, "member", "owner", "admin"] as const) {
+    for (const enableFiado of [true, false]) {
+      const allowed = visibleNav(role, { enableFiado });
+      const { primary, secondary } = compactNavigation(allowed);
+      expect(primary.length + (secondary.length ? 1 : 0)).toBeLessThanOrEqual(5);
+      expect([...primary, ...secondary]).toEqual(allowed);
+      expect(new Set([...primary, ...secondary].map(item => item.tab)).size).toBe(allowed.length);
+    }
+  }
 });

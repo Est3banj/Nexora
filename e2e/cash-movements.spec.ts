@@ -62,7 +62,7 @@ for (const width of [1440, 375]) {
     await caja(page);
     await expect(page.getByTestId("opening-cash")).toHaveValue("");
     await expect(page.getByTestId("open-shift")).toBeDisabled();
-    await expect(page.getByTestId("cash-movement-open")).toBeDisabled();
+    await expect(page.getByTestId("cash-movement-open")).toHaveCount(0);
     await expect(page.getByTestId("close-history")).toContainText("Legacy v1 · consolidado");
     await expect(page.getByTestId("close-history")).toContainText("24.000");
     await shot(page, width, "no-shift");
@@ -185,7 +185,7 @@ test("M8 offline: opening, withdrawal, close note survive reload; dependency rep
   expect(dbOne("SELECT count(*) FROM closedcash")).toBe("0");
   await page.reload(); await page.getByTestId("tab-arqueo").click();
   await expect(page.getByTestId("close-history")).toContainText("Cierre offline revisado");
-  await expect(page.getByTestId("cash-movement-open")).toBeDisabled();
+  await expect(page.getByTestId("cash-movement-open")).toHaveCount(0);
   await expect(page.getByTestId("cash-staleness")).toContainText("Sin conexión");
   await page.getByTestId("close-history").scrollIntoViewIfNeeded();
   await page.getByRole("region", { name: "Historial de cierres" }).evaluate(el => { el.scrollLeft = el.scrollWidth; });

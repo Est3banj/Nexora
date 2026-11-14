@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { dbOne } from "./helpers-db";
 import { createOrgUser } from "./helpers-auth";
+import { navigate } from "./helpers-navigation";
 
 /**
  * Batch 8 · 8.4 — annul-code e2e (D3 lifecycle end-to-end):
@@ -64,7 +65,7 @@ test("owner: toggle ON blocks raw voids, wrong code rejected, correct code annul
   await sellOne(page, org, 1);
 
   /* toggle ON from the panel (operator flow, 8.8 docs) */
-  await page.getByTestId("tab-admin").click();
+  await navigate(page, "admin");
   await page.getByTestId("admin-tab-configuracion").click();
   await page.getByTestId("admin-setting-require_annul_code").check();
   await page.getByTestId("admin-settings-save").click();

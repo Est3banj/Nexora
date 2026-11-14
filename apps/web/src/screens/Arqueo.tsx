@@ -93,6 +93,8 @@ export function Arqueo({ db, tenantId, refreshToken, tenantName, showToast, onMu
   const lock = useRef(false);
   const countInput = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(true);
+  const [queryError, setQueryError] = useState(false);
+  const [retry, setRetry] = useState(0);
   const [base, setBase] = useState("");
   const [note, setNote] = useState("");
   const [movementOpen, setMovementOpen] = useState(false);
@@ -129,12 +131,13 @@ export function Arqueo({ db, tenantId, refreshToken, tenantName, showToast, onMu
     setHistory(await listLocalClosedCash(db, tenantId));
     setMovements(shift ? await listLocalCashMovements(db, tenantId, shift.id) : []);
     setTransferAbonos(shift ? await localShiftTransferAbonos(db, tenantId, shift.id) : 0);
+    setQueryError(false);
     setLoading(false);
   }, [db, tenantId]);
 
   useEffect(() => {
-    void refresh().catch(() => { setLoading(false); setError("No se pudo cargar la caja. Volvé a intentar."); });
-  }, [refresh, refreshToken]);
+    void refresh().catch(() => { setLoading(false); setQueryError(true); });
+  }, [refresh, refreshToken, retry]);
 
   // Online: adopt the SERVER's open shift when the cache has none (fresh
   // device / seed) so sales and close target the same shift on both sides.
@@ -267,6 +270,7 @@ export function Arqueo({ db, tenantId, refreshToken, tenantName, showToast, onMu
     }
   }
 
+  if (queryError) return <section className="screen arqueo cash-screen" role="alert"><h2>Caja no disponible</h2><p>No se pudo consultar la caja. No se modificaron tus registros.</p><button className="btn" onClick={() => setRetry(n => n + 1)}>Reintentar caja</button></section>;
   return (
     <div className="screen arqueo cash-screen" aria-busy={loading}>
       <section className="card cash-banner" data-testid={openShift ? "shift-card" : "no-open-shift"}>
@@ -274,8 +278,8 @@ export function Arqueo({ db, tenantId, refreshToken, tenantName, showToast, onMu
           <h2>{openShift ? (tenantName ? `Caja · ${tenantName}` : "Caja") : "Abrí un Nuevo Turno"}</h2>
           {openShift ? <p>Abierta <strong data-testid="shift-opened-at">{when(openShift.opened_at)}</strong>{actor(openShift.opened_by) && <> · Por <span data-testid="shift-actor" title={openShift.opened_by ?? undefined}>{actor(openShift.opened_by)}</span></>}</p>
             : <p>Ingresá la base real antes de empezar a registrar ventas.</p>}</div>
-        <div className="cash-banner-actions"><button className="btn" data-testid="cash-movement-open" disabled={!openShift || busy || loading} onClick={() => setMovementOpen(true)}>+ Ingreso / Retiro</button>
-          <button className="btn cash-close-focus" disabled={!openShift || busy} onClick={() => { countInput.current?.scrollIntoView({ block: "center" }); countInput.current?.focus(); }}>Cerrar Turno Actual</button></div>
+        {openShift && <div className="cash-banner-actions"><button className="btn" data-testid="cash-movement-open" disabled={busy || loading} onClick={() => setMovementOpen(true)}>+ Ingreso / Retiro</button>
+          <button className="btn cash-close-focus" disabled={busy} onClick={() => { countInput.current?.scrollIntoView({ block: "center" }); countInput.current?.focus(); }}>Cerrar Turno Actual</button></div>}
       </section>
       {/* Staleness only when it actually matters — clean online state stays quiet */}
       {(!online || sync.pending > 0) && (
@@ -286,46 +290,38 @@ export function Arqueo({ db, tenantId, refreshToken, tenantName, showToast, onMu
         </p>
       )}
       {error && <p className="error" data-testid="arqueo-error" role="alert">{error}</p>}
-      {!openShift && !loading && <form className="card cash-opening cash-form" onSubmit={e => { e.preventDefault(); void handleOpen(); }}>
-        <h3>Fondo Inicial (Base)</h3><p className="muted">Base fija — no se auto-completa. Para ajustarla: ingreso o retiro.</p>
-        <label htmlFor="opening-cash">Base inicial en efectivo (COP)</label>
-        <input id="opening-cash" data-testid="opening-cash" inputMode="numeric" value={base} disabled={busy} placeholder="Ingresá la base; 0 si no hay fondo" aria-invalid={base !== "" && !validMoney(base)} aria-describedby="base-help" onChange={e => setBase(e.target.value)} />
-        <p id="base-help" className={base && !validMoney(base) ? "error" : "muted"}>Entero entre 0 y 2.147.483.647, sin decimales. No se completa automáticamente.</p>
-        <button className="btn primary" data-testid="open-shift" aria-busy={busy} disabled={busy || !validMoney(base)}>{busy ? "Abriendo…" : "Abrir Caja"}</button>
-      </form>}
-      <div className="cash-grid">
-        <div className="cash-summary">
-          {openShift && <section data-testid="expected-card">
-            <h3 className="cash-section-title"><Calculator size={18} aria-hidden="true" /> Resumen del Sistema · Turno Actual</h3>
-            <div className="cash-metrics">
-              <div className="card"><span>Fondo Inicial (Base)</span><strong data-testid="expected-base">{cop(openShift.opening_cash)}</strong></div>
-              <div className="card cash-metric-cash"><span>Ventas Efectivo</span><strong data-testid="expected-cash">{cop(expected?.cash ?? 0)}</strong></div>
-              <div className="card cash-metric-transfer"><span>Ventas Transferencia · confirmadas{v2 ? " (aparte)" : ""}</span><strong data-testid="expected-transfers">{cop(expected?.transfers ?? 0)}</strong></div>
-            </div>
-            <div className="card cash-expected">
-              <div className="cash-expected-top">
-                <div>
-                  <span>{v2 ? "Efectivo Total Esperado en Gaveta" : "Esperado Consolidado · Legacy v1"}</span>
-                  <p>{v2 ? "Base + ventas efectivo + abonos efectivo + ingresos − retiros" : "Efectivo + transferencias + abonos — NO es efectivo físico de gaveta."}</p>
-                </div>
-                <strong data-testid="expected-total">{cop(expected?.expected ?? 0)}</strong>
+      <div className={`cash-grid ${openShift ? "cash-grid-active" : "cash-grid-opening"}`}>
+        {!openShift && !loading && <form className="card cash-opening cash-form" onSubmit={e => { e.preventDefault(); void handleOpen(); }}>
+          <h3>Fondo Inicial (Base)</h3><p className="muted">Para ajustarla, hacé un ingreso o retiro.</p>
+          <label htmlFor="opening-cash">Base inicial en efectivo (COP)</label>
+          <input id="opening-cash" data-testid="opening-cash" inputMode="numeric" value={base} disabled={busy} placeholder="Ingresá la base; 0 si no hay fondo" aria-invalid={base !== "" && !validMoney(base)} aria-describedby="base-help" onChange={e => setBase(e.target.value)} />
+          <p id="base-help" className={base && !validMoney(base) ? "error" : "muted"}>Monto entero en pesos, sin decimales.</p>
+          <button className="btn primary" data-testid="open-shift" aria-busy={busy} disabled={busy || !validMoney(base)}>{busy ? "Abriendo…" : "Abrir Caja"}</button>
+        </form>}
+        {openShift && <section className="cash-system" data-testid="expected-card">
+          <h3 className="cash-section-title"><Calculator size={18} aria-hidden="true" /> Resumen del Sistema · Turno Actual</h3>
+          <div className="cash-metrics">
+            <div className="card"><span>Fondo Inicial (Base)</span><strong data-testid="expected-base">{cop(openShift.opening_cash)}</strong></div>
+            <div className="card cash-metric-cash"><span>Ventas Efectivo</span><strong data-testid="expected-cash">{cop(expected?.cash ?? 0)}</strong></div>
+            <div className="card cash-metric-transfer"><span>Ventas Transferencia · confirmadas{v2 ? " (aparte)" : ""}</span><strong data-testid="expected-transfers">{cop(expected?.transfers ?? 0)}</strong></div>
+          </div>
+          <div className="card cash-expected">
+            <div className="cash-expected-top">
+              <div>
+                <span>{v2 ? "Efectivo Total Esperado en Gaveta" : "Esperado Consolidado · Legacy v1"}</span>
+                <p>{v2 ? "Base + ventas efectivo + abonos efectivo + ingresos − retiros" : "Efectivo + transferencias + abonos — NO es efectivo físico de gaveta."}</p>
               </div>
-              <div className="cash-breakdown">
-                <div><span>Abonos en efectivo</span><strong data-testid="expected-abonos">{cop(expected?.abonos ?? 0)}</strong></div>
-                <div><span>Ingresos de caja{!v2 ? " (no suman en legacy)" : ""}</span><strong data-testid="expected-income">{cop(movements.filter(m => m.direction === "in").reduce((s, m) => s + m.amount, 0))}</strong></div>
-                <div><span>Retiros de caja{!v2 ? " (no restan en legacy)" : ""}</span><strong data-testid="expected-withdrawals">{cop(movements.filter(m => m.direction === "out").reduce((s, m) => s + m.amount, 0))}</strong></div>
-                <div><span>Abonos por transferencia (aparte)</span><strong data-testid="expected-transfer-abonos">{cop(transferAbonos)}</strong></div>
-                <div><span>Transferencias pendientes (excluidas)</span><strong data-testid="expected-pending">{cop(expected?.pending ?? 0)}</strong></div>
-              </div>
+              <strong data-testid="expected-total">{cop(expected?.expected ?? 0)}</strong>
             </div>
-          </section>}
-          <section className="card cash-history" data-testid="close-history"><h3>Historial de Turnos Recientes</h3><p className="muted">Últimos 20 · valores guardados, sin recalcular.</p>
-            {history.length ? <div className="table-scroll" tabIndex={0} role="region" aria-label="Historial de cierres"><table><thead><tr><th>Fecha / Hora · Bogotá</th><th>Cajero / Versión</th><th>Esperado</th><th>Contado</th><th>Diferencia</th><th>Notas / Estado</th></tr></thead><tbody>
-              {history.map(c => <tr key={c.id} data-testid="close-history-row"><td><time>{when(c.created_at)}</time><small className="cash-id">ID {c.id.slice(0, 8)}</small></td><td title={c.closed_by ?? undefined}>{actor(c.closed_by)}<small>{c.calculation_version === "drawer_cash_v2" ? "Gaveta v2 · físico" : "Legacy v1 · consolidado"}</small></td><td className="mono">{cop(c.expected)}</td><td className="mono">{cop(c.counted)}</td><td><strong className={`cash-diff-pill ${c.diff < 0 ? "short" : c.diff > 0 ? "over" : "exact"}`} data-testid="history-diff">{cop(c.diff)}{c.diff === 0 ? " (Exacto)" : c.diff > 0 ? " (Sobrante)" : " (Faltante)"}</strong></td><td className="cash-history-note">{c.closing_note || "Sin observaciones"}<small>{c.sync_pending ? "Pendiente de sincronización · provisional hasta ACK" : "Guardado en servidor"}</small></td></tr>)}
-            </tbody></table></div> : <p className="muted">Sin cierres aún.</p>}
-          </section>
-          {openShift && movements.length > 0 && <section className="card cash-ledger"><h3>Movimientos del Turno</h3><div className="table-scroll" tabIndex={0} role="region" aria-label="Libro de movimientos"><table><thead><tr><th>Fecha · Bogotá</th><th>Tipo / Importe</th><th>Motivo / Nota</th></tr></thead><tbody>{movements.map(m => <tr key={m.id} data-testid="cash-movement-row"><td>{when(m.created_at)}</td><td className="mono">{m.direction === "in" ? "Ingreso +" : "Retiro −"}{cop(m.amount)}</td><td>{m.reason}<small>{m.note}</small></td></tr>)}</tbody></table></div></section>}
-        </div>
+            <div className="cash-breakdown">
+              <div><span>Abonos en efectivo</span><strong data-testid="expected-abonos">{cop(expected?.abonos ?? 0)}</strong></div>
+              <div><span>Ingresos de caja{!v2 ? " (no suman en legacy)" : ""}</span><strong data-testid="expected-income">{cop(movements.filter(m => m.direction === "in").reduce((s, m) => s + m.amount, 0))}</strong></div>
+              <div><span>Retiros de caja{!v2 ? " (no restan en legacy)" : ""}</span><strong data-testid="expected-withdrawals">{cop(movements.filter(m => m.direction === "out").reduce((s, m) => s + m.amount, 0))}</strong></div>
+              <div><span>Abonos por transferencia (aparte)</span><strong data-testid="expected-transfer-abonos">{cop(transferAbonos)}</strong></div>
+              <div><span>Transferencias pendientes (excluidas)</span><strong data-testid="expected-pending">{cop(expected?.pending ?? 0)}</strong></div>
+            </div>
+          </div>
+        </section>}
         {openShift && <form className="card cash-count cash-form" onSubmit={e => { e.preventDefault(); void handleClose(); }}>
           <h3><Coins size={18} aria-hidden="true" />{v2 ? "Conteo Físico para Arqueo" : "Conteo Consolidado · Legacy"}</h3>
           <p className="muted">{v2 ? "Efectivo contado físicamente. Sin transferencias." : "Política anterior: efectivo + transferencias confirmadas — no solo la gaveta. No se convierte a v2."}</p>
@@ -341,6 +337,12 @@ export function Arqueo({ db, tenantId, refreshToken, tenantName, showToast, onMu
           <button className="btn cash-save" data-testid="close-shift" aria-busy={busy} disabled={busy || !validCount || !expected || movementOpen}>{busy ? "Guardando…" : "Guardar Arqueo y Finalizar Turno"}</button>
           <p className="muted">{online ? "El servidor calcula el cierre al sincronizar." : "Cierre local, provisional hasta la conciliación."} El arqueo guardado no se edita.</p>
         </form>}
+        {openShift && movements.length > 0 && <section className="card cash-ledger"><h3>Movimientos del Turno</h3><div className="table-scroll" tabIndex={0} role="region" aria-label="Libro de movimientos"><table><thead><tr><th>Fecha · Bogotá</th><th>Tipo / Importe</th><th>Motivo / Nota</th></tr></thead><tbody>{movements.map(m => <tr key={m.id} data-testid="cash-movement-row"><td>{when(m.created_at)}</td><td className="mono">{m.direction === "in" ? "Ingreso +" : "Retiro −"}{cop(m.amount)}</td><td>{m.reason}<small>{m.note}</small></td></tr>)}</tbody></table></div></section>}
+        <section className="card cash-history" data-testid="close-history"><h3>Historial de Turnos Recientes</h3><p className="muted">Últimos 20 · valores guardados, sin recalcular.</p>
+          {history.length ? <div className="table-scroll" tabIndex={0} role="region" aria-label="Historial de cierres"><table><thead><tr><th>Fecha / Hora · Bogotá</th><th>Cajero / Versión</th><th>Esperado</th><th>Contado</th><th>Diferencia</th><th>Notas / Estado</th></tr></thead><tbody>
+            {history.map(c => <tr key={c.id} data-testid="close-history-row"><td><time>{when(c.created_at)}</time><small className="cash-id">ID {c.id.slice(0, 8)}</small></td><td title={c.closed_by ?? undefined}>{actor(c.closed_by)}<small>{c.calculation_version === "drawer_cash_v2" ? "Gaveta v2 · físico" : "Legacy v1 · consolidado"}</small></td><td className="mono">{cop(c.expected)}</td><td className="mono">{cop(c.counted)}</td><td><strong className={`cash-diff-pill ${c.diff < 0 ? "short" : c.diff > 0 ? "over" : "exact"}`} data-testid="history-diff">{cop(c.diff)}{c.diff === 0 ? " (Exacto)" : c.diff > 0 ? " (Sobrante)" : " (Faltante)"}</strong></td><td className="cash-history-note">{c.closing_note || "Sin observaciones"}<small>{c.sync_pending ? "Pendiente de sincronización · provisional hasta ACK" : "Guardado en servidor"}</small></td></tr>)}
+          </tbody></table></div> : <p className="muted">Sin cierres aún.</p>}
+        </section>
       </div>
       <CashMovementModal open={movementOpen} db={db} tenantId={tenantId} onClose={() => setMovementOpen(false)} onRegistered={() => {
         setMovementOpen(false);

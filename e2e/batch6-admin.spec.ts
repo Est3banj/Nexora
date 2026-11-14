@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { dbOne } from "./helpers-db";
+import { destinations, navigate } from "./helpers-navigation";
 
 // Batch 6 regression slice; batch 8 will extend integration coverage.
 // All credentials/codes captured here belong ONLY to disposable e2e accounts.
@@ -22,7 +23,7 @@ async function capture(page: Page, width: number, state: string) {
   await page.screenshot({ path: `${evidence}/batch6-${width}-${state}.png`, fullPage: true });
 }
 async function admin(page: Page) {
-  await page.getByTestId("tab-admin").click();
+  await navigate(page, "admin");
   await expect(page.getByTestId("admin-screen")).toBeVisible();
 }
 
@@ -33,7 +34,7 @@ for (const width of [1440, 375]) {
       const org = await tenant(page);
       const owner = (await (await page.request.get("/api/auth/get-session")).json()).user.id;
       await page.goto("/");
-      await expect(page.locator(".tabbar button")).toHaveCount(8);
+      await expect(destinations(page)).toHaveCount(8);
       await page.keyboard.press("Control+k");
       await page.getByTestId("palette-input").fill("Administración");
       await expect(page.getByTestId("palette-item")).toHaveCount(1);
@@ -57,42 +58,44 @@ for (const width of [1440, 375]) {
       }
       await page.keyboard.press("Escape"); await expect(trigger).toBeFocused();
       await trigger.click();
-      const email = `b6-staff-${randomUUID()}@test.dev`;
+      const username = `b6staff${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+      const password = "batch6-staff-password-123";
       await page.getByTestId("admin-user-name").fill("Ana de prueba B6");
-      await page.getByTestId("admin-user-email").fill(email);
+      await page.getByTestId("admin-user-username").fill(username);
+      await page.getByTestId("admin-user-password").fill(password);
       await capture(page, width, "create-user");
       const createResponse = page.waitForResponse(r => r.url().endsWith("/api/admin/users") && r.request().method() === "POST");
       await page.getByTestId("admin-user-submit").click();
       expect((await createResponse).status()).toBe(201);
-      const password = await page.getByTestId("admin-generated-password").textContent();
-      expect(password!.length).toBeGreaterThanOrEqual(12);
-      await capture(page, width, "generated-password");
+      await expect(page.getByTestId("admin-created-username")).toHaveText(username);
+      await capture(page, width, "created-user");
       expect((await (await page.request.get("/api/auth/get-session")).json()).user.id).toBe(owner);
-      await page.getByRole("button", { name: "Ya la guardé" }).click();
-      await expect(page.getByTestId("admin-generated-password")).toHaveCount(0);
+      await page.getByRole("button", { name: "Listo" }).click();
+      await expect(page.getByTestId("admin-created-username")).toHaveCount(0);
       await expect(page.getByTestId("admin-member")).toHaveCount(2);
-      const row = page.getByTestId("admin-member").filter({ hasText: email });
+      const row = page.getByTestId("admin-member").filter({ hasText: username });
       const staffContext = await browser.newContext({ baseURL: test.info().project.use.baseURL, viewport: { width, height: 1000 } });
       try {
         const staff = await staffContext.newPage();
         await staff.goto("/");
-        await staff.getByTestId("login-email").fill(email);
-        await staff.getByTestId("login-password").fill(password!);
+        await staff.getByTestId("login-identifier").fill(username);
+        await staff.getByTestId("login-password").fill(password);
         await staff.getByTestId("login-submit").click();
-        await expect(staff.locator(".tabbar button")).toHaveCount(5);
+        await expect(destinations(staff)).toHaveCount(5);
         await expect(staff.getByTestId("tab-admin")).toHaveCount(0);
         expect((await staff.request.get("/api/admin/members")).status()).toBe(403);
         await row.locator("select").selectOption("admin");
         await expect(row.locator("select")).toBeEnabled();
         await expect(row.locator("select")).toHaveValue("admin");
         await staff.reload();
-        await expect(staff.locator(".tabbar button")).toHaveCount(8);
-        await expect(staff.getByTestId("tab-admin")).toBeVisible();
+        await expect(destinations(staff)).toHaveCount(8);
+        await navigate(staff, "admin");
+        await expect(staff.getByTestId("admin-screen")).toBeVisible();
         await row.locator("select").selectOption("member");
         await expect(row.locator("select")).toBeEnabled();
         await expect(row.locator("select")).toHaveValue("member");
         await staff.reload();
-        await expect(staff.locator(".tabbar button")).toHaveCount(5);
+        await expect(destinations(staff)).toHaveCount(5);
         await row.getByRole("button", { name: "Quitar acceso" }).click();
         await page.getByRole("button", { name: "Cancelar", exact: true }).click();
         await expect(row).toBeVisible();
@@ -102,12 +105,13 @@ for (const width of [1440, 375]) {
         const revoked = await staff.request.get("/api/catalog/products");
         expect(revoked.status()).toBe(403); expect(await revoked.json()).toEqual({ error: "no_active_tenant" });
       } finally { await staffContext.close(); }
-      // Duplicate-email edge keeps the draft and reports an honest error.
+      // Duplicate-username edge keeps the draft and reports an honest error.
       await trigger.click(); await page.getByTestId("admin-user-name").fill("Duplicado");
-      await page.getByTestId("admin-user-email").fill(email);
+      await page.getByTestId("admin-user-username").fill(username);
+      await page.getByTestId("admin-user-password").fill("otro-password-123456");
       await page.getByTestId("admin-user-submit").click();
-      await expect(page.getByRole("dialog").getByRole("alert")).toContainText("Ese correo ya tiene una cuenta");
-      await expect(page.getByTestId("admin-user-email")).toHaveValue(email);
+      await expect(page.getByRole("dialog").getByRole("alert")).toContainText("Ese usuario ya está en uso");
+      await expect(page.getByTestId("admin-user-username")).toHaveValue(username);
       await page.keyboard.press("Escape");
       expect((await page.request.get("/api/auth/organization/get-active-member-role")).ok()).toBe(true);
       expect(dbOne(`SELECT count(*) FROM member WHERE "organizationId"='${org}'`)).toBe("1");

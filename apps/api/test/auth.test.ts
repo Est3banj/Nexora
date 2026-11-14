@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { getAuth } from "../src/auth/auth";
-import { authHeaders, buildTestApp, createTenant, resetTables, signIn, type Actor } from "./helpers";
+import { authHeaders, buildTestApp, createTenant, resetTables, signIn, signInUsername, type Actor } from "./helpers";
 import { closeDb } from "../src/db";
 
 /**
@@ -178,5 +178,100 @@ describe("organization membership and roles", () => {
     });
     expect(res.statusCode).toBe(403);
     expect(res.json()).toEqual({ error: "no_active_tenant" });
+  });
+});
+
+/**
+ * Username identity for members (better-auth 1.7.19 `username` plugin).
+ * Owners/superadmins are untouched: they keep signing in with email.
+ */
+describe("username sign-in", () => {
+  async function signUpWithUsername(username: string, email: string, password = "password1234") {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/sign-up/email",
+      payload: { name: username, email, password, username },
+    });
+    expect(res.statusCode).toBe(200);
+    return (res.json().data?.user?.id ?? res.json().user?.id) as string;
+  }
+
+  it("username + password opens the tenant; email path still works for the owner", async () => {
+    const userId = await signUpWithUsername("cajero.rapido", "cajero-rapido@nexora.local");
+    await getAuth().api.addMember({
+      body: { organizationId: owner.orgId, userId, role: "member" },
+      headers: new Headers({ cookie: owner.cookie }),
+    });
+
+    const cookie = await signInUsername(app, { username: "cajero.rapido", password: "password1234" });
+    const active = await app.inject({
+      method: "POST",
+      url: "/api/auth/organization/set-active",
+      headers: { cookie },
+      payload: { organizationId: owner.orgId },
+    });
+    expect(active.statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/api/catalog/products", headers: { cookie } })).statusCode).toBe(200);
+
+    // Case-insensitive: the stored value is normalised to lowercase.
+    expect((await signInUsername(app, { username: "CAJERO.RAPIDO", password: "password1234" })).length).toBeGreaterThan(0);
+
+    // Owner has no username → only the email path works for them.
+    const ownerByEmail = await signIn(app, owner);
+    expect(ownerByEmail.length).toBeGreaterThan(0);
+    const ownerByUsername = await app.inject({
+      method: "POST",
+      url: "/api/auth/sign-in/username",
+      payload: { username: "manager", password: owner.password },
+    });
+    expect(ownerByUsername.statusCode).toBeGreaterThanOrEqual(400);
+  });
+
+  it("bad credentials and malformed usernames return explicit codes, not a generic 500", async () => {
+    await signUpWithUsername("ana.breve", "ana-breve@nexora.local");
+
+    const wrongPassword = await app.inject({
+      method: "POST",
+      url: "/api/auth/sign-in/username",
+      payload: { username: "ana.breve", password: "not-the-password" },
+    });
+    expect(wrongPassword.statusCode).toBe(401);
+    expect(wrongPassword.json().code).toBe("INVALID_USERNAME_OR_PASSWORD");
+
+    const tooShort = await app.inject({
+      method: "POST",
+      url: "/api/auth/sign-in/username",
+      payload: { username: "ab", password: "password1234" },
+    });
+    expect(tooShort.statusCode).toBe(422);
+    expect(tooShort.json().code).toBe("USERNAME_TOO_SHORT");
+
+    const badCharset = await app.inject({
+      method: "POST",
+      url: "/api/auth/sign-in/username",
+      payload: { username: "ana rapido", password: "password1234" },
+    });
+    expect(badCharset.statusCode).toBe(422);
+    expect(badCharset.json().code).toBe("INVALID_USERNAME");
+
+    const unknownUser = await app.inject({
+      method: "POST",
+      url: "/api/auth/sign-in/username",
+      payload: { username: "no.existe", password: "password1234" },
+    });
+    expect(unknownUser.statusCode).toBe(401);
+    expect(unknownUser.json().code).toBe("INVALID_USERNAME_OR_PASSWORD");
+    expect(unknownUser.cookies.find((c) => c.name.includes("session"))).toBeUndefined();
+  });
+
+  it("sign-up without a username leaves it null (owner accounts are unaffected)", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/sign-up/email",
+      payload: { name: "Sin usuario", email: "sin-usuario@tenant.test", password: "password1234" },
+    });
+    expect(res.statusCode).toBe(200);
+    const user = res.json().data?.user ?? res.json().user;
+    expect(user.username ?? null).toBeNull();
   });
 });

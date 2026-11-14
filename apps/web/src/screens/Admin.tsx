@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { PGlite } from "@electric-sql/pglite";
-import { formatTicketNo } from "@pos/shared";
+import { formatTicketNo, USERNAME_MAX_LENGTH, USERNAME_MIN_LENGTH, isValidUsername } from "@pos/shared";
 import { getOpenShiftLocal, listCustomerBalances, listLocalCashMovements, listLocalClosedCash, listLocalTickets } from "../db/local";
 import { localDashboardSummary, localLowStock, localPendingTransfers, localTopProducts } from "../db/local-reports";
 import { dashboardRanges, type DashboardPeriod } from "../lib/analytical-periods";
@@ -23,13 +23,18 @@ async function api<T>(tenantId: string, url: string, method = "GET", body?: unkn
     headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   }) });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({})) as { error?: string; account_created?: boolean };
+    const error = await res.json().catch(() => ({})) as {
+      error?: string; account_created?: boolean; issues?: Array<{ message?: string }>;
+    };
     throw new Error(res.status === 403 || res.status === 401 ? "Tu sesión ya no tiene permiso. Volvé a ingresar."
-      : error.error === "email_taken" ? "Ese correo ya tiene una cuenta."
-        : error.error === "membership_create_failed" ? (error.account_created
-          ? "La cuenta se creó, pero no se pudo asignar a la tienda. Contactá al administrador antes de reintentar."
-          : "No se pudo asignar el empleado; la cuenta nueva fue descartada. Podés reintentar.")
-          : "No se pudo completar la operación. Reintentá.");
+      : error.error === "username_taken" ? "Ese usuario ya está en uso. Elegí otro."
+        : error.error === "email_taken" ? "No se pudo crear la cuenta por un conflicto de identificador. Elegí otro usuario."
+          : error.error === "validation_error" && error.issues?.[0]?.message
+            ? `Revisá los datos: ${error.issues[0].message}`
+            : error.error === "membership_create_failed" ? (error.account_created
+              ? "La cuenta se creó, pero no se pudo asignar a la tienda. Contactá al administrador antes de reintentar."
+              : "No se pudo asignar el empleado; la cuenta nueva fue descartada. Podés reintentar.")
+              : "No se pudo completar la operación. Reintentá.");
   }
   return res.json() as Promise<T>;
 }
@@ -123,13 +128,15 @@ function Cajas({ db, tenantId, refreshToken }: LocalProps) {
     {(!sync.online || sync.pending > 0) && <p className="warn-banner">Datos locales posiblemente incompletos.</p>}
     {error ? <p role="alert">No se pudieron cargar las cajas. <button className="btn" onClick={() => setRetry(n => n + 1)}>Reintentar</button></p> : !data ? <p role="status">Cargando cajas…</p> : <>
       <article className="card"><h3>Turno abierto</h3>{data.shift ? <dl><dt>Apertura</dt><dd>{date(data.shift.opened_at)}</dd><dt>Base inicial</dt><dd>{cop(data.shift.opening_cash)}</dd></dl> : <p className="muted">Sin caja abierta.</p>}</article>
-      <article className="card"><h3>Historial de cierres · últimos 20</h3>{data.history.length === 0 ? <p className="muted">Sin cierres registrados.</p> : <div className="table-scroll"><table><thead><tr><th>Fecha / versión</th><th>Esperado</th><th>Contado</th><th>Diferencia</th><th>Nota</th></tr></thead><tbody>{data.history.map(h => <tr key={h.id}><td>{date(h.created_at)}<small>{h.calculation_version}{h.sync_pending ? " · pendiente de sync" : ""}</small></td><td>{cop(h.expected)}</td><td>{cop(h.counted)}</td><td>{cop(h.diff)}</td><td>{h.closing_note || "—"}</td></tr>)}</tbody></table></div>}</article>
+      <article className="card"><h3>Historial de cierres · últimos 20</h3>{data.history.length === 0 ? <p className="muted">Sin cierres registrados.</p> : <div className="table-scroll" role="region" aria-label="Auditoría de cierres, desplazamiento horizontal" tabIndex={0}><table><thead><tr><th>Fecha / versión</th><th>Esperado</th><th>Contado</th><th>Diferencia</th><th>Nota</th></tr></thead><tbody>{data.history.map(h => <tr key={h.id}><td>{date(h.created_at)}<small>{h.calculation_version}{h.sync_pending ? " · pendiente de sync" : ""}</small></td><td>{cop(h.expected)}</td><td>{cop(h.counted)}</td><td>{cop(h.diff)}</td><td>{h.closing_note || "—"}</td></tr>)}</tbody></table></div>}</article>
       <article className="card"><h3>Movimientos de efectivo</h3>{data.movements.every(m => m.rows.length === 0) ? <p className="muted">Sin movimientos en los turnos consultados.</p> : data.movements.filter(m => m.rows.length > 0).map(m => <div key={m.id}><h4>{m.label}</h4><ul className="admin-list">{m.rows.map(r => <li key={r.id}><span>{date(r.created_at)} · {r.reason}{r.note ? ` · ${r.note}` : ""}</span><strong>{r.direction === "in" ? "+" : "−"}{cop(r.amount)}</strong></li>)}</ul></div>)}</article>
     </>}
   </div>;
 }
 
-type Member = { id: string; userId: string; role: string; createdAt: string; user: { id: string; name: string; email: string } };
+type Member = { id: string; userId: string; role: string; createdAt: string; user: { id: string; name: string; email: string; username: string | null } };
+/** Owner rows have no username — they still identify themselves by email. */
+const memberHandle = (user: Member["user"]) => user.username ?? user.email;
 function Empleados({ tenantId, showToast, role }: LocalProps & Feedback & { role: RoleHint }) {
   const isOwner = role === "owner";
   const canManage = (member: Member) => member.role === "member" || (isOwner && member.role === "admin");
@@ -142,17 +149,17 @@ function Empleados({ tenantId, showToast, role }: LocalProps & Feedback & { role
   const lock = useRef(false);
   const [modal, setModal] = useState<"create" | Member | null>(null);
   const dialog = useRef<HTMLDialogElement>(null);
-  const [password, setPassword] = useState<string | null>(null);
+  const [created, setCreated] = useState<string | null>(null);
   const [modalError, setModalError] = useState("");
   useEffect(() => {
-    if (!online) { setModal(null); setPassword(null); return; }
+    if (!online) { setModal(null); setCreated(null); return; }
     let alive = true; setLoading(true); setError("");
     void api<{ members: Member[] }>(tenantId, "/api/admin/members").then(d => { if (alive) setMembers(d.members); })
       .catch(e => { if (alive) setError((e as Error).message); }).finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [tenantId, online, reload]);
   useEffect(() => { if (modal) dialog.current?.showModal(); else dialog.current?.close(); }, [modal]);
-  const close = () => { if (!lock.current) { setModal(null); setPassword(null); setModalError(""); } };
+  const close = () => { if (!lock.current) { setModal(null); setCreated(null); setModalError(""); } };
   async function changeRole(member: Member, role: string) {
     if (lock.current || !online || !isOwner || !canManage(member) || !["member", "admin"].includes(role)) return;
     lock.current = true; setBusy(true);
@@ -162,25 +169,48 @@ function Empleados({ tenantId, showToast, role }: LocalProps & Feedback & { role
   }
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault(); if (lock.current || !online || !modal || (modal !== "create" && !canManage(modal))) return;
-    const form = new FormData(e.currentTarget); lock.current = true; setBusy(true); setModalError("");
+    const form = new FormData(e.currentTarget);
+    if (modal === "create") {
+      // Same rules as the server (packages/shared/username.ts + zod) so the
+      // owner gets a clear Spanish message instead of a generic 400.
+      const username = String(form.get("username") ?? "").trim();
+      const password = String(form.get("password") ?? "");
+      if (!isValidUsername(username)) {
+        setModalError(`El usuario debe tener entre ${USERNAME_MIN_LENGTH} y ${USERNAME_MAX_LENGTH} caracteres: solo minúsculas, números y . _ - (sin arroba ni espacios).`);
+        return;
+      }
+      if (password.length < 12 || password.length > 128) {
+        setModalError("La contraseña debe tener entre 12 y 128 caracteres.");
+        return;
+      }
+      lock.current = true; setBusy(true); setModalError("");
+      try {
+        const result = await api<{ user: { username: string } }>(tenantId, "/api/admin/users", "POST", {
+          name: String(form.get("name") ?? "").trim(), username, password,
+          role: isOwner ? form.get("role") : "member",
+        });
+        setCreated(result.user.username); showToast("Usuario creado");
+        setReload(n => n + 1);
+      } catch (err) { setModalError((err as Error).message); }
+      finally { lock.current = false; setBusy(false); }
+      return;
+    }
+    lock.current = true; setBusy(true); setModalError("");
     try {
-      if (modal === "create") {
-        const result = await api<{ generated_password: string }>(tenantId, "/api/admin/users", "POST", { name: form.get("name"), email: form.get("email"), role: isOwner ? form.get("role") : "member" });
-        setPassword(result.generated_password); showToast("Empleado creado");
-      } else { await api(tenantId, `/api/admin/members/${modal.id}`, "DELETE"); setModal(null); showToast("Acceso a la tienda eliminado"); }
+      await api(tenantId, `/api/admin/members/${modal.id}`, "DELETE"); setModal(null); showToast("Acceso a la tienda eliminado");
       setReload(n => n + 1);
     } catch (err) { setModalError((err as Error).message); }
     finally { lock.current = false; setBusy(false); }
   }
   if (!online) return <p className="warn-banner" data-testid="admin-employees-offline" role="status">La gestión de empleados requiere conexión.</p>;
   return <div className="admin-stack">
-    <div className="admin-toolbar"><h3>Empleados y roles</h3><button className="btn primary" data-testid="admin-user-new" disabled={busy} onClick={() => { setModalError(""); setPassword(null); setModal("create"); }}>Crear usuario</button></div>
+    <div className="admin-toolbar"><h3>Empleados y roles</h3><button className="btn primary" data-testid="admin-user-new" disabled={busy} onClick={() => { setModalError(""); setCreated(null); setModal("create"); }}>Crear usuario</button></div>
     {loading && <p role="status">Cargando empleados…</p>}
-    {error ? <p role="alert">{error} <button className="btn" onClick={() => setReload(n => n + 1)}>Reintentar</button></p> : <div className="card table-scroll"><table data-testid="admin-members"><thead><tr><th>Empleado</th><th>Rol</th><th>Acciones</th></tr></thead><tbody>{members.map(m => <tr key={m.id} data-testid="admin-member"><td><strong>{m.user.name}</strong><small>{m.user.email}</small></td><td>{isOwner && canManage(m) ? <select aria-label={`Rol de ${m.user.name}`} value={m.role} disabled={busy || loading} onChange={e => void changeRole(m, e.target.value)}><option value="member">Cajero</option><option value="admin">Administrador</option></select> : m.role === "owner" ? "Dueño" : m.role === "admin" ? "Administrador" : m.role === "member" ? "Cajero" : "Rol sin verificar"}</td><td>{canManage(m) && <button className="btn danger" disabled={busy || loading} onClick={() => { setModalError(""); setModal(m); }}>Quitar acceso</button>}</td></tr>)}</tbody></table>{!loading && members.length === 0 && <p className="muted">No se encontraron empleados.</p>}</div>}
+    {error ? <p role="alert">{error} <button className="btn" onClick={() => setReload(n => n + 1)}>Reintentar</button></p> : <div className="card table-scroll" role="region" aria-label="Empleados y roles, desplazamiento horizontal" tabIndex={0}><table data-testid="admin-members"><thead><tr><th>Empleado</th><th>Rol</th><th>Acciones</th></tr></thead><tbody>{members.map(m => <tr key={m.id} data-testid="admin-member"><td><strong>{m.user.name}</strong><small>{memberHandle(m.user)}</small></td><td>{isOwner && canManage(m) ? <select aria-label={`Rol de ${m.user.name}`} value={m.role} disabled={busy || loading} onChange={e => void changeRole(m, e.target.value)}><option value="member">Cajero</option><option value="admin">Administrador</option></select> : m.role === "owner" ? "Dueño" : m.role === "admin" ? "Administrador" : m.role === "member" ? "Cajero" : "Rol sin verificar"}</td><td>{canManage(m) && <button className="btn danger" disabled={busy || loading} onClick={() => { setModalError(""); setModal(m); }}>Quitar acceso</button>}</td></tr>)}</tbody></table>{!loading && members.length === 0 && <p className="muted">No se encontraron empleados.</p>}</div>}
     <dialog ref={dialog} className="admin-dialog" aria-labelledby="admin-user-title" onCancel={e => { e.preventDefault(); close(); }} onClose={close}>
-      <h3 id="admin-user-title">{modal === "create" ? password ? "Empleado creado" : "Crear usuario" : "Quitar acceso a la tienda"}</h3>
-      {password ? <div className="admin-stack"><p>Contraseña inicial. Se muestra una sola vez; guardala antes de cerrar.</p><output className="admin-secret" data-testid="admin-generated-password">{password}</output><button className="btn primary" onClick={close}>Ya la guardé</button></div> : <form onSubmit={e => void submit(e)} className="admin-stack">
-        {modal === "create" ? <><label>Nombre completo<input name="name" data-testid="admin-user-name" required maxLength={120} autoFocus autoComplete="off" /></label><label>Correo de acceso<input name="email" data-testid="admin-user-email" type="email" required maxLength={254} autoComplete="off" autoCapitalize="none" spellCheck={false} /></label><label>Rol<select name="role" data-testid="admin-user-role"><option value="member">Cajero</option>{isOwner && <option value="admin">Administrador</option>}</select></label></> : <p>¿Quitar el acceso de <strong>{modal?.user.name}</strong>? Su cuenta sigue existiendo, pero ya no podrá acceder a esta tienda.</p>}
+      <h3 id="admin-user-title">{modal === "create" ? created ? "Usuario creado" : "Crear usuario" : "Quitar acceso a la tienda"}</h3>
+      {created ? <div className="admin-stack"><p>Ya puede ingresar con este usuario y la contraseña que elegiste.</p><output className="admin-secret" data-testid="admin-created-username">{created}</output><button className="btn primary" onClick={close}>Listo</button></div> : <form onSubmit={e => void submit(e)} className="admin-stack">
+        {modal === "create" ? <><label>Nombre completo<input name="name" data-testid="admin-user-name" required maxLength={120} autoFocus autoComplete="off" /></label><label>Usuario<input name="username" data-testid="admin-user-username" type="text" required maxLength={USERNAME_MAX_LENGTH} autoComplete="off" autoCapitalize="none" spellCheck={false} /></label><small>Solo minúsculas, números y . _ - · {USERNAME_MIN_LENGTH} a {USERNAME_MAX_LENGTH} caracteres. Sin arroba ni espacios.</small><label>Contraseña<input name="password" data-testid="admin-user-password" type="password" required minLength={12} maxLength={128} autoComplete="new-password" /></label><label>Rol<select name="role" data-testid="admin-user-role"><option value="member">Cajero</option>{isOwner && <option value="admin">Administrador</option>}</select></label></> : <p>¿Quitar el acceso de <strong>{modal?.user.name}</strong>? Su cuenta sigue existiendo, pero ya no podrá acceder a esta tienda.</p>}
         {modalError && <p role="alert" className="error">{modalError}</p>}
         <div className="admin-actions"><button type="button" className="btn" disabled={busy} onClick={close}>Cancelar</button><button className={`btn ${modal === "create" ? "primary" : "danger"}`} data-testid="admin-user-submit" disabled={busy} aria-busy={busy}>{busy ? "Guardando…" : modal === "create" ? "Crear usuario" : "Confirmar eliminación"}</button></div>
       </form>}

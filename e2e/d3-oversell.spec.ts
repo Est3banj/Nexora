@@ -31,7 +31,7 @@ test.describe("D3-1 — oversell warning", () => {
     dbOne("DELETE FROM tickets");
 
     await page.goto("/");
-    await page.getByTestId("login-email").fill("owner@demo.test");
+    await page.getByTestId("login-identifier").fill("owner@demo.test");
     await page.getByTestId("login-password").fill("demo12345");
     await page.getByTestId("login-submit").click();
     await expect(page.getByTestId("tab-sale")).toBeVisible();

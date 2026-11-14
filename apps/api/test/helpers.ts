@@ -146,6 +146,25 @@ export async function signIn(
   return cookieHeader(res);
 }
 
+/**
+ * Fresh sign-in with a MEMBER username (better-auth `/sign-in/username`).
+ * Owners and superadmins never take this path — they sign in with email.
+ */
+export async function signInUsername(
+  app: FastifyInstance,
+  actor: { username: string; password: string },
+): Promise<string> {
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/auth/sign-in/username",
+    payload: { username: actor.username, password: actor.password },
+  });
+  if (res.statusCode !== 200) {
+    throw new Error(`username sign-in failed: ${res.statusCode} ${res.body}`);
+  }
+  return cookieHeader(res);
+}
+
 export function authHeaders(actor: { cookie: string }) {
   return { cookie: actor.cookie };
 }

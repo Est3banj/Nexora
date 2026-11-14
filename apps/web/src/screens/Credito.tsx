@@ -108,6 +108,8 @@ export function Credito({
   const [detailId, setDetailId] = useState<string | null>(null);
   const [detail, setDetail] = useState<DetailState | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState(false);
+  const [detailRetry, setDetailRetry] = useState(0);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -136,11 +138,12 @@ export function Credito({
     }
     let alive = true;
     setDetailLoading(true);
+    setDetail(null); setDetailError(false);
     void (async () => {
       try {
         const account = rows.find((r) => r.customer_id === detailId);
         if (!account) {
-          if (alive) setDetail(null);
+          if (alive) { setDetail(null); setDetailError(true); }
           return;
         }
         const [abonos, tickets] = await Promise.all([
@@ -149,7 +152,7 @@ export function Credito({
         ]);
         if (alive) setDetail({ account, abonos, tickets });
       } catch {
-        if (alive) setDetail(null);
+        if (alive) { setDetail(null); setDetailError(true); }
       } finally {
         if (alive) setDetailLoading(false);
       }
@@ -157,7 +160,7 @@ export function Credito({
     return () => {
       alive = false;
     };
-  }, [detailId, rows, db, tenantId, refreshToken]);
+  }, [detailId, rows, db, tenantId, refreshToken, detailRetry]);
 
   /* Banner total: positive balances ONLY, over the whole active dataset —
    * the search must never rewrite it (reports spec). */
@@ -288,7 +291,7 @@ export function Credito({
         </p>
       )}
 
-      {loading && rows.length === 0 ? (
+      {error && rows.length === 0 ? null : loading && rows.length === 0 ? (
         <p role="status">Consultando cuentas…</p>
       ) : rows.length === 0 ? (
         <div className="empty-state">
@@ -418,6 +421,8 @@ export function Credito({
         detailId={detailId}
         detail={detail}
         loading={detailLoading}
+        error={detailError}
+        onRetry={() => setDetailRetry(n => n + 1)}
         onClose={() => setDetailId(null)}
       />
 
@@ -469,11 +474,15 @@ function ClientDetailModal({
   detailId,
   detail,
   loading,
+  error,
+  onRetry,
   onClose,
 }: {
   detailId: string | null;
   detail: DetailState | null;
   loading: boolean;
+  error: boolean;
+  onRetry: () => void;
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -510,6 +519,7 @@ function ClientDetailModal({
         </div>
       )}
       {loading && <p role="status">Consultando…</p>}
+      {error && <p role="alert">No se pudo consultar el detalle de la cuenta. <button className="btn" onClick={onRetry}>Reintentar detalle</button></p>}
       {!loading && detail && (
         <div className="detail-body">
           <div className="detail-summary">

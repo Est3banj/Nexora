@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { wipeSalesAndCatalog } from "./helpers-db";
+import { navigate } from "./helpers-navigation";
 
 /**
  * Panel UX #5 — métricas selectivas + atención:
@@ -16,7 +17,7 @@ test.describe("Panel — attention metrics", () => {
     wipeSalesAndCatalog();
 
     await page.goto("/");
-    await page.getByTestId("login-email").fill("owner@demo.test");
+    await page.getByTestId("login-identifier").fill("owner@demo.test");
     await page.getByTestId("login-password").fill("demo12345");
     await page.getByTestId("login-submit").click();
     await expect(page.getByTestId("tab-sale")).toBeVisible();
@@ -47,7 +48,7 @@ test.describe("Panel — attention metrics", () => {
     await page.getByTestId("receipt-close").click();
 
     /* ── Panel: hero + attention section ── */
-    await page.getByTestId("tab-dashboard").click();
+    await navigate(page, "dashboard");
     await expect(page.getByTestId("kpi-revenue")).toBeVisible();
     /* fresh local history → honest "sin dato previo", never a fake % */
     await expect(page.getByTestId("kpi-delta")).toContainText("sin dato previo");
@@ -83,7 +84,7 @@ test.describe("Panel — attention metrics", () => {
       "Transf. pend.",
     );
 
-    await page.getByTestId("tab-dashboard").click();
+    await navigate(page, "dashboard");
     await page.getByTestId("goto-catalog").click();
     await expect(page.getByTestId("tab-catalog")).toHaveClass(/active/);
     await expect(
@@ -95,12 +96,12 @@ test.describe("Panel — attention metrics", () => {
     wipeSalesAndCatalog();
 
     await page.goto("/");
-    await page.getByTestId("login-email").fill("owner@demo.test");
+    await page.getByTestId("login-identifier").fill("owner@demo.test");
     await page.getByTestId("login-password").fill("demo12345");
     await page.getByTestId("login-submit").click();
     await expect(page.getByTestId("tab-sale")).toBeVisible();
 
-    await page.getByTestId("tab-dashboard").click();
+    await navigate(page, "dashboard");
     await expect(page.getByTestId("kpi-revenue")).toBeVisible();
     await expect(page.getByTestId("dash-attention-title")).toHaveCount(0);
     await expect(page.getByTestId("kpi-pending")).toHaveCount(0);

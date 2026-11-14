@@ -44,7 +44,7 @@ async function sell(page: Page) {
   await page.getByTestId("receipt-close").click();
 }
 async function login(page: Page, email = "owner@demo.test", password = "demo12345") {
-  await page.getByTestId("login-email").fill(email);
+  await page.getByTestId("login-identifier").fill(email);
   await page.getByTestId("login-password").fill(password);
   await page.getByTestId("login-submit").click();
 }

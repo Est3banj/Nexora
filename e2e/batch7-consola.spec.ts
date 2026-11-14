@@ -21,14 +21,14 @@ async function account(page: Page, platform = true, withOrg = true) {
   expect((await page.request.post("/api/auth/sign-out")).ok()).toBe(true);
   // Actual UI login, so the session includes the server-controlled flag.
   await page.goto("/");
-  await page.getByTestId("login-email").fill(email);
+  await page.getByTestId("login-identifier").fill(email);
   await page.getByTestId("login-password").fill(password);
   await page.getByTestId("login-submit").click();
   await expect(page.getByTestId(withOrg ? "tab-sale" : "no-tenant")).toBeVisible();
   return { user, org, email, password };
 }
 async function open(page: Page, width: number) {
-  if (width < 768 && await page.getByLabel("Cuenta y caja", { exact: true }).count() && !await page.getByTestId("consola-entry").isVisible()) await page.getByLabel("Cuenta y caja", { exact: true }).click();
+  if (width < 1024 && await page.getByLabel("Cuenta y caja", { exact: true }).count() && !await page.getByTestId("consola-entry").isVisible()) await page.getByLabel("Cuenta y caja", { exact: true }).click();
   await page.getByTestId("consola-entry").click();
   await expect(page.getByTestId("consola-screen")).toBeVisible();
   await expect(page.locator(".nexora-shell")).toHaveCount(0);
@@ -45,6 +45,29 @@ async function localState(page: Page) {
     return { url: h.url, rows: (await h.db.query("SELECT client_uuid, tenant_id, entity, payload, status FROM sync_log WHERE status <> 'synced' ORDER BY client_uuid")).rows };
   });
 }
+
+test("Consola follows compact/tablet/desktop navigation boundaries", async ({ page }) => {
+  await account(page);
+  await open(page, 375);
+  for (const width of [375, 639, 640, 1023, 1024, 1440]) {
+    await page.setViewportSize({ width, height: 1000 });
+    const nav = page.getByRole("navigation", { name: "Consola de plataforma" });
+    const r = (await nav.boundingBox())!;
+    expect(await nav.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+    if (width < 1024) expect(r.y).toBeGreaterThan(900);
+    else expect((await page.locator(".consola-sidebar").boundingBox())!.width).toBe(256);
+    for (const button of await nav.getByRole("button").all()) {
+      await expect(button).toHaveAccessibleName(/.+/);
+      await expect(button).toHaveAttribute("title", /.+/);
+      const rect = (await button.boundingBox())!;
+      expect(rect.width).toBeGreaterThanOrEqual(44);
+      expect(rect.height).toBeGreaterThanOrEqual(44);
+      if (width < 640) await expect(button.locator("span")).toBeHidden();
+      else await expect(button.locator("span")).toBeVisible();
+    }
+    await capture(page, width, "responsive-boundary");
+  }
+});
 
 for (const width of [1440, 375]) {
   test.describe(`Batch 7 Consola ${width}`, () => {

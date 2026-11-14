@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { dbOne } from "./helpers-db";
 import { createOrgUser } from "./helpers-auth";
+import { destinations, navigate } from "./helpers-navigation";
 
 /**
  * Batch 8 · 8.2 — role matrix e2e (REUSE, not duplicate):
@@ -46,10 +47,16 @@ test("member palette mirrors the five-tab nav and catalog is browse-only", async
     await createOrgUser(staffContext.request, org, "member", "rm-member");
     await staff.goto("/");
     await expect(staff.getByTestId("tab-sale")).toBeVisible();
-    await expect(staff.locator(".tabbar button")).toHaveCount(5);
+    await expect(destinations(staff)).toHaveCount(5);
     for (const id of ["tab-dashboard", "tab-reports", "tab-admin"]) {
       await expect(staff.getByTestId(id)).toHaveCount(0);
     }
+    await staff.getByTestId("nav-more").click();
+    const more = staff.getByRole("dialog", { name: "Más secciones", exact: true });
+    await expect(more.getByRole("navigation").getByRole("button")).toHaveCount(1);
+    await expect(more.getByTestId("tab-credito")).toHaveAccessibleName("Clientes & Fiados");
+    await staff.keyboard.press("Escape");
+    await expect(staff.getByTestId("nav-more")).toBeFocused();
     /* palette agrees with nav: the five member destinations are listed,
      * no protected destination ever appears (menu-visibility §Nav and palette agree) */
     await staff.keyboard.press("Control+k");
@@ -85,7 +92,7 @@ test("forced Panel navigation falls back after demotion; stale owner hint never 
   await page.goto("/");
   await expect(page.getByTestId("tab-sale")).toBeVisible();
   /* owner deep-link renders the real Panel (menu-visibility §Owner deep-links) */
-  await page.getByTestId("tab-dashboard").click();
+  await navigate(page, "dashboard");
   await expect(page.getByTestId("kpi-revenue")).toBeVisible();
   /* demote server-side while the owner hint is still cached client-side */
   dbOne(`UPDATE member SET role='member' WHERE "userId"='${ownerUserId}' AND "organizationId"='${org}'`);
@@ -131,7 +138,7 @@ test("member registers a cash abono; overpay never commits", async ({ page, brow
     await createOrgUser(staffContext.request, org, "member", "rm-abono");
     await staff.goto("/");
     await expect(staff.getByTestId("tab-sale")).toBeVisible();
-    await staff.getByTestId("tab-credito").click();
+    await navigate(staff, "credito");
     const debt = staff.getByTestId("client-card").filter({ hasText: "Deudora Roles" });
     await expect(debt.getByTestId("client-balance")).toContainText("50.000");
     await debt.getByTestId("client-abono").click();

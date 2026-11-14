@@ -97,7 +97,12 @@ for (const width of [1440, 375]) {
     await context.unroute("**/api/sync/**");
     await page.evaluate(flag => localStorage.removeItem(flag), offlineFlag);
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
-    await expect(page.getByTestId("pending-badge")).toContainText("sinc.");
+    /* The header badge label now reads "Sincronizando" while work is still in
+       flight — that ALSO matches the old "sinc." precondition, which used to
+       mean "queue drained". Wait for the server state itself instead. */
+    await expect
+      .poll(() => Number(dbOne("SELECT count(*) FROM product_variants")), { timeout: 20_000 })
+      .toBe(2);
     expect(dbOne("SELECT count(*) FROM products")).toBe("1");
     expect(dbOne("SELECT count(*) FROM product_variants")).toBe("2");
     expect(dbOne("SELECT delta || ':' || reason || ':' || note FROM stockdiary WHERE reason='rotura'")).toBe("-2:rotura:Dos envases dañados en recepción");

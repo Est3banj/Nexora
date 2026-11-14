@@ -4,7 +4,7 @@ import { dbOne, wipeSalesAndCatalog } from "./helpers-db";
 test("owner annulment: accessible confirmation, offline edge, replay mirror and responsive evidence", async ({ page, context }, testInfo) => {
   wipeSalesAndCatalog();
   await page.goto("/");
-  await page.getByTestId("login-email").fill("owner@demo.test");
+  await page.getByTestId("login-identifier").fill("owner@demo.test");
   await page.getByTestId("login-password").fill("demo12345");
   await page.getByTestId("login-submit").click();
   await expect(page.getByTestId("tab-sale")).toBeVisible();

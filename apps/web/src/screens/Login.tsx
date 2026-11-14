@@ -1,20 +1,29 @@
 import { useState, type FormEvent } from "react";
-import { authClient } from "../auth";
+import { authClient, loginErrorMessage } from "../auth";
 
+/**
+ * ONE identity field: "Usuario o correo".
+ * Contains "@" → the email/owner path (/sign-in/email); anything else is a
+ * member username (/sign-in/username). The user never has to pick an account
+ * type — that branch is the only UX decision this screen makes.
+ */
 export function Login({ recovery = false, onAuthenticated }: { recovery?: boolean; onAuthenticated?: () => void } = {}) {
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
+    const value = identifier.trim();
     setBusy(true);
     setError(null);
     try {
-      const { error: signInError } = await authClient.signIn.email({ email, password });
+      const { error: signInError } = value.includes("@")
+        ? await authClient.signIn.email({ email: value, password })
+        : await authClient.signIn.username({ username: value, password });
       if (signInError) {
-        setError("No se pudo ingresar. Revisá el correo, la contraseña y la conexión.");
+        setError(loginErrorMessage(signInError.code));
         return;
       }
       // Stale-active-org guard: ALWAYS set-active after sign-in.
@@ -39,15 +48,17 @@ export function Login({ recovery = false, onAuthenticated }: { recovery?: boolea
         <h1><img src="/icon-192.png" alt="" className="login-logo" /> NEXORA</h1>
         <p className="muted">Ingresá para vender</p>
         {recovery && <p className="muted" data-testid="recovery-note">Si tenés cambios pendientes, ingresá con el mismo comercio para recuperarlos. No se borraron datos locales.</p>}
-        <label htmlFor="email">Correo</label>
+        <label htmlFor="identifier">Usuario o correo</label>
         <input
-          id="email"
-          data-testid="login-email"
-          type="email"
-          autoComplete="email"
+          id="identifier"
+          data-testid="login-identifier"
+          type="text"
+          autoCapitalize="none"
+          spellCheck={false}
+          autoComplete="username"
           required
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
+          value={identifier}
+          onChange={(e) => setIdentifier(e.target.value)}
         />
         <label htmlFor="password">Contraseña</label>
         <input

@@ -33,7 +33,19 @@
 @media (min-width: 640px) {
   .consola-fields, .consola-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
-@media (min-width: 768px) {
+@media (max-width: 1023px) {
+  .consola-sidebar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 16px; padding-top: calc(8px + env(safe-area-inset-top, 0px)); }
+  .consola-brand { padding: 0; min-width: 0; }
+  .consola-brand > div > span { display: none; }
+  .consola-back { margin: 0; min-width: 44px; }
+  .consola-nav { position: fixed; bottom: 0; left: 0; width: 100%; height: var(--navigation-height); padding: 4px 8px calc(4px + env(safe-area-inset-bottom, 0px)); background: var(--glass-nav); border-top: 1px solid var(--border); z-index: 5; }
+  .consola-nav button { flex-direction: column; justify-content: center; text-align: center; padding: 4px; gap: 3px; border: 0; font-size: 12px; min-width: 44px; }
+  .consola-nav [aria-current=page] { box-shadow: inset 0 -3px var(--primary); }
+  .consola-main { padding-bottom: calc(var(--navigation-height) + 16px); }
+  .consola-header h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+@media (max-width: 639px) { .consola-nav button span { display: none; } }
+@media (min-width: 1024px) {
   .consola { flex-direction: row; }
   .consola-sidebar { display: flex; flex-direction: column; width: var(--sidebar); border-right: 1px solid var(--border); border-bottom: 0; }
   .consola-brand { padding-block: var(--space-6); }

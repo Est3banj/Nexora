@@ -105,6 +105,25 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
           WHERE "organizationId" = ${tenantId} AND id = ${id}`);
         return result.rows[0];
       },
+      /**
+       * `user.username` for a set of member user ids.
+       *
+       * better-auth's organization adapter hard-codes the member→user
+       * projection to `{id, name, email, image}`
+       * (plugins/organization/adapter.mjs → listMembers), so `listMembers`
+       * can NEVER surface the username the Empleados table needs. One extra
+       * query closes that gap; owners come back with `null` (they have none).
+       */
+      async usernames(userIds: string[]) {
+        const map = new Map<string, string | null>();
+        if (userIds.length === 0) return map;
+        const ids = sql.join(userIds.map(id => sql`${id}`), sql`, `);
+        const result = await db.execute<{ id: string; username: string | null }>(
+          sql`SELECT id, username FROM "user" WHERE id IN (${ids})`,
+        );
+        for (const row of result.rows) map.set(row.id, row.username ?? null);
+        return map;
+      },
       /** Compensate ONLY a newly signed-up account that never acquired a membership. */
       async discardUnassignedUser(userId: string) {
         const result = await db.execute(sql`DELETE FROM "user" u WHERE u.id = ${userId}

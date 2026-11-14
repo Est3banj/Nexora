@@ -301,6 +301,7 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
           <button
             className={view === "sales" ? "active" : ""}
             data-testid="tab-report-sales"
+            aria-pressed={view === "sales"}
             onClick={() => setView("sales")}
           >
             Ventas
@@ -308,6 +309,7 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
           <button
             className={view === "top" ? "active" : ""}
             data-testid="tab-report-top"
+            aria-pressed={view === "top"}
             onClick={() => setView("top")}
           >
             Top
@@ -315,6 +317,7 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
           <button
             className={view === "low" ? "active" : ""}
             data-testid="tab-report-low"
+            aria-pressed={view === "low"}
             onClick={() => setView("low")}
           >
             Stock bajo
@@ -324,10 +327,11 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
        <p className="muted" data-testid="report-applied">Rango aplicado: {range.from} — {range.to} (Bogotá). {view === "low" ? "Stock actual; no depende del rango." : ""}</p>
        {(draft.from !== range.from || draft.to !== range.to) && <p className="muted" data-testid="report-draft">Cambios sin aplicar. La tabla y las exportaciones conservan el rango aplicado.</p>}
        {loading && <p role="status" data-testid="report-loading">Calculando reportes…</p>}
-       <div className="report-description">
-         <p className="muted">Ingresos = efectivo + transferencia + crédito confirmados. Abonos (cobros) son deuda cobrada, no nuevas ventas.</p>
-         <p className="muted">Ventas y productos excluyen tickets anulados; stock incluye su restitución. Planillas en pesos enteros.</p>
-       </div>
+        <details className="report-description" data-testid="report-howto">
+          <summary>¿Cómo se calculan estos números?</summary>
+          <p className="muted">Ingresos = efectivo + transferencia + crédito confirmados. Abonos (cobros) son deuda cobrada, no nuevas ventas.</p>
+          <p className="muted">Ventas y productos excluyen tickets anulados; stock incluye su restitución. Planillas en pesos enteros.</p>
+        </details>
 
       {error && (
         <p className="error" data-testid="reports-error" role="alert">
@@ -344,7 +348,7 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
             </div>
           ) : (
             <>
-              <div className="table-scroll"><table className="rpt-table" data-testid="sales-table">
+              <div className="table-scroll" role="region" aria-label="Ventas por día, desplazamiento horizontal" tabIndex={0}><table className="rpt-table" data-testid="sales-table">
                 <thead>
                   <tr>
                     <th>Fecha</th>
@@ -404,7 +408,7 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
               <p>Sin ventas en este período.</p>
             </div>
           ) : (
-            <table className="rpt-table">
+            <div className="table-scroll" role="region" aria-label="Top productos, desplazamiento horizontal" tabIndex={0}><table className="rpt-table">
               <thead>
                 <tr>
                   <th>#</th>
@@ -434,7 +438,7 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
                   </td>
                 </tr>
               </tfoot>
-            </table>
+            </table></div>
           )}
         </div>
       )}
@@ -447,7 +451,7 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
               <p>Ningún producto está por debajo del mínimo.</p>
             </div>
           ) : (
-            <table className="rpt-table">
+            <div className="table-scroll" role="region" aria-label="Stock bajo, desplazamiento horizontal" tabIndex={0}><table className="rpt-table">
               <thead>
                 <tr>
                   <th>Producto</th>
@@ -466,7 +470,7 @@ export function Reports({ db, tenantId, refreshToken, tenantName }: Props) {
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </table></div>
           )}
         </div>
       )}
