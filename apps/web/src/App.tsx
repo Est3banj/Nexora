@@ -456,14 +456,31 @@ export default function App() {
     );
   }
   if (!tenantId) {
+    // Platform admins legitimately have no tenant — their path is the
+    // Consola, not re-login. Only a tenant user gets the generic advice.
+    const isPlatformAdmin =
+      (session.user as { platformAdmin?: boolean }).platformAdmin === true;
     return (
       <div className="notice-screen" data-testid="no-tenant">
-        <h1>Sin organización activa</h1>
-        <p className="muted">
-          No tenés una tienda asignada o la sesión no tiene organización activa.
-          Salí y volvé a ingresar.
-        </p>
-        {(session.user as { platformAdmin?: boolean }).platformAdmin === true && <button className="btn primary" data-testid="consola-entry" onClick={() => setView("consola")}>Consola</button>}
+        {isPlatformAdmin ? (
+          <>
+            <h1>Tu cuenta administra NEXORA</h1>
+            <p className="muted">
+              Entrá a la Consola para crear o gestionar tiendas.
+            </p>
+            <button className="btn primary" data-testid="consola-entry" onClick={() => setView("consola")}>
+              Ir a la Consola
+            </button>
+          </>
+        ) : (
+          <>
+            <h1>Sin organización activa</h1>
+            <p className="muted">
+              No tenés una tienda asignada o la sesión no tiene organización activa.
+              Salí y volvé a ingresar.
+            </p>
+          </>
+        )}
         <button className="btn ghost" onClick={() => void handleSignOut()}>
           Salir
         </button>

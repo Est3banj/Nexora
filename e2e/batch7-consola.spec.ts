@@ -222,12 +222,22 @@ test("ordinary owner has no account entry and founder denies owner403/unauth401"
 
 test("platform admin without tenant can use console and return without choosing an org", async ({ page }) => {
   const actor = await account(page, true, false);
+  // platform-admin copy: no misleading "re-login" advice for a global account
+  await expect(page.getByTestId("no-tenant")).toContainText("Tu cuenta administra NEXORA");
+  await expect(page.getByTestId("no-tenant")).toContainText("Ir a la Consola");
   await open(page, 375);
   await expect(page.getByTestId("consola-tenants")).toBeVisible();
   await page.getByTestId("consola-back").click();
   await expect(page.getByTestId("no-tenant")).toBeVisible();
   const session = await (await page.request.get("/api/auth/get-session")).json();
   expect(session.user.id).toBe(actor.user); expect(session.session.activeOrganizationId ?? null).toBeNull();
+});
+
+test("non-platform user without tenant keeps the generic message and no console entry", async ({ page }) => {
+  await account(page, false, false);
+  await expect(page.getByTestId("no-tenant")).toContainText("Sin organización activa");
+  await expect(page.getByTestId("no-tenant")).toContainText("Salí y volvé a ingresar");
+  await expect(page.getByTestId("consola-entry")).toHaveCount(0);
 });
 
 test("revoked POST clears the loaded list and form; switching views discards unsent secrets", async ({ page }) => {
