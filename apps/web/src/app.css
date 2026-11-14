@@ -2541,6 +2541,14 @@ select {
   gap: 16px;
 }
 
+/* Flex children must never shrink: on the fixed-height mobile sheet the
+ * overflow used to be absorbed by squishing .pay-summary (scrollable →
+ * min-height:0) until only its header was visible. Content keeps its
+ * natural size and the DIALOG scrolls instead (sticky footer stays). */
+.payment-modal[open] > * {
+  flex-shrink: 0;
+}
+
 .payment-head {
   display: flex;
   align-items: flex-start;
@@ -2665,6 +2673,13 @@ select {
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 6px;
+}
+
+/* The header must not outshout the lines it introduces */
+.pay-summary-head .btn.small {
+  min-height: 28px;
+  padding: 2px 10px;
+  font-size: 12px;
 }
 
 .pay-summary .line {

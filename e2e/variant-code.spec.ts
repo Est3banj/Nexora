@@ -87,6 +87,11 @@ for (const width of [375, 1440]) {
     if (width === 375) {
       await page.getByTestId("checkout-open").click();
       await expect(page.getByTestId("checkout-summary")).toContainText("× 1");
+      /* regression: the mobile sheet must not flex-shrink the lines away
+       * (they used to be clipped out of view while still in the DOM) */
+      await expect(
+        page.getByTestId("checkout-summary").getByText(/× 1/).first(),
+      ).toBeInViewport();
     } else {
       await expect(page.getByTestId("order-qty")).toHaveText("1");
       /* M5: the desktop order panel opens the SAME shared payment modal */
