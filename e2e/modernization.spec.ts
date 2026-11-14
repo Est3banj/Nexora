@@ -458,6 +458,9 @@ for (const width of [1440, 375]) {
     await page.getByTestId("fiado-search").fill("300999");
     await expect(page.getByTestId("fiado-client")).toHaveValue("");
     await page.getByTestId("fiado-client").selectOption(customer);
+    // The mixed-cash input is opt-in: full credit is the default path.
+    await expect(page.getByTestId("fiado-cash")).toHaveCount(0);
+    await page.getByTestId("fiado-mixed-toggle").click();
     for (const value of ["-500", "1000.5", "1000,5", "2147483648"]) {
       await page.getByTestId("fiado-cash").fill(value);
       await expect(page.getByTestId("fiado-cash")).toHaveValue(value);

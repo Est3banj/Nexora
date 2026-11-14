@@ -78,6 +78,12 @@ test.describe("M5 · cobro Fiado (modal único)", () => {
     await expect(page.getByTestId("fiado-note")).toContainText(
       "saldo pendiente de la cuenta",
     );
+    /* step layout: focus starts at step 1 (client search), the mixed-cash
+     * input stays hidden until asked, and the primary action never leaves
+     * the screen (sticky footer — even on the smallest viewport). */
+    await expect(page.getByTestId("fiado-search")).toBeFocused();
+    await expect(page.getByTestId("fiado-cash")).toHaveCount(0);
+    await expect(page.getByTestId("checkout-confirm")).toBeInViewport();
     /* required picker blocks BEFORE any write */
     await expect(page.getByTestId("credit-limit-note")).toContainText(
       "Seleccioná un cliente",
@@ -153,6 +159,7 @@ test.describe("M5 · cobro Fiado (modal único)", () => {
     });
 
     /* cash part equal to the total is not a mixed sale */
+    await page.getByTestId("fiado-mixed-toggle").click();
     await page.getByTestId("fiado-cash").fill("6000");
     await expect(page.getByTestId("credit-limit-note")).toContainText(
       "usá Efectivo",
@@ -179,6 +186,7 @@ test.describe("M5 · cobro Fiado (modal único)", () => {
 
     await page.getByTestId("pay-fiado").click();
     await createClientInModal(page, "Rodrigo Silva", "150000");
+    await page.getByTestId("fiado-mixed-toggle").click();
     await page.getByTestId("fiado-cash").fill("10000");
     await expect(page.getByTestId("credit-split")).toContainText(
       "en efectivo ahora",

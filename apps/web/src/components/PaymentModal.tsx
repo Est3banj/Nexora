@@ -179,6 +179,9 @@ export function PaymentModal({
   const [accountLoading, setAccountLoading] = useState(false);
   /* Inline "Nuevo cliente fiado" (tasks 12.2 — alta from the cobro, 9.6 core) */
   const [showNewClient, setShowNewClient] = useState(false);
+  /* Mixed payment is an EXCEPTION: full credit is the default fiado path,
+   * so "Efectivo ahora" only exists after the cashier asks for it. */
+  const [showMixed, setShowMixed] = useState(false);
   const [newName, setNewName] = useState("");
   const [newPhone, setNewPhone] = useState("");
   const [newLimit, setNewLimit] = useState("");
@@ -197,6 +200,7 @@ export function PaymentModal({
       setCustomerId("");
       setCustomerSearch("");
       setCashPart("");
+      setShowMixed(false);
       setShowNewClient(false);
       setNewName("");
       setNewPhone("");
@@ -216,6 +220,18 @@ export function PaymentModal({
       dialog.close();
     }
   }, [open, dialogRef]);
+
+  /* Fiado keyboard-first: the FIRST step is picking the client, so focus the
+   * search (not the X / the disabled confirm) on open and on tab switch. */
+  useEffect(() => {
+    if (!open || method !== "credit") return;
+    const raf = requestAnimationFrame(() => {
+      dialogRef.current
+        ?.querySelector<HTMLInputElement>('[data-testid="fiado-search"]')
+        ?.focus();
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [open, method, dialogRef]);
 
   /* Customers load when the modal opens (Fiado picker needs them ready). */
   useEffect(() => {
@@ -362,6 +378,8 @@ export function PaymentModal({
         <button
           type="button"
           role="tab"
+          id="pay-tab-cash"
+          aria-controls="pay-panel-cash"
           aria-selected={method === "cash"}
           className={`pay-method-btn${method === "cash" ? " active" : ""}`}
           data-testid="pay-cash"
@@ -376,6 +394,8 @@ export function PaymentModal({
         <button
           type="button"
           role="tab"
+          id="pay-tab-transfer"
+          aria-controls="pay-panel-transfer"
           aria-selected={method === "transfer"}
           className={`pay-method-btn${method === "transfer" ? " active" : ""}`}
           data-testid="pay-transfer"
@@ -390,6 +410,8 @@ export function PaymentModal({
         <button
           type="button"
           role="tab"
+          id="pay-tab-credit"
+          aria-controls="pay-panel-credit"
           aria-selected={method === "credit"}
           className={`pay-method-btn${method === "credit" ? " active" : ""}`}
           data-testid="pay-fiado"
@@ -447,11 +469,19 @@ export function PaymentModal({
       </div>
 
       {method === "cash" && (
-        <CashSection total={total} tendered={tendered} setTendered={onTenderedChange} />
+        <div role="tabpanel" id="pay-panel-cash" aria-labelledby="pay-tab-cash">
+          <CashSection total={total} tendered={tendered} setTendered={onTenderedChange} />
+        </div>
       )}
 
       {method === "transfer" && (
-        <div className="transfer-note" data-testid="transfer-note">
+        <div
+          className="transfer-note"
+          data-testid="transfer-note"
+          role="tabpanel"
+          id="pay-panel-transfer"
+          aria-labelledby="pay-tab-transfer"
+        >
           <p>
             Se registra la venta por <strong>{cop(total)}</strong> como
             transferencia <strong>pendiente de confirmar</strong>.
@@ -465,12 +495,17 @@ export function PaymentModal({
 
       {method === "credit" && (
         <div className="fiado-section" data-testid="fiado-section">
-          <label htmlFor="fiado-search">Buscar cliente por nombre o teléfono</label>
-          <input id="fiado-search" data-testid="fiado-search" type="search"
-            value={customerSearch} disabled={busy || newBusy}
-            onChange={(e) => { setCustomerSearch(e.target.value); setCustomerId(""); }} />
-          <label htmlFor="fiado-client">Seleccionar Cliente Fiado</label>
-          <select
+          <div className="fiado-group" role="group" aria-labelledby="fiado-step-1">
+            <h4 className="fiado-step" id="fiado-step-1">
+              <span className="step-num" aria-hidden="true">1</span> Cliente
+            </h4>
+            <input id="fiado-search" data-testid="fiado-search" type="search"
+              aria-label="Buscar cliente por nombre o teléfono"
+              placeholder="Buscá por nombre o teléfono…"
+              value={customerSearch} disabled={busy || newBusy}
+              onChange={(e) => { setCustomerSearch(e.target.value); setCustomerId(""); }} />
+            <label htmlFor="fiado-client">Cliente fiado</label>
+            <select
             id="fiado-client"
             data-testid="fiado-client"
             value={customerId}
@@ -488,8 +523,74 @@ export function PaymentModal({
                 {c.credit_limit !== null ? ` · límite ${cop(c.credit_limit)}` : " · sin límite"}
               </option>
             ))}
-          </select>
+            </select>
 
+            <button
+              type="button"
+              className="fiado-new-link"
+              data-testid="fiado-new-toggle"
+              disabled={busy}
+              onClick={() => {
+                setNewErr(null);
+                setShowNewClient((v) => !v);
+              }}
+            >
+              {showNewClient ? "Cancelar alta" : "¿No lo tenés? ＋ Nuevo cliente fiado"}
+            </button>
+            {showNewClient && (
+              <div className="fiado-new">
+                <label htmlFor="fiado-new-name">Nombre</label>
+                <input
+                  id="fiado-new-name"
+                  data-testid="fiado-new-name"
+                  value={newName}
+                  maxLength={120}
+                  disabled={newBusy}
+                  onChange={(e) => setNewName(e.target.value)}
+                />
+                <label htmlFor="fiado-new-phone">Teléfono (opcional)</label>
+                <input
+                  id="fiado-new-phone"
+                  data-testid="fiado-new-phone"
+                  value={newPhone}
+                  maxLength={40}
+                  disabled={newBusy}
+                  onChange={(e) => setNewPhone(e.target.value)}
+                />
+                <label htmlFor="fiado-new-limit">Límite de crédito COP (≥ 0)</label>
+                <input
+                  id="fiado-new-limit"
+                  data-testid="fiado-new-limit"
+                  inputMode="numeric"
+                  value={newLimit}
+                  aria-invalid={!!newErr}
+                  aria-describedby={newErr ? "fiado-new-error" : undefined}
+                  disabled={newBusy}
+                  placeholder="100000"
+                  onChange={(e) => setNewLimit(e.target.value)}
+                />
+                {newErr && (
+                  <p id="fiado-new-error" className="error" role="alert" data-testid="fiado-new-error">
+                    {newErr}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  className="btn primary"
+                  data-testid="fiado-new-save"
+                  disabled={newBusy}
+                  onClick={() => void createClient()}
+                >
+                  {newBusy ? "Creando…" : "Crear y seleccionar"}
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="fiado-group" role="group" aria-labelledby="fiado-step-2">
+            <h4 className="fiado-step" id="fiado-step-2">
+              <span className="step-num" aria-hidden="true">2</span> Cobro
+            </h4>
           <p className="fiado-note" data-testid="fiado-note">
             ℹ Esta venta se sumará al saldo pendiente de la cuenta del cliente
             seleccionado.
@@ -513,92 +614,52 @@ export function PaymentModal({
             </div>
           )}
 
-          <div className="fiado-mixed">
-            <label htmlFor="fiado-cash">Efectivo ahora (opcional — mixto)</label>
+          <label className="fiado-mixed-toggle">
             <input
-              id="fiado-cash"
-              data-testid="fiado-cash"
-              inputMode="numeric"
-              value={cashPart}
-              aria-invalid={cashPartInvalid}
-              aria-describedby={cashPartInvalid ? "credit-limit-error" : undefined}
+              type="checkbox"
+              data-testid="fiado-mixed-toggle"
+              checked={showMixed}
               disabled={busy}
-              placeholder="0"
-              onChange={(e) => setCashPart(e.target.value)}
+              onChange={(e) => {
+                setShowMixed(e.target.checked);
+                if (!e.target.checked) setCashPart("");
+              }}
             />
-            <p className="muted" data-testid="credit-split">
-              {cashAmount > 0 && !cashPartInvalid
-                ? `Se cobra ${cop(cashAmount)} en efectivo ahora y ${cop(creditPart)} quedan a crédito.`
-                : cashPartInvalid ? "Ingresá un importe entero válido." : `Venta a crédito completa: ${cop(creditPart)}.`}
+            Pago mixto — cobrar parte en efectivo ahora
+          </label>
+
+          {showMixed ? (
+            <div className="fiado-mixed">
+              <label htmlFor="fiado-cash">Efectivo ahora</label>
+              <input
+                id="fiado-cash"
+                data-testid="fiado-cash"
+                inputMode="numeric"
+                value={cashPart}
+                aria-invalid={cashPartInvalid}
+                aria-describedby={cashPartInvalid ? "credit-limit-error credit-split" : "credit-split"}
+                disabled={busy}
+                placeholder="0"
+                onChange={(e) => setCashPart(e.target.value)}
+              />
+              <p className="muted" id="credit-split" data-testid="credit-split">
+                {cashAmount > 0 && !cashPartInvalid
+                  ? `Se cobra ${cop(cashAmount)} en efectivo ahora y ${cop(creditPart)} quedan a crédito.`
+                  : cashPartInvalid ? "Ingresá un importe entero válido." : `Venta a crédito completa: ${cop(creditPart)}.`}
+              </p>
+            </div>
+          ) : (
+            <p className="credit-full" data-testid="credit-split">
+              Venta a crédito completa: {cop(creditPart)}.
             </p>
-          </div>
+          )}
 
           {limitBlock && (
             <p id="credit-limit-error" className="fiado-block" role="status" data-testid="credit-limit-note">
               {limitBlock}
             </p>
           )}
-
-          <button
-            type="button"
-            className="btn ghost"
-            data-testid="fiado-new-toggle"
-            disabled={busy}
-            onClick={() => {
-              setNewErr(null);
-              setShowNewClient((v) => !v);
-            }}
-          >
-            {showNewClient ? "Cancelar alta" : "＋ Nuevo cliente fiado"}
-          </button>
-          {showNewClient && (
-            <div className="fiado-new">
-              <label htmlFor="fiado-new-name">Nombre</label>
-              <input
-                id="fiado-new-name"
-                data-testid="fiado-new-name"
-                value={newName}
-                maxLength={120}
-                disabled={newBusy}
-                onChange={(e) => setNewName(e.target.value)}
-              />
-              <label htmlFor="fiado-new-phone">Teléfono (opcional)</label>
-              <input
-                id="fiado-new-phone"
-                data-testid="fiado-new-phone"
-                value={newPhone}
-                maxLength={40}
-                disabled={newBusy}
-                onChange={(e) => setNewPhone(e.target.value)}
-              />
-              <label htmlFor="fiado-new-limit">Límite de crédito COP (≥ 0)</label>
-              <input
-                id="fiado-new-limit"
-                data-testid="fiado-new-limit"
-                inputMode="numeric"
-                value={newLimit}
-                aria-invalid={!!newErr}
-                aria-describedby={newErr ? "fiado-new-error" : undefined}
-                disabled={newBusy}
-                placeholder="100000"
-                onChange={(e) => setNewLimit(e.target.value)}
-              />
-              {newErr && (
-                <p id="fiado-new-error" className="error" role="alert" data-testid="fiado-new-error">
-                  {newErr}
-                </p>
-              )}
-              <button
-                type="button"
-                className="btn primary"
-                data-testid="fiado-new-save"
-                disabled={newBusy}
-                onClick={() => void createClient()}
-              >
-                {newBusy ? "Creando…" : "Crear y seleccionar"}
-              </button>
-            </div>
-          )}
+          </div>
         </div>
       )}
 
@@ -608,6 +669,7 @@ export function PaymentModal({
         </p>
       )}
 
+      <div className="pay-footer">
       {method === "transfer" ? (
         <button
           type="button"
@@ -653,7 +715,8 @@ export function PaymentModal({
         onClick={onClose}
       >
         Seguir vendiendo
-      </button>
+        </button>
+      </div>
         </>
       )}
     </dialog>

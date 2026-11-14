@@ -2731,7 +2731,7 @@ select {
   background: var(--surface);
 }
 
-.fiado-section > label {
+.fiado-group > label {
   font-size: 12px;
   font-weight: 600;
 }
@@ -2750,12 +2750,18 @@ select {
 .fiado-account {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 16px;
-  font-size: 12px;
+  gap: 4px 12px;
+  font-size: 11px;
   color: var(--muted);
   background: var(--surface-2);
   border-radius: 10px;
-  padding: 8px 10px;
+  padding: 6px 10px;
+}
+
+.fiado-account span + span::before {
+  content: "·";
+  margin-right: 12px;
+  color: var(--muted);
 }
 
 .fiado-account strong {
@@ -2805,6 +2811,109 @@ select {
   font-weight: 600;
 }
 
+/* ── Fiado checkout:2 visible steps (1 Cliente / 2 Cobro) ──────────── */
+.fiado-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fiado-group + .fiado-group {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.fiado-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+/* "＋ Nuevo cliente" — belongs to step 1, reads as a link not a button */
+.fiado-new-link {
+  align-self: flex-start;
+  min-height: 32px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.fiado-new-link:hover {
+  opacity: 0.8;
+}
+
+.fiado-new-link:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Mixed payment is opt-in: full credit is the default path */
+.fiado-mixed-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.fiado-mixed-toggle input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+.credit-full {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* Sticky action bar: the primary charge button never leaves the screen */
+.pay-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 -24px -24px;
+  padding: 16px 24px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+
 /* Mobile: the cobro takes the whole screen (sheet equivalent) */
 @media (max-width: 639px) {
   .payment-modal[open] {
@@ -2816,6 +2925,11 @@ select {
     border-radius: 0;
     border: 0;
     padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .pay-footer {
+    margin: 0 -16px calc(-16px - env(safe-area-inset-bottom, 0px));
+    padding: 12px 16px;
   }
 }
 
