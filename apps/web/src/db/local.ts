@@ -806,6 +806,8 @@ export type CommittedSale = {
     total: number;
     status: string;
     created_at: string;
+    /** mesas: table the comanda was charged to — null for counter sales. */
+    table_name: string | null;
   };
   lines: Array<{ id: string; qty: number; unit_price: number; subtotal: number }>;
   payments: Array<{
@@ -819,10 +821,16 @@ export type CommittedSale = {
   }>;
 };
 
+/**
+ * Mesas: `table_name` rides the commit so the ticket (and its sync payload)
+ * records WHICH table it settled. Additive/nullable — a counter sale passes
+ * nothing and writes NULL (schema-contract parity: the column exists on
+ * both stores, the value is optional).
+ */
 export type SaleCommitInput =
-  | { lines: SaleLineInput[]; method?: "cash"; tendered: number }
-  | { lines: SaleLineInput[]; method: "transfer" }
-  | { lines: SaleLineInput[]; method: "credit"; customerId: string; cashAmount: number };
+  | { lines: SaleLineInput[]; method?: "cash"; tendered: number; table_name?: string | null }
+  | { lines: SaleLineInput[]; method: "transfer"; table_name?: string | null }
+  | { lines: SaleLineInput[]; method: "credit"; customerId: string; cashAmount: number; table_name?: string | null };
 
 /**
  * ONE local transaction = ticket + lines + payment + shift lookup +
@@ -894,9 +902,9 @@ export async function commitLocalSale(
 
     const ticketId = newId();
     await tx.query(
-      `INSERT INTO tickets (id, tenant_id, client_uuid, shift_id, ticket_no, status, total, created_at, customer_id)
-       VALUES ($1, $2, $1, $3, $4, $5, $6, $7, $8)`,
-      [ticketId, tenantId, shiftId, ticketNo, ticketStatus, total, createdAt, customerId],
+      `INSERT INTO tickets (id, tenant_id, client_uuid, shift_id, ticket_no, status, total, created_at, customer_id, table_name)
+       VALUES ($1, $2, $1, $3, $4, $5, $6, $7, $8, $9)`,
+      [ticketId, tenantId, shiftId, ticketNo, ticketStatus, total, createdAt, customerId, input.table_name ?? null],
     );
 
     const lines: CommittedSale["lines"] = [];
@@ -1035,6 +1043,7 @@ export async function commitLocalSale(
       status: ticketStatus,
       total,
       customer_id: customerId,
+      table_name: input.table_name ?? null,
       created_at: createdAt,
     });
 
@@ -1045,6 +1054,7 @@ export async function commitLocalSale(
         total,
         status: ticketStatus,
         created_at: createdAt,
+        table_name: input.table_name ?? null,
       },
       lines,
       payments,
@@ -1162,6 +1172,8 @@ export type LocalTicketRow = {
   /** Credit customer link (M5): receipt header + Tickets search by client. */
   customer_id?: string | null;
   customer_name?: string | null;
+  /** mesas: table charged at cobro — null for counter sales. */
+  table_name?: string | null;
 };
 
 const TICKET_PAYMENT_COLUMNS = `
@@ -1196,7 +1208,7 @@ export async function listLocalTickets(
   status?: "voided",
 ): Promise<LocalTicketRow[]> {
   const res = await db.query<LocalTicketRow>(
-    `SELECT t.id, t.ticket_no, t.total, t.status, t.created_at,
+    `SELECT t.id, t.ticket_no, t.total, t.status, t.created_at, t.table_name,
             ${TICKET_PAYMENT_COLUMNS},
             ${TICKET_CUSTOMER_COLUMNS},
             ${TICKET_ITEMS_COLUMN}
@@ -1230,7 +1242,7 @@ export async function getLocalTicket(
   payment_synced: boolean;
 } | null> {
   const ticket = await db.query<LocalTicketRow>(
-    `SELECT t.id, t.ticket_no, t.total, t.status, t.created_at,
+    `SELECT t.id, t.ticket_no, t.total, t.status, t.created_at, t.table_name,
             (SELECT p.id FROM payments p WHERE p.tenant_id=t.tenant_id AND p.ticket_id=t.id AND p.method='transfer' LIMIT 1) AS payment_id,
             ${TICKET_PAYMENT_COLUMNS},
             ${TICKET_CUSTOMER_COLUMNS},

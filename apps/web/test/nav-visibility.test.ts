@@ -5,10 +5,10 @@ import { compactNavigation, NAVIGATION, isDueñoHint, visibleNav } from "../src/
  * roles-admin 5.9 · the settled matrix as a PURE test (menu-visibility
  * §Role tab sets + §Fail closed on UNKNOWN role / design D6):
  *
- *  - `null` (unknown / never-verified) → ONLY the 5 member-safe tabs.
+ *  - `null` (unknown / never-verified) → ONLY the member-safe tabs (6).
  *    Fail-closed means the PROTECTED surfaces (Panel, Reportes,
  *    Administración, Consola) never render for a role we could not verify.
- *  - `member` → the same 5; `owner`/`admin` → those 5 + Panel + Reportes
+ *  - `member` → the same 6 (incl. Mesas); `owner`/`admin` → those 6 + Panel + Reportes
  *    + Administración (8 — batch 6).
  *  - `enable_fiado: false` → `credito` drops for EVERY role.
  *  - Consola is NEVER in the matrix (design D7: account menu, batch 7).
@@ -19,10 +19,10 @@ import { compactNavigation, NAVIGATION, isDueñoHint, visibleNav } from "../src/
 const tabs = (r: Parameters<typeof visibleNav>[0], o?: { enableFiado?: boolean }) =>
   visibleNav(r, o).map((item) => item.tab);
 
-const MEMBER_SAFE = ["sale", "arqueo", "tickets", "catalog", "credito"];
+const MEMBER_SAFE = ["sale", "arqueo", "tickets", "catalog", "mesas", "credito"];
 const DUENO_EXTRA = ["dashboard", "reports", "admin"];
 
-it("null (unknown role) renders ONLY the 5 member-safe tabs — fail closed", () => {
+it("null (unknown role) renders ONLY the 6 member-safe tabs — fail closed", () => {
   expect(tabs(null)).toEqual(MEMBER_SAFE);
   /* Protected surfaces stay hidden for an unverified role. */
   for (const protectedTab of DUENO_EXTRA) {
@@ -33,7 +33,7 @@ it("null (unknown role) renders ONLY the 5 member-safe tabs — fail closed", ()
   );
 });
 
-it("member sees exactly the same 5 tabs", () => {
+it("member sees exactly the same 6 tabs", () => {
   expect(tabs("member")).toEqual(MEMBER_SAFE);
   expect(tabs("member", { enableFiado: false })).toEqual(
     MEMBER_SAFE.filter((t) => t !== "credito"),
@@ -44,11 +44,11 @@ it("owner and admin both see 8, Administración last (Dueño tier ≡ admin)", (
   const owner = tabs("owner");
   const admin = tabs("admin");
   expect(owner).toEqual(admin);
-  expect(owner).toHaveLength(8);
+  expect(owner).toHaveLength(9);
   expect(owner.at(-1)).toBe("admin");
-  expect(tabs("owner", { enableFiado: false })).toHaveLength(7);
-  expect(tabs("admin", { enableFiado: false })).toHaveLength(7);
-  expect(tabs("member", { enableFiado: false })).toHaveLength(4);
+  expect(tabs("owner", { enableFiado: false })).toHaveLength(8);
+  expect(tabs("admin", { enableFiado: false })).toHaveLength(8);
+  expect(tabs("member", { enableFiado: false })).toHaveLength(5);
   /* Exact SET — the prototype's nav order (design-rules layout.navOrder)
    * is preserved: member-safe entries keep their relative order and the
    * Dueño-only ones join them (credito stays the prototype's 7th entry). */
@@ -62,6 +62,18 @@ it("owner and admin both see 8, Administración last (Dueño tier ≡ admin)", (
   expect(tabs("admin", { enableFiado: false })).toEqual(
     admin.filter((t) => t !== "credito"),
   );
+});
+
+it("mesas is tier 'all' in the Operación group (same tier as Venta)", () => {
+  const mesas = NAVIGATION.find((item) => item.tab === "mesas");
+  expect(mesas).toBeDefined();
+  expect(mesas!.tier).toBe("all");
+  expect(mesas!.group).toBe("Operación");
+  expect(mesas!.title).toBe("Control de Mesas & Comandas");
+  /* Every verified role reaches the board — it is not a Dueño surface. */
+  for (const role of [null, "member", "owner", "admin"] as const) {
+    expect(tabs(role)).toContain("mesas");
+  }
 });
 
 it("credito is the ONLY item flagged requiresFiado (and it is tier 'all')", () => {
@@ -98,7 +110,7 @@ it("tier field is exactly all|dueno and isDueñoHint matches it", () => {
 it("visibleNav returns a fresh array (callers may sort/filter freely)", () => {
   const a = visibleNav("owner");
   a.pop();
-  expect(visibleNav("owner")).toHaveLength(8);
+  expect(visibleNav("owner")).toHaveLength(9);
 });
 
 it("compact destinations partition each permission/feature matrix without hiding or granting entries", () => {

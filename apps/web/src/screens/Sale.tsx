@@ -2,10 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import type { PGlite } from "@electric-sql/pglite";
 import {
   CircleDollarSign,
+  Save,
   Search,
   ShoppingBasket,
   ShoppingCart,
   Trash2,
+  Utensils,
 } from "lucide-react";
 import { paymentMethodLabel } from "@pos/shared";
 import {
@@ -15,6 +17,13 @@ import {
   type LocalCategory,
   type SaleItem,
 } from "../db/local";
+import {
+  getTable,
+  listTables,
+  loadTableOrder,
+  saveOrderToTable,
+  type LocalTable,
+} from "../db/local-orders";
 import { annulTicket, AnnulError } from "../db/annul";
 import { ticketHasAbonos } from "../db/void-sale";
 import { isDueñoHint, type RoleHint } from "../components/navigation";
@@ -46,6 +55,17 @@ type Props = {
   /** Set by the command palette → add this product to the cart on mount/focus. */
   pendingProduct: SaleItem | null;
   onPendingProductUsed: () => void;
+  /* ── Mesas (Fase 1) ────────────────────────────────────────────────
+   * `activeTableId` lives in App so it survives the POS unmounting on a
+   * tab switch; the cart itself stays ephemeral (Sale's useState) — the
+   * leave-POS guard confirms before it is lost, never destroys silently. */
+  activeTableId: string | null;
+  onActiveTableChange: (id: string | null) => void;
+  /** Board «Abrir / Cobrar» → load this comanda into the cart on mount. */
+  pendingTableOrder: { tableId: string; orderId: string } | null;
+  onPendingTableOrderUsed: () => void;
+  /** Reported to App so the tab-switch guard knows the cart is dirty. */
+  onCartCountChange: (count: number) => void;
 };
 
 type View = "browse" | "success";
@@ -64,6 +84,11 @@ export function Sale({
   onCommitted,
   pendingProduct,
   onPendingProductUsed,
+  activeTableId,
+  onActiveTableChange,
+  pendingTableOrder,
+  onPendingTableOrderUsed,
+  onCartCountChange,
 }: Props) {
   const [items, setItems] = useState<SaleItem[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(true);
@@ -83,6 +108,8 @@ export function Sale({
     status: string;
     /** Credit part owed — credit-sales spec §Success copy shows it. */
     credit: number | null;
+    /** mesas: table the ticket settled — receipt + success copy. */
+    tableName: string | null;
   } | null>(null);
   const sale = useSale();
   const isWide = useMediaQuery("(min-width: 1024px)");
@@ -108,6 +135,66 @@ export function Sale({
     sale.addItem(pendingProduct);
     onPendingProductUsed();
   }, [pendingProduct, sale.addItem, onPendingProductUsed]);
+
+  /* ── Mesas · Fase 1 ─────────────────────────────────────────────── */
+  const [activeTableName, setActiveTableName] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerTables, setPickerTables] = useState<LocalTable[]>([]);
+  const [pickerLoading, setPickerLoading] = useState(false);
+  const pickerDialog = useRef<HTMLDialogElement>(null);
+
+  /* Banner name: resolved from the local table row (the id is the only
+   * thing that survives a POS unmount — App owns `activeTableId`). */
+  useEffect(() => {
+    if (!activeTableId) {
+      setActiveTableName(null);
+      return;
+    }
+    let alive = true;
+    getTable(db, tenantId, activeTableId)
+      .then((row) => {
+        if (alive) setActiveTableName(row?.name ?? null);
+      })
+      .catch(() => {
+        if (alive) setActiveTableName(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [db, tenantId, activeTableId]);
+
+  /* Board «Abrir / Cobrar» hand-off: replace the cart with the comanda. */
+  useEffect(() => {
+    if (!pendingTableOrder) return;
+    let alive = true;
+    loadTableOrder(db, tenantId, pendingTableOrder.tableId)
+      .then((resumed) => {
+        if (alive && resumed) sale.loadLines(resumed.lines);
+      })
+      .catch(() => {
+        /* the board only offers tables that HAVE an open order — a race
+         * (released elsewhere) just lands on an empty cart + banner */
+      })
+      .finally(() => {
+        if (alive) onPendingTableOrderUsed();
+      });
+    return () => {
+      alive = false;
+    };
+  }, [pendingTableOrder, db, tenantId, sale.loadLines, onPendingTableOrderUsed]);
+
+  /* App reads this to decide whether leaving the POS needs the
+   * «Tenés consumos sin guardar ni cobrar» confirmation. */
+  useEffect(() => {
+    onCartCountChange(sale.lines.length);
+  }, [sale.lines.length, onCartCountChange]);
+
+  useEffect(() => {
+    const dialog = pickerDialog.current;
+    if (!dialog) return;
+    if (pickerOpen && !dialog.open) dialog.showModal();
+    else if (!pickerOpen && dialog.open) dialog.close();
+  }, [pickerOpen]);
 
   /* ── Batch B: quick annul + keyboard shortcuts ─────────────────────
      All hooks live here, BEFORE the success/checkout early returns
@@ -180,20 +267,25 @@ export function Sale({
       if (e.defaultPrevented || document.querySelector("dialog[open]:not([data-testid='payment-modal']), [role='dialog']:not([data-testid='payment-modal'])")) return;
       if (e.key === "F1" || e.key === "F2") {
         e.preventDefault();
-        if (sale.lines.length === 0) return;
+        if (sale.lines.length === 0 && !activeTableId) return;
         const cash = e.key === "F1";
-        setPayMethod(cash ? "cash" : "transfer");
-        if (cash) setTendered(String(sale.total));
-        setError(null);
-        setPayOpen(true);
-        requestAnimationFrame(() => {
-          document
-            .querySelector<HTMLButtonElement>(
-              cash
-                ? '[data-testid="checkout-confirm"]'
-                : '[data-testid="checkout-transfer"]',
-            )
-            ?.focus();
+        /* Same preparation as the pointer path: a mesa must be persisted and
+         * reloaded BEFORE the modal opens, so F1 never charges a stale total. */
+        void prepareCheckout().then((total) => {
+          if (total === null) return;
+          setPayMethod(cash ? "cash" : "transfer");
+          if (cash) setTendered(String(total));
+          setError(null);
+          setPayOpen(true);
+          requestAnimationFrame(() => {
+            document
+              .querySelector<HTMLButtonElement>(
+                cash
+                  ? '[data-testid="checkout-confirm"]'
+                  : '[data-testid="checkout-transfer"]',
+              )
+              ?.focus();
+          });
         });
         return;
       }
@@ -216,7 +308,7 @@ export function Sale({
       e.preventDefault();
       if (!paymentOpen) {
         /* Enter from the browse grid = open the shared cobro modal. */
-        if (sale.lines.length === 0) return;
+        if (sale.lines.length === 0 && !activeTableId) return;
         openCheckout();
         return;
       }
@@ -328,6 +420,98 @@ export function Sale({
     </p>
   ) : null;
 
+  /* ── Mesas context row + quick table picker (shared by both layouts) ── */
+  const showTableContext = Boolean(activeTableId || sale.lines.length > 0);
+
+  const tableContext = showTableContext ? (
+    <div className="table-context" data-testid="table-context">
+      <span
+        className={`table-context-banner${activeTableId ? " attending" : ""}`}
+        data-testid="table-context-name"
+      >
+        <Utensils size={16} aria-hidden="true" />
+        {activeTableId ? `Atendiendo: ${activeTableName ?? "…"}` : "Venta de mostrador"}
+      </span>
+      <button
+        type="button"
+        className="btn primary"
+        data-testid="save-to-table"
+        disabled={sale.lines.length === 0}
+        onClick={() => void handleSaveToTable()}
+      >
+        <Save size={16} aria-hidden="true" />
+        Guardar en Mesa
+      </button>
+    </div>
+  ) : null;
+
+  const tablePicker = (
+    <dialog
+      ref={pickerDialog}
+      className="client-modal table-picker"
+      data-testid="table-picker"
+      aria-labelledby="table-picker-title"
+      onCancel={() => {
+        if (!pickerLoading) setPickerOpen(false);
+      }}
+    >
+      {pickerOpen && (
+        <>
+          <div className="modal-head">
+            <h3 id="table-picker-title">Elegir mesa para guardar</h3>
+            <button
+              type="button"
+              className="modal-x"
+              data-testid="table-picker-close"
+              aria-label="Cerrar"
+              onClick={() => setPickerOpen(false)}
+            >
+              ✕
+            </button>
+          </div>
+          <p className="muted">
+            Vinculás el consumo actual con una mesa libre y se guarda al instante.
+          </p>
+          {pickerLoading ? (
+            <p role="status">Cargando mesas…</p>
+          ) : pickerTables.length === 0 ? (
+            <p className="muted" data-testid="table-picker-empty">
+              No hay mesas disponibles ahora.
+            </p>
+          ) : (
+            <ul className="table-picker-list">
+              {pickerTables.map((t) => (
+                <li key={t.id}>
+                  <button
+                    type="button"
+                    data-testid="table-picker-item"
+                    data-table-id={t.id}
+                    onClick={() => void pickTable(t)}
+                  >
+                    <span>{t.name}</span>
+                    <span className="table-picker-zone">
+                      {t.zone ?? "Sin zona"} · {t.capacity} pers.
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="modal-actions">
+            <button
+              type="button"
+              className="btn ghost"
+              data-testid="table-picker-cancel"
+              onClick={() => setPickerOpen(false)}
+            >
+              Cancelar
+            </button>
+          </div>
+        </>
+      )}
+    </dialog>
+  );
+
   const grid = catalogError ? (
     <div role="alert" data-testid="sale-catalog-error"><p>No se pudo consultar el catálogo. Tus cambios siguen guardados.</p><button className="btn" onClick={() => setCatalogRetry(n => n + 1)}>Reintentar catálogo</button></div>
   ) : catalogLoading && items.length === 0 ? <p role="status">Consultando catálogo…</p> : items.length === 0 ? (
@@ -385,16 +569,129 @@ export function Sale({
     </div>
   );
 
-  function openCheckout() {
-    // tap 2 — empty cart must be blocked WITH a message (sales spec)
+  /* ── Mesas · guardar / retomar / preparar el cobro ───────────────── */
+
+  function cartAsOrderLines() {
+    return sale.lines.map((l) => ({
+      variant_id: l.variantId,
+      name: l.label,
+      price: l.price,
+      qty: l.qty,
+    }));
+  }
+
+  /**
+   * «Guardar en Mesa» (Flujo B): the cart REPLACES the comanda's live
+   * lines (insert / update / soft-delete — never a hard delete) and the
+   * table flips to `occupied`. Stock is untouched: it debits at cobro.
+   * `silent` = the implicit save before a cobro (the cart is about to be
+   * replaced by the full comanda, so clearing it would flash empty).
+   */
+  async function saveToTable(opts: { silent?: boolean } = {}): Promise<boolean> {
+    if (!activeTableId) return false;
+    if (sale.lines.length === 0) {
+      setError("El carrito está vacío — tocá un producto primero");
+      return false;
+    }
+    try {
+      await saveOrderToTable(db, tenantId, activeTableId, cartAsOrderLines());
+      if (!opts.silent) {
+        sale.clear();
+        setError(null);
+        showToast("Consumo guardado en la mesa");
+      }
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "No se pudo guardar en la mesa";
+      setError(message);
+      if (!opts.silent) showToast(message);
+      return false;
+    }
+  }
+
+  /** Quick picker: cart has items but no table bound yet (Flujo B). */
+  async function openTablePicker() {
     if (sale.lines.length === 0) {
       setError("El carrito está vacío — tocá un producto primero");
       return;
     }
-    setError(null);
-    setPayMethod("cash");
-    setTendered("");
-    setPayOpen(true);
+    setPickerLoading(true);
+    try {
+      const rows = await listTables(db, tenantId, { activeOnly: true });
+      setPickerTables(rows.filter((t) => t.status === "available"));
+      setPickerOpen(true);
+    } catch {
+      setError("No se pudieron cargar las mesas");
+    } finally {
+      setPickerLoading(false);
+    }
+  }
+
+  async function pickTable(table: LocalTable) {
+    if (sale.lines.length === 0) {
+      setPickerOpen(false);
+      return;
+    }
+    try {
+      /* Save FIRST with the picked id — `activeTableId` only lands on the
+       * next render, so `saveToTable` (which reads the prop) cannot be used
+       * here without a stale-id race. */
+      await saveOrderToTable(db, tenantId, table.id, cartAsOrderLines());
+      onActiveTableChange(table.id);
+      sale.clear();
+      setError(null);
+      setPickerOpen(false);
+      showToast(`Consumo guardado en ${table.name}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo guardar en la mesa");
+    }
+  }
+
+  async function handleSaveToTable() {
+    if (!activeTableId) {
+      await openTablePicker();
+      return;
+    }
+    await saveToTable();
+  }
+
+  /**
+   * One preparation step shared by every cobro entry point (button, Enter,
+   * F1/F2). Returns the TOTAL to charge, or null when the modal must not
+   * open. For a mesa it persists the cart first and then reloads the FULL
+   * comanda, so the ticket can never miss previously saved lines.
+   */
+  async function prepareCheckout(): Promise<number | null> {
+    if (activeTableId) {
+      if (sale.lines.length > 0) {
+        const saved = await saveToTable({ silent: true });
+        if (!saved) return null;
+      }
+      const resumed = await loadTableOrder(db, tenantId, activeTableId);
+      if (!resumed || resumed.lines.length === 0) {
+        setError("La mesa no tiene consumo guardado");
+        return null;
+      }
+      sale.loadLines(resumed.lines);
+      return resumed.lines.reduce((acc, l) => acc + l.price * l.qty, 0);
+    }
+    if (sale.lines.length === 0) {
+      setError("El carrito está vacío — tocá un producto primero");
+      return null;
+    }
+    return sale.total;
+  }
+
+  function openCheckout() {
+    // tap 2 — empty cart must be blocked WITH a message (sales spec);
+    // a mesa with a saved comanda is chargeable from an empty cart.
+    void prepareCheckout().then((total) => {
+      if (total === null) return;
+      setError(null);
+      setPayMethod("cash");
+      setTendered("");
+      setPayOpen(true);
+    });
   }
 
   /* Method switch invalidates the previous method's validation error:
@@ -420,7 +717,9 @@ export function Sale({
   }
 
   /* One post-commit hand-off: close the modal, persist the receipt view
-   * and open the thermal preview ONLY after the local tx succeeded. */
+   * and open the thermal preview ONLY after the local tx succeeded.
+   * Mesas (Flujo C): the order was closed + the table freed INSIDE the
+   * commit (commitTableSale) — here we only drop the attending context. */
   async function afterCommit(committed: Awaited<ReturnType<typeof sale.commit>>) {
     const cashPay = committed.payments.find((p) => p.method === "cash");
     const creditPay = committed.payments.find((p) => p.method === "credit");
@@ -433,7 +732,9 @@ export function Sale({
       method: committed.payments.map((p) => p.method).join(","),
       status: transferPay?.status ?? cashPay?.status ?? creditPay?.status ?? "confirmed",
       credit: creditPay?.amount ?? null,
+      tableName: committed.ticket.table_name,
     });
+    if (activeTableId) onActiveTableChange(null);
     const detail = await getLocalTicket(db, tenantId, committed.ticket.id);
     setReceipt(detail ? { kind: "sale", detail, tenantName } : null);
     setPayOpen(false);
@@ -457,8 +758,18 @@ export function Sale({
       return "El efectivo ahora debe ser menor al total";
     if (code === "NEGATIVE_STOCK")
       return "Stock insuficiente: el comercio no permite ventas con stock negativo";
+    if (code === "ORDER_NOT_OPEN")
+      return "La comanda ya no está abierta — volvé al tablero de mesas";
+    if (code === "TABLE_NOT_FOUND" || code === "TABLE_INACTIVE")
+      return "La mesa ya no está disponible";
     return "No se pudo registrar la venta";
   }
+
+  /* Mesas: the cobro settles the comanda — the ticket carries the table's
+   * name and the order closes right after it lands (commitTableSale). */
+  const commitTable = activeTableId
+    ? { id: activeTableId, ...(activeTableName ? { name: activeTableName } : {}) }
+    : undefined;
 
   async function confirmCash() {
     if (busyRef.current) return;
@@ -480,7 +791,7 @@ export function Sale({
     busyRef.current = true;
     setBusy(true);
     try {
-      const committed = await sale.commit(db, tenantId, { method: "cash", tendered: amount });
+      const committed = await sale.commit(db, tenantId, { method: "cash", tendered: amount }, commitTable);
       await afterCommit(committed);
     } catch (err) {
       setError(mapCommitError(err));
@@ -496,7 +807,7 @@ export function Sale({
     busyRef.current = true;
     setBusy(true);
     try {
-      const committed = await sale.commit(db, tenantId, { method: "transfer" });
+      const committed = await sale.commit(db, tenantId, { method: "transfer" }, commitTable);
       await afterCommit(committed);
     } catch (err) {
       setError(mapCommitError(err));
@@ -512,11 +823,12 @@ export function Sale({
     busyRef.current = true;
     setBusy(true);
     try {
-      const committed = await sale.commit(db, tenantId, {
-        method: "credit",
-        customerId,
-        cashAmount,
-      });
+      const committed = await sale.commit(
+        db,
+        tenantId,
+        { method: "credit", customerId, cashAmount },
+        commitTable,
+      );
       await afterCommit(committed);
     } catch (err) {
       setError(mapCommitError(err));
@@ -684,6 +996,12 @@ export function Sale({
             <span>Ticket</span>
             <strong data-testid="ticket-no">#{lastSale.ticketNo}</strong>
           </div>
+          {lastSale.tableName && (
+            <div className="row space-between">
+              <span>Mesa</span>
+              <strong data-testid="ticket-table">{lastSale.tableName}</strong>
+            </div>
+          )}
           <div className="row space-between">
             <span>Total</span>
             <strong data-testid="ticket-total">{cop(lastSale.total)}</strong>
@@ -779,6 +1097,7 @@ export function Sale({
     return (
       <div className="screen sale sale-layout" data-testid="sale-screen">
         <div className="sale-products">
+          {tableContext}
           {searchRow}
           {scanStatus}
           {grid}
@@ -873,7 +1192,7 @@ export function Sale({
           <button
             className="btn primary big pay-cta"
             data-testid="checkout-open"
-            disabled={sale.lines.length === 0}
+            disabled={sale.lines.length === 0 && !activeTableId}
             onClick={openCheckout}
           >
             <CircleDollarSign size={18} aria-hidden="true" />
@@ -915,6 +1234,7 @@ export function Sale({
             void confirmCredit(customerId, cashAmount)
           }
         />
+        {tablePicker}
       </div>
     );
   }
@@ -922,6 +1242,7 @@ export function Sale({
   /* ── Mobile browse: product grid + bottom cart bar ───────────────── */
   return (
     <div className="screen sale">
+      {tableContext}
       {searchRow}
       {scanStatus}
       {grid}
@@ -972,6 +1293,7 @@ export function Sale({
           void confirmCredit(customerId, cashAmount)
         }
       />
+      {tablePicker}
     </div>
   );
 }

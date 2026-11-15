@@ -61,6 +61,12 @@ const ticketPayloadSchema = z.object({
    * Pattern: `unit_cost` on ticket_line (`:63`).
    */
   customer_id: uuid.nullable().optional(),
+  /**
+   * table name stamped at cobro (mesas, Fase 1) — OPTIONAL so legacy queued
+   * tickets (pre-deploy, no column yet) still parse and apply (H4 pattern).
+   * Nullable: a counter sale carries an explicit null.
+   */
+  table_name: z.string().min(1).max(120).nullable().optional(),
   created_at: isoDate.optional(),
 });
 

@@ -85,6 +85,88 @@ ALTER TABLE tickets ADD COLUMN IF NOT EXISTS customer_id uuid;   -- nullable, NO
 CREATE INDEX IF NOT EXISTS tickets_tenant_customer_idx ON tickets (tenant_id, customer_id);
 `;
 
+/**
+ * Mesas (control de comandas) — the ONLY server-visible piece of the module
+ * in Fase 1: an additive, nullable `table_name` stamped on the ticket at
+ * cobro time so the receipt and the ticket detail can name the table.
+ *
+ * Same additive pattern as `customer_id` above: `ADD COLUMN IF NOT EXISTS`,
+ * no datadir bump, no forced rehydrate. Applied by the local open path
+ * (inside LOCAL_SCHEMA_SQL) AND by the server boot chain
+ * (apps/api/src/db/migrate-mesas.ts) so both stores stay column-identical
+ * (schema-contract test covers `tickets`).
+ */
+export const TICKET_TABLE_NAME_MIGRATION_SQL = /* sql */ `
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS table_name text;
+`;
+
+/**
+ * Fase 1 (opción C) · mesas/órdenes are LOCAL PGlite domain — never pushed
+ * to the sync queue, never rehydrated, absent from the Drizzle schema until
+ * Fase 2 turns them into sync entities (CONTROL-MESAS.md §FASE 2 B).
+ *
+ * Design decisions encoded here (see CONTROL-MESAS.md «Decisiones tomadas»):
+ *  - `order_lines.variant_id` (not `product_id`): price and stock live on
+ *    the variant and `commitLocalSale` takes variant_id — a product
+ *    reference could not price a line nor charge it.
+ *  - `order_lines.deleted_at`: soft-delete from day 1 — the sync protocol
+ *    has no delete op, so removals must be representable as a state change.
+ *  - `orders.state` + `tables.status` from day 1: Fase 2 reuses them with
+ *    zero data migration.
+ *  - `tables.total_amount` is DERIVED (SUM of live lines) — never stored,
+ *    so it can never drift from the comanda.
+ *
+ * Idempotent (`IF NOT EXISTS`) like every additive migration: re-running on
+ * every open is safe, so no DATA_DIR_VERSION bump.
+ */
+export const MESAS_MIGRATION_SQL = /* sql */ `
+CREATE TABLE IF NOT EXISTS tables (
+  id uuid PRIMARY KEY,
+  tenant_id uuid NOT NULL,
+  name text NOT NULL,
+  zone text,
+  capacity integer NOT NULL DEFAULT 1,
+  status text NOT NULL DEFAULT 'available',        -- 'available' | 'occupied' | 'billing'
+  current_order_id uuid,                           -- ref to orders.id (NO DB FK — business-table precedent)
+  opened_at timestamptz,
+  active boolean NOT NULL DEFAULT true,            -- soft-hide, mirrors products
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS tables_tenant_active_idx ON tables (tenant_id, active);
+CREATE UNIQUE INDEX IF NOT EXISTS tables_tenant_name_uq ON tables (tenant_id, name) WHERE active;
+
+CREATE TABLE IF NOT EXISTS orders (
+  id uuid PRIMARY KEY,
+  tenant_id uuid NOT NULL,
+  table_id uuid NOT NULL,
+  state text NOT NULL DEFAULT 'open',              -- 'open' | 'cancelled' | 'closed'
+  opened_at timestamptz NOT NULL DEFAULT now(),
+  closed_at timestamptz,
+  notes text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS orders_tenant_table_idx ON orders (tenant_id, table_id);
+CREATE INDEX IF NOT EXISTS orders_tenant_state_idx ON orders (tenant_id, state);
+
+CREATE TABLE IF NOT EXISTS order_lines (
+  id uuid PRIMARY KEY,
+  tenant_id uuid NOT NULL,
+  order_id uuid NOT NULL,
+  variant_id uuid NOT NULL,                        -- price/stock live on the variant (see note above)
+  name text NOT NULL,                              -- denormalized label: the comanda must read without joins
+  price integer NOT NULL,
+  qty integer NOT NULL,
+  notes text,
+  deleted_at timestamptz,                          -- soft-delete: removals are a state, not a delete
+  sort integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS order_lines_order_idx ON order_lines (order_id);
+`;
+
 export const PROTOTYPE_MIGRATION_SQL = /* sql */ `
 ALTER TABLE products ADD COLUMN IF NOT EXISTS icon_key text;
 ALTER TABLE categories ADD COLUMN IF NOT EXISTS icon_key text;
@@ -184,6 +266,9 @@ CREATE INDEX IF NOT EXISTS tickets_tenant_created_idx ON tickets (tenant_id, cre
 
 -- Fiado: additive credit schema (needs the tickets table for the ALTER) — design §2.
 ${FIADO_MIGRATION_SQL}
+
+-- Mesas: additive ticket column (needs the tickets table for the ALTER).
+${TICKET_TABLE_NAME_MIGRATION_SQL}
 
 CREATE TABLE IF NOT EXISTS ticket_lines (
   id uuid PRIMARY KEY,

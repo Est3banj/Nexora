@@ -47,13 +47,13 @@ test("member palette mirrors the five-tab nav and catalog is browse-only", async
     await createOrgUser(staffContext.request, org, "member", "rm-member");
     await staff.goto("/");
     await expect(staff.getByTestId("tab-sale")).toBeVisible();
-    await expect(destinations(staff)).toHaveCount(5);
+    await expect(destinations(staff)).toHaveCount(6);
     for (const id of ["tab-dashboard", "tab-reports", "tab-admin"]) {
       await expect(staff.getByTestId(id)).toHaveCount(0);
     }
     await staff.getByTestId("nav-more").click();
     const more = staff.getByRole("dialog", { name: "Más secciones", exact: true });
-    await expect(more.getByRole("navigation").getByRole("button")).toHaveCount(1);
+    await expect(more.getByRole("navigation").getByRole("button")).toHaveCount(2);
     await expect(more.getByTestId("tab-credito")).toHaveAccessibleName("Clientes & Fiados");
     await staff.keyboard.press("Escape");
     await expect(staff.getByTestId("nav-more")).toBeFocused();

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { PGlite } from "@electric-sql/pglite";
-import { BarChart3, Check, Clock3, ContactRound, LayoutDashboard, LayoutGrid, LogOut, MoreHorizontal, Receipt, RefreshCw, Settings, ShoppingCart, TriangleAlert, Wallet, Wifi, WifiOff } from "lucide-react";
+import { BarChart3, Check, Clock3, ContactRound, LayoutDashboard, LayoutGrid, LogOut, MoreHorizontal, Receipt, RefreshCw, Settings, ShoppingCart, TriangleAlert, Utensils, Wallet, Wifi, WifiOff } from "lucide-react";
 import { getOpenShiftLocal, type LocalShift } from "../db/local";
 import { localLowStock, localPendingTransfers } from "../db/local-reports";
 import { useSync } from "../hooks/useSync";
@@ -9,7 +9,7 @@ import { pushNow, retryPoison } from "../sync/queue";
 import { NotificationPopover, type ShellAlert } from "./NotificationPopover";
 import { compactNavigation, type AppTab, type NavItem, type RoleHint } from "./navigation";
 
-const icons = { sale: ShoppingCart, arqueo: Wallet, tickets: Receipt, catalog: LayoutGrid, dashboard: LayoutDashboard, reports: BarChart3, credito: ContactRound, admin: Settings };
+const icons = { sale: ShoppingCart, mesas: Utensils, arqueo: Wallet, tickets: Receipt, catalog: LayoutGrid, dashboard: LayoutDashboard, reports: BarChart3, credito: ContactRound, admin: Settings };
 const cop = (n: number) => new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 0 }).format(n);
 
 function BogotaClock() {

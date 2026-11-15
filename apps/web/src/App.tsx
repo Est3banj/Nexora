@@ -34,8 +34,10 @@ import {
 } from "./lib/settings";
 import { useSync } from "./hooks/useSync";
 import { useActiveMemberRole } from "./hooks/useActiveMemberRole";
+import type { BoardTable } from "./db/local-orders";
 import { Login } from "./screens/Login";
 import { Sale } from "./screens/Sale";
+import { Mesas } from "./screens/Mesas";
 import { Catalog } from "./screens/Catalog";
 import { Tickets } from "./screens/Tickets";
 import { Arqueo } from "./screens/Arqueo";
@@ -110,6 +112,49 @@ export default function App() {
    * state all land on the access-denied fallback, never on protected data. */
   const tabAllowed = nav.some((item) => item.tab === tab);
 
+  /* ── Leave-POS guard (Flujo C) ─────────────────────────────────────
+   * Leaving Venta with a non-empty cart asks FIRST: «Tenés consumos sin
+   * guardar ni cobrar — ¿descartar?» (Quedarse / Descartar). Confirming
+   * is what lets the cart die (it dies with the Sale unmount — today's
+   * behaviour, unchanged); refusing keeps the operator where they are.
+   * Never a silent loss, never a hidden data write. */
+  function requestLeave(proceed: () => void) {
+    if (tab !== "sale" || cartCount === 0) {
+      proceed();
+      return;
+    }
+    if (leaveDialog.current?.open) return;
+    leaveAction.current = proceed;
+    leaveDialog.current?.showModal();
+  }
+  const requestTab = (next: Tab) => requestLeave(() => setTab(next));
+  function confirmLeavePos() {
+    const proceed = leaveAction.current;
+    leaveAction.current = null;
+    leaveDialog.current?.close();
+    /* The unsaved consumption is dropped WITH the confirmation: clear the
+     * attending context too (the table keeps whatever was already saved). */
+    setActiveTableId(null);
+    setCartCount(0);
+    proceed?.();
+  }
+  function stayOnPos() {
+    leaveAction.current = null;
+    leaveDialog.current?.close();
+  }
+
+  const consumeTableOrder = useCallback(() => setPendingTableOrder(null), []);
+
+  function openTableFromBoard(table: BoardTable, mode: "new" | "resume") {
+    setActiveTableId(table.id);
+    setPendingTableOrder(
+      mode === "resume" && table.order_id
+        ? { tableId: table.id, orderId: table.order_id }
+        : null,
+    );
+    setTab("sale");
+  }
+
   /* ── Command palette (Batch C) — Ctrl/Cmd+K or "/" ───────────────── */
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [pendingProduct, setPendingProduct] = useState<SaleItem | null>(null);
@@ -121,6 +166,28 @@ export default function App() {
   const paletteReady = Boolean(
     view === "app" && local && tenantId && ready === sessionKey && transition.phase === "idle",
   );
+
+  /* ── Mesas (Fase 1) ────────────────────────────────────────────────
+   * `activeTableId` lives HERE so the attending context survives the POS
+   * unmounting on a tab switch (Sale is mounted conditionally). The CART
+   * stays ephemeral inside Sale — the leave-POS guard CONFIRMS before it
+   * is lost, it never destroys silently (spec: guard = confirmación).
+   * `cartCount` is what Sale reports so the guard knows the cart is dirty. */
+  const [activeTableId, setActiveTableId] = useState<string | null>(null);
+  const [pendingTableOrder, setPendingTableOrder] = useState<{
+    tableId: string;
+    orderId: string;
+  } | null>(null);
+  const [cartCount, setCartCount] = useState(0);
+  const leaveDialog = useRef<HTMLDialogElement>(null);
+  const leaveAction = useRef<(() => void) | null>(null);
+  const onCartCountChange = useCallback((count: number) => setCartCount(count), []);
+
+  /* Sale only exists while tab === "sale": a stale dirty flag after it
+   * unmounts (role flip, deep link) must not arm the guard forever. */
+  useEffect(() => {
+    if (tab !== "sale" && cartCount > 0) setCartCount(0);
+  }, [tab, cartCount]);
 
   useEffect(() => {
     if (!paletteReady) {
@@ -163,6 +230,11 @@ export default function App() {
     setTenantName(undefined);
     setToast(null);
     setTab("sale");
+    /* Mesas context is tenant/session state — never carry it across a
+     * re-auth, datadir switch or tenant change. */
+    setActiveTableId(null);
+    setPendingTableOrder(null);
+    setCartCount(0);
     setPendingProduct(null);
     setPendingTicketId(null);
     setPendingVariantId(null);
@@ -517,9 +589,10 @@ export default function App() {
   return (
     <>
       <AppShell key={`${tenantId}:${session.user.id}`} db={local.db} tenantId={tenantId} user={session.user} tenantName={tenantName}
-        tab={tab} nav={nav} role={role} refreshToken={refreshToken} onNavigate={setTab} onSignOut={handleSignOut} onConsola={() => setView("consola")}
-        onTicket={id => { setPendingTicketId(id); setTab("tickets"); }}
-        onVariant={id => { setPendingVariantId(id); setTab("catalog"); }}>
+        tab={tab} nav={nav} role={role} refreshToken={refreshToken} onNavigate={requestTab} onSignOut={handleSignOut}
+        onConsola={() => requestLeave(() => setView("consola"))}
+        onTicket={id => requestLeave(() => { setPendingTicketId(id); setTab("tickets"); })}
+        onVariant={id => requestLeave(() => { setPendingVariantId(id); setTab("catalog"); })}>
 
         {sync.lastSync !== null && (
           <div className="sync-meta" data-testid="last-sync">
@@ -600,7 +673,7 @@ export default function App() {
             db={local.db}
             tenantId={tenantId}
             refreshToken={refreshToken}
-            onNavigate={(t) => setTab(t)}
+            onNavigate={requestTab}
           />
         )}
         {tabAllowed && tab === "sale" && (
@@ -615,6 +688,21 @@ export default function App() {
             onCommitted={onMutated}
             pendingProduct={pendingProduct}
             onPendingProductUsed={consumeProduct}
+            activeTableId={activeTableId}
+            onActiveTableChange={setActiveTableId}
+            pendingTableOrder={pendingTableOrder}
+            onPendingTableOrderUsed={consumeTableOrder}
+            onCartCountChange={onCartCountChange}
+          />
+        )}
+        {tabAllowed && tab === "mesas" && (
+          <Mesas
+            db={local.db}
+            tenantId={tenantId}
+            refreshToken={refreshToken}
+            role={role}
+            showToast={showToast}
+            onOpenTable={openTableFromBoard}
           />
         )}
         {tabAllowed && tab === "catalog" && (
@@ -673,7 +761,7 @@ export default function App() {
           tenantId={tenantId}
           nav={nav}
           onClose={() => setPaletteOpen(false)}
-          onNavigate={(t) => setTab(t)}
+          onNavigate={requestTab}
           onPickProduct={(item) => {
             setPendingProduct(item);
             setTab("sale");
@@ -684,6 +772,47 @@ export default function App() {
           }}
         />
       )}
+
+      {/* Leave-POS guard (Flujo C): confirmation, never silent destruction.
+          Escape/close = «Quedarse» (stay on the POS, cart intact). */}
+      <dialog
+        ref={leaveDialog}
+        className="client-modal leave-pos"
+        data-testid="leave-pos"
+        aria-labelledby="leave-pos-title"
+        onCancel={() => {
+          leaveAction.current = null;
+        }}
+        onClose={() => {
+          leaveAction.current = null;
+        }}
+      >
+        <div className="modal-head">
+          <h3 id="leave-pos-title">Tenés consumos sin guardar ni cobrar</h3>
+        </div>
+        <p>
+          Si salís de Venta, el carrito actual se pierde. Las mesas conservan lo
+          que ya guardaste.
+        </p>
+        <div className="modal-actions">
+          <button
+            type="button"
+            className="btn ghost"
+            data-testid="leave-pos-stay"
+            onClick={stayOnPos}
+          >
+            Quedarse
+          </button>
+          <button
+            type="button"
+            className="btn danger"
+            data-testid="leave-pos-discard"
+            onClick={confirmLeavePos}
+          >
+            Descartar
+          </button>
+        </div>
+      </dialog>
 
       {toast && <Toast key={toast.id} toast={toast} onClose={closeToast} />}
     </>

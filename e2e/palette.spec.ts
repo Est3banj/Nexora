@@ -71,6 +71,11 @@ test.describe("Batch C — command palette", () => {
       page.getByTestId("palette-item").filter({ hasText: "Reportes" }),
     ).toBeVisible();
     await page.keyboard.press("Enter");
+    /* mesas leave-POS guard: the cart above is still dirty → confirm the
+     * discard (the helper does the same for `navigate()`). */
+    if (await page.locator('[data-testid="leave-pos"][open]').count()) {
+      await page.getByTestId("leave-pos-discard").click();
+    }
     await expect(page.getByTestId("tab-reports")).toHaveClass(/active/);
 
     /* ── 7th nav entry: Clientes & Fiados (M4 shell / old 5.9 + 5.11) ── */

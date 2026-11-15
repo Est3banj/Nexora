@@ -664,6 +664,93 @@ dialog .row, .ticket-actions { flex-wrap: wrap; }
   min-width: 120px;
 }
 
+/* ── Mesas · POS context row (banner «Atendiendo» + Guardar en Mesa) ──
+ * Renders only while a table is being attended OR the cart holds items.
+ * Lives at the TOP of the product pane so it is visible on mobile too —
+ * the fixed cart-bar keeps its 80px height and its geometry tests. */
+.table-context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.table-context-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.table-context-banner.attending {
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--surface-accent);
+  border: 1px solid #c7d2fe;
+  color: var(--primary);
+}
+
+.table-context-banner svg {
+  flex: none;
+}
+
+.table-context .btn {
+  flex: none;
+}
+
+/* quick table picker (cart has items, no table bound yet) */
+.table-picker-list {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 46vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.table-picker-list button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+}
+
+.table-picker-list .table-picker-zone {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.btn.success {
+  background: var(--success);
+  color: #fff;
+}
+
+.btn.success:active:not(:disabled) {
+  background: #047857;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .btn.success:hover:not(:disabled) {
+    background: #047857;
+  }
+}
+
 .error.floating {
   position: fixed;
   bottom: 140px;

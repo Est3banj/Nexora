@@ -204,11 +204,12 @@ export async function applyRehydratePage(
           "shift_id",
           "ticket_no",
           "customer_id",
+          "table_name",
           "status",
           "total",
           "created_at",
         ],
-        [t.id, tenantId, t.client_uuid ?? t.id, t.shift_id ?? null, t.ticket_no, t.customer_id ?? null, t.status, t.total, iso(t.created_at)],
+        [t.id, tenantId, t.client_uuid ?? t.id, t.shift_id ?? null, t.ticket_no, t.customer_id ?? null, t.table_name ?? null, t.status, t.total, iso(t.created_at)],
       );
       inserted += 1;
     }

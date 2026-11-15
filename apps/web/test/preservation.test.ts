@@ -47,7 +47,7 @@ function transition(finish = () => clearLocalBusinessData(db)) {
 it("logout waits for real ACK, clears all tables including categories, leaves writes sealed", async () => {
   await product();
   await creditCache();
-  expect(BUSINESS_TABLES).toHaveLength(15);
+  expect(BUSINESS_TABLES).toHaveLength(18);
   expect((await db.query("SELECT * FROM cash_movements")).rows).toHaveLength(1);
   expect((await db.query("SELECT * FROM customers")).rows).toHaveLength(1);
   expect((await db.query("SELECT * FROM credit_abonos")).rows).toHaveLength(1);

@@ -79,14 +79,14 @@ test("employee created with username+password enters with the USERNAME; the owne
   // Owner logs out, EMPLOYEE enters with the username (never an email).
   await signOut(page);
   await attemptLogin(page, username, staffPassword);
-  await expect(destinations(page)).toHaveCount(5);
+  await expect(destinations(page)).toHaveCount(6);
   await expect(page.getByTestId("tab-admin")).toHaveCount(0);
   await expect(page.getByTestId("login-error")).toHaveCount(0);
 
   // Owner logs back in with the email — that path is untouched.
   await signOut(page);
   await attemptLogin(page, owner.email, owner.password);
-  await expect(destinations(page)).toHaveCount(8);
+  await expect(destinations(page)).toHaveCount(9);
   await expect(page.getByTestId("login-error")).toHaveCount(0);
 });
 
@@ -115,6 +115,6 @@ test("login errors are specific: bad '@' address, invalid username, wrong creden
 
   // Owner still gets in with email + password after all those failures.
   await attemptLogin(page, owner.email, owner.password);
-  await expect(destinations(page)).toHaveCount(8);
+  await expect(destinations(page)).toHaveCount(9);
   await expect(page.getByTestId("login-error")).toHaveCount(0);
 });

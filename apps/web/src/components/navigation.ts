@@ -13,6 +13,11 @@ export const NAVIGATION = [
   { tab: "arqueo", label: "Caja & Arqueo", shortLabel: "Caja", group: "Operación", title: "Arqueo & Turnos de Caja", tier: "all" },
   { tab: "tickets", label: "Tickets & Historial", shortLabel: "Tickets", group: "Operación", title: "Historial de Comprobantes", tier: "all" },
   { tab: "catalog", label: "Catálogo", shortLabel: "Catálogo", group: "Gestión", title: "Gestión de Inventario y Catálogo", tier: "all" },
+  /* Mesas sits AFTER Catálogo on purpose: `compactNavigation` hands the
+   * mobile tabbar `nav.slice(0, 4)`, so inserting Mesas at index 1 would
+   * push Catálogo behind «Más secciones» and break every spec that opens
+   * the catalog directly. Tier all (same as Venta), group Operación. */
+  { tab: "mesas", label: "Mesas", shortLabel: "Mesas", group: "Operación", title: "Control de Mesas & Comandas", tier: "all" },
   { tab: "dashboard", label: "Panel / Dashboard", shortLabel: "Panel", group: "Gestión", title: "Panel de Control Principal", tier: "dueno" },
   { tab: "reports", label: "Reportes", shortLabel: "Reportes", group: "Gestión", title: "Reportes y Analítica", tier: "dueno" },
   { tab: "credito", label: "Clientes & Fiados", shortLabel: "Fiados", group: "Operación", title: "Clientes & Cuentas por Cobrar (Fiados)", tier: "all", requiresFiado: true },

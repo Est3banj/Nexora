@@ -47,7 +47,7 @@ test("responsive boundaries, compact navigation, long POS data and reserved acti
     const nav = page.getByRole("navigation", { name: "Navegación principal", exact: true });
     await expect(nav).toBeVisible();
     // Wait for matchMedia's React update at both navigation boundaries.
-    await expect(nav.locator("button")).toHaveCount(width < 640 ? 5 : 8);
+    await expect(nav.locator("button")).toHaveCount(width < 640 ? 5 : 9);
     expect(await nav.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
     const n = (await nav.boundingBox())!;
     if (width < 1024) expect(n.y).toBeGreaterThan(900);
@@ -232,7 +232,7 @@ test("Caja uses available space across opening, count, close and long history wi
     for (const width of widths) {
       await page.setViewportSize({ width, height: 955 });
       await page.evaluate(() => document.fonts.ready);
-      await expect(page.getByRole("navigation", { name: "Navegación principal", exact: true }).locator("button")).toHaveCount(width < 640 ? 5 : 8);
+      await expect(page.getByRole("navigation", { name: "Navegación principal", exact: true }).locator("button")).toHaveCount(width < 640 ? 5 : 9);
       await page.locator(".app-main").evaluate(el => { el.scrollTop = 0; });
       await noPageOverflow(page);
       const screen = page.locator(".cash-screen");

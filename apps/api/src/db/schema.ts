@@ -180,6 +180,8 @@ export const tickets = pgTable(
     total: integer("total").notNull(),
     /** credit attribution — nullable, NO FK (business-table precedent) */
     customer_id: uuid("customer_id"),
+    /** table name stamped at cobro (mesas) — additive nullable, mirrors local DDL */
+    table_name: text("table_name"),
     created_at: createdAt(),
     updated_at: updatedAt(),
   },

@@ -1,0 +1,344 @@
+/* NEXORA · Control de Mesas & Comandas (board) — Fase 1.
+ * Tokens come from nexora.css (indigo #4f46e5, success/warning semánticos,
+ * Plus Jakarta Sans, mono para importes, radius-card 16 / radius 12,
+ * tap 44). Mobile-first: 1 col → 2 (≥640) → 3 (≥1024) → 4 (≥1440).
+ * Motion: 160–200ms ease-out on press/border only — a board read hundreds
+ * of times a day must NOT animate on enter (emil-design-eng §1). */
+
+.screen.mesas {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* ── hero ─────────────────────────────────────────────────────────── */
+
+.mesas-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: stretch;
+}
+
+.mesas-hero-copy {
+  min-width: 0;
+}
+
+.mesas-eyebrow {
+  margin: 0 0 6px;
+  font: 600 11px/16px var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--primary);
+}
+
+.mesas-hero-copy h2 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.mesas-hero-copy .muted {
+  margin: 6px 0 0;
+  max-width: 60ch;
+}
+
+.mesas-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.mesas-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mesas-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font: 600 12px/16px var(--font-mono);
+  white-space: nowrap;
+}
+
+.mesas-pill.available {
+  background: #ecfdf5;
+  color: var(--success);
+  border-color: #a7f3d0;
+}
+
+.mesas-pill.occupied {
+  background: #fffbeb;
+  color: #b45309;
+  border-color: #fde68a;
+}
+
+.mesas-pill.billing {
+  background: var(--surface-accent);
+  color: var(--primary);
+  border-color: #c7d2fe;
+}
+
+@media (min-width: 768px) {
+  .mesas-hero {
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 24px;
+  }
+  .mesas-hero-actions {
+    justify-content: flex-end;
+    flex: none;
+  }
+}
+
+/* ── grid + cards ─────────────────────────────────────────────────── */
+
+.mesas-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+
+@media (min-width: 640px) {
+  .mesas-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1024px) {
+  .mesas-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1440px) {
+  .mesas-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.mesas-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 0;
+  padding: 16px;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  transition:
+    border-color var(--dur) var(--ease-out),
+    transform var(--dur) var(--ease-out);
+}
+
+.mesas-card:active {
+  transform: scale(0.99);
+}
+
+.mesas-card.occupied {
+  border-color: #fcd34d;
+}
+
+.mesas-card.billing {
+  border-color: #c7d2fe;
+}
+
+.mesas-card.available {
+  cursor: pointer;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .mesas-card.available:hover {
+    border-color: var(--primary);
+  }
+}
+
+.mesas-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mesas-card-zone {
+  font: 600 10px/15px var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mesas-badge {
+  flex: none;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.mesas-badge.available {
+  background: #ecfdf5;
+  color: var(--success);
+  border-color: #a7f3d0;
+}
+
+.mesas-badge.occupied {
+  background: #fffbeb;
+  color: #b45309;
+  border-color: #fde68a;
+}
+
+.mesas-badge.billing {
+  background: var(--surface-accent);
+  color: var(--primary);
+  border-color: #c7d2fe;
+}
+
+.mesas-card-name {
+  margin: 0;
+  font-size: 18px;
+  line-height: 24px;
+  font-weight: 700;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.mesas-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.available-body {
+  align-items: center;
+  text-align: center;
+  justify-content: center;
+  padding: 8px 0 4px;
+}
+
+.mesas-placeholder-icon {
+  color: #cbd5e1;
+}
+
+.available-body .muted {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+/* internal consumption box (OCUPADA / POR COBRAR) */
+.mesas-consumption {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  margin: 0;
+  padding: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.mesas-consumption .full {
+  grid-column: 1 / -1;
+}
+
+.mesas-consumption dt {
+  font-size: 10px;
+  line-height: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.mesas-consumption dd {
+  margin: 2px 0 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.mesas-consumption dd.mesas-total {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.mesas-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: auto;
+}
+
+.mesas-card-actions .btn {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.mesas-release {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--danger);
+  background: transparent;
+  color: var(--danger);
+  cursor: pointer;
+  transition:
+    background var(--dur) var(--ease-out),
+    transform var(--dur) var(--ease-out);
+}
+
+.mesas-release:active {
+  transform: scale(0.97);
+}
+
+.mesas-release:focus-visible {
+  outline: 2px solid var(--danger);
+  outline-offset: 2px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .mesas-release:hover {
+    background: rgba(225, 29, 72, 0.1);
+  }
+}
+
+.release-modal p {
+  margin: 0 0 8px;
+  line-height: 1.5;
+}
+
+@media (max-width: 400px) {
+  .mesas-card-actions .btn {
+    flex: 1 1 100%;
+  }
+  .mesas-release {
+    width: 100%;
+    border-radius: var(--radius);
+  }
+}

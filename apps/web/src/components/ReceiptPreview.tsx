@@ -90,6 +90,8 @@ type SaleDetail = {
     voided_at?: string | null;
     customer_id?: string | null;
     customer_name?: string | null;
+    /** mesas: table the ticket settled — null for counter sales. */
+    table_name?: string | null;
   };
   lines: Array<{
     id: string;
@@ -195,6 +197,12 @@ export function ReceiptPreview({ open, data, identity, onClose, children }: Prop
               <div className="row space-between" data-testid="receipt-customer">
                 <span>CLIENTE:</span>
                 <span>{data.detail.ticket.customer_name}</span>
+              </div>
+            )}
+            {data.detail.ticket.table_name && (
+              <div className="row space-between" data-testid="receipt-table">
+                <span>MESA:</span>
+                <span>{data.detail.ticket.table_name}</span>
               </div>
             )}
           </div>

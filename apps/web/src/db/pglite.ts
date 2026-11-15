@@ -1,5 +1,5 @@
 import { PGlite } from "@electric-sql/pglite";
-import { LOCAL_SCHEMA_SQL, SALE_OUTBOX_MIGRATION_SQL } from "@pos/shared";
+import { LOCAL_SCHEMA_SQL, MESAS_MIGRATION_SQL, SALE_OUTBOX_MIGRATION_SQL } from "@pos/shared";
 import { PRESERVATION_SQL, assertWritable } from "./preservation";
 
 /**
@@ -112,6 +112,10 @@ export async function openLocalDb(opts: OpenOptions = {}): Promise<LocalHandle |
   try {
     await db.exec(LOCAL_SCHEMA_SQL);
     await db.exec(SALE_OUTBOX_MIGRATION_SQL);
+    /* Mesas/órdenes: LOCAL-only domain (Fase 1 = opción C). Deliberately NOT
+     * in LOCAL_SCHEMA_SQL — that string is also the SERVER baseline DDL, and
+     * the server has no business writing comandas until Fase 2 sync. */
+    await db.exec(MESAS_MIGRATION_SQL);
     await db.exec(PRESERVATION_SQL);
   } catch (error) {
     await db.close().catch(() => {});

@@ -151,6 +151,11 @@ test.describe("D1 gate — create → sell → ticket locally", () => {
     await page.getByTestId("checkout-cancel").click();
     await expect(page.getByTestId("payment-modal")).toBeHidden();
     await page.getByTestId("tab-tickets").click();
+    /* mesas leave-POS guard: the cart still holds the rejected sale → the
+     * operator confirms the discard before the tab changes. */
+    if (await page.locator('[data-testid="leave-pos"][open]').count()) {
+      await page.getByTestId("leave-pos-discard").click();
+    }
     await expect(page.getByTestId("empty-tickets")).toBeVisible();
   });
 });

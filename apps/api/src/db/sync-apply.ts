@@ -500,6 +500,8 @@ async function upsertEntity(
           total: p.total,
           // legacy payloads omit customer_id — never wipe a stored link
           ...(p.customer_id !== undefined ? { customer_id: p.customer_id } : {}),
+          // mesas: additive nullable; legacy payloads omit it (never wipe)
+          ...(p.table_name !== undefined ? { table_name: p.table_name } : {}),
           ...(p.created_at ? { created_at: new Date(p.created_at) } : {}),
         })
         .onConflictDoUpdate({
@@ -510,6 +512,7 @@ async function upsertEntity(
             status: p.status,
             total: p.total,
             ...(p.customer_id !== undefined ? { customer_id: p.customer_id } : {}),
+            ...(p.table_name !== undefined ? { table_name: p.table_name } : {}),
             updated_at: now,
           },
         });

@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { PGlite } from "@electric-sql/pglite";
 import { formatTicketNo, USERNAME_MAX_LENGTH, USERNAME_MIN_LENGTH, isValidUsername, localDate } from "@pos/shared";
 import { getOpenShiftLocal, listCustomerBalances, listLocalCashMovements, listLocalClosedCash, listLocalTickets } from "../db/local";
+import { listTables, type LocalTable } from "../db/local-orders";
+import { TableModal } from "../components/TableModal";
 import { localDashboardSummary, localLowStock, localPendingTransfers, localTopProducts } from "../db/local-reports";
 import { CUSTOM_RANGE_ERROR, dashboardRanges, defaultCustomRange, validCustomRange, type DashboardPeriod, type DateRange } from "../lib/analytical-periods";
 import type { PublicSettings } from "../lib/settings";
@@ -16,7 +18,7 @@ const date = (s: string) => new Date(s).toLocaleString("es-CO", { timeZone: "Ame
 type LocalProps = { db: PGlite; tenantId: string; refreshToken: number };
 type Feedback = { showToast: (message: string, kind?: ToastKind) => void };
 type SettingsProps = { settings: PublicSettings; onSettingsChanged: (settings: PublicSettings) => void };
-const tabs = { resumen: "Resumen", cajas: "Cajas", empleados: "Empleados", configuracion: "Configuración" } as const;
+const tabs = { resumen: "Resumen", cajas: "Cajas", empleados: "Empleados", configuracion: "Configuración", mesas: "Mesas" } as const;
 
 async function api<T>(tenantId: string, url: string, method = "GET", body?: unknown): Promise<T> {
   const res = await scopedFetch(tenantId, url, { method, ...(body === undefined ? {} : {
@@ -60,6 +62,7 @@ export function Admin(props: LocalProps & Feedback & SettingsProps & { role: Rol
       {tab === "cajas" && <Cajas {...props} />}
       {tab === "empleados" && <Empleados {...props} />}
       {tab === "configuracion" && <Configuracion {...props} />}
+      {tab === "mesas" && <MesasAdmin {...props} />}
     </section>
   </div>;
 }
@@ -251,6 +254,133 @@ function Empleados({ tenantId, showToast, role }: LocalProps & Feedback & { role
       </form>}
     </dialog>
   </div>;
+}
+
+/**
+ * Sección «Mesas» (patrón Cajas/Empleados): lista + modal crear/editar.
+ * Tenant-scoped LOCAL — same TableModal the board's «+ Agregar Mesa» opens.
+ * Admin is already Dueño-tier (nav matrix), so every visitor can manage.
+ */
+function MesasAdmin({ db, tenantId, refreshToken, showToast }: LocalProps & Feedback) {
+  const [tables, setTables] = useState<LocalTable[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [reload, setReload] = useState(0);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [target, setTarget] = useState<LocalTable | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setError(false);
+    listTables(db, tenantId)
+      .then((rows) => {
+        if (alive) setTables(rows);
+      })
+      .catch(() => {
+        if (alive) setError(true);
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [db, tenantId, refreshToken, reload]);
+
+  return (
+    <div className="admin-stack" data-testid="admin-mesas">
+      <div className="admin-toolbar">
+        <div>
+          <h3>Mesas del salón</h3>
+          <p className="muted">
+            Las comandas abiertas se gestionan en la pestaña Mesas; acá se dan de alta.
+          </p>
+        </div>
+        <button
+          className="btn primary"
+          data-testid="admin-table-new"
+          onClick={() => {
+            setTarget(null);
+            setModalOpen(true);
+          }}
+        >
+          Agregar Mesa
+        </button>
+      </div>
+      {loading && <p role="status">Cargando mesas…</p>}
+      {error ? (
+        <p role="alert">
+          No se pudieron cargar las mesas.{" "}
+          <button className="btn" onClick={() => setReload((n) => n + 1)}>
+            Reintentar
+          </button>
+        </p>
+      ) : (
+        !loading && (
+          <div className="card table-scroll" role="region" aria-label="Mesas, desplazamiento horizontal" tabIndex={0}>
+            <table data-testid="admin-tables">
+              <thead>
+                <tr>
+                  <th>Mesa</th>
+                  <th>Zona</th>
+                  <th>Capacidad</th>
+                  <th>Estado</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tables.map((t) => (
+                  <tr key={t.id} data-testid="admin-table-row">
+                    <td>
+                      <strong>{t.name}</strong>
+                    </td>
+                    <td>{t.zone ?? "—"}</td>
+                    <td className="mono">{t.capacity}</td>
+                    <td>
+                      <span className={`ticket-badge ${t.active ? "b-paid" : "b-pending"}`}>
+                        {t.active ? "Activa" : "Inactiva"}
+                      </span>
+                    </td>
+                    <td>
+                      <button
+                        className="btn small"
+                        data-testid="admin-table-edit"
+                        onClick={() => {
+                          setTarget(t);
+                          setModalOpen(true);
+                        }}
+                      >
+                        Editar
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {tables.length === 0 && (
+              <p className="muted" data-testid="admin-tables-empty">
+                Todavía no hay mesas cargadas.
+              </p>
+            )}
+          </div>
+        )
+      )}
+      <TableModal
+        open={modalOpen}
+        db={db}
+        tenantId={tenantId}
+        table={target}
+        onClose={() => setModalOpen(false)}
+        onSaved={(saved) => {
+          setModalOpen(false);
+          setTarget(null);
+          setReload((n) => n + 1);
+          showToast(target ? `Mesa «${saved.name}» actualizada` : `Mesa «${saved.name}» creada`);
+        }}
+      />
+    </div>
+  );
 }
 
 const textFields = [

@@ -6,6 +6,7 @@ import {
   type SaleCommitInput,
   type SaleItem,
 } from "../db/local";
+import { commitTableSale } from "../db/local-orders";
 import { pushNow } from "../sync/queue";
 import type { PGlite } from "@electric-sql/pglite";
 
@@ -24,12 +25,22 @@ export type SaleCommitOpts =
   | { method: "transfer" }
   | { method: "credit"; customerId: string; cashAmount: number };
 
+/** Mesas: the table the comanda settles (Flujo C — ticket carries its name). */
+export type SaleCommitTable = { id: string; name?: string };
+
 /**
  * Cart + commit for the 3-tap sale (task D1-8, extended by D2-6).
  * Money math is integer-only via @pos/shared (fast-check tested).
  *
  * D2-5 wiring: right after the local commit, push the queue when the
  * device is online (offline commits wait for the `online` event).
+ *
+ * Mesas (Fase 1): `commit(db, tenant, opts, table)` routes through
+ * `commitTableSale`, which refuses to write a ticket when the table has no
+ * OPEN order (ORDER_NOT_OPEN) — that pre-check is the data-layer guard
+ * against charging the same comanda twice — and closes the order right
+ * after the ticket lands. The stock/ticket invariant of `commitLocalSale`
+ * is untouched: stock is debited inside that same transaction, never before.
  */
 export function useSale() {
   const [lines, setLines] = useState<CartLine[]>([]);
@@ -65,6 +76,9 @@ export function useSale() {
 
   const clear = useCallback(() => setLines([]), []);
 
+  /** Replaces the whole cart — used to resume a comanda from a mesa. */
+  const loadLines = useCallback((next: CartLine[]) => setLines(next), []);
+
   const total = useMemo(
     () => lines.reduce((acc, l) => acc + lineSubtotal(l.price, l.qty), 0),
     [lines],
@@ -80,14 +94,18 @@ export function useSale() {
       db: PGlite,
       tenantId: string,
       opts: SaleCommitOpts,
+      table?: SaleCommitTable,
     ): Promise<CommittedSale> => {
       const cartLines = lines.map((l) => ({
         variant_id: l.variantId,
         qty: l.qty,
         unit_price: l.price,
       }));
-      const input: SaleCommitInput = { ...opts, lines: cartLines };
-      const committed = await commitLocalSale(db, tenantId, input);
+      const tableName = table?.name ?? null;
+      const input: SaleCommitInput = { ...opts, lines: cartLines, table_name: tableName };
+      const committed = table
+        ? (await commitTableSale(db, tenantId, table.id, input)).committed
+        : await commitLocalSale(db, tenantId, input);
       setLines([]);
       if (typeof navigator === "undefined" || navigator.onLine !== false) {
         void pushNow(db, tenantId);
@@ -97,5 +115,14 @@ export function useSale() {
     [lines],
   );
 
-  return { lines, addItem, setQty, clear, total, commit, cartTotal: cartTotal };
+  return {
+    lines,
+    addItem,
+    setQty,
+    clear,
+    loadLines,
+    total,
+    commit,
+    cartTotal: cartTotal,
+  };
 }
