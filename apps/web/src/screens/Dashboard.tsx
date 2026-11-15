@@ -7,6 +7,7 @@ import {
   type LowStockRow,
   type SalesByHourRow,
   type TopProductRow,
+  localDate,
 } from "@pos/shared";
 import {
   localDashboardSummary,
@@ -16,7 +17,17 @@ import {
   localTopProducts,
 } from "../db/local-reports";
 import { useSync } from "../hooks/useSync";
-import { dashboardRanges, deltaPct, type DashboardPeriod } from "../lib/analytical-periods";
+import {
+  CUSTOM_RANGE_ERROR,
+  customRanges,
+  dashboardRanges,
+  defaultCustomRange,
+  deltaPct,
+  inclusiveDays,
+  validCustomRange,
+  type DashboardPeriod,
+  type DateRange,
+} from "../lib/analytical-periods";
 
 const cop = (n: number) =>
   new Intl.NumberFormat("es-CO", {
@@ -30,6 +41,16 @@ type Props = {
   tenantId: string;
   refreshToken: number;
   onNavigate?: (tab: "tickets" | "catalog") => void;
+};
+
+const periodNames: Record<DashboardPeriod, string> = {
+  today: "Hoy",
+  "7d": "Últimos 7 días",
+  "30d": "Últimos 30 días",
+  "90d": "Últimos 3 meses",
+  "180d": "Últimos 6 meses",
+  "365d": "Último año",
+  custom: "Personalizado",
 };
 
 function DeltaChip({ pct }: { pct: number | null }) {
@@ -60,6 +81,8 @@ function DeltaChip({ pct }: { pct: number | null }) {
 export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
   const sync = useSync();
   const [period, setPeriod] = useState<DashboardPeriod>("today");
+  const [customDraft, setCustomDraft] = useState<DateRange>(defaultCustomRange);
+  const [customApplied, setCustomApplied] = useState<DateRange>(defaultCustomRange);
   const [summary, setSummary] = useState<DashboardSummaryRow | null>(null);
   const [prev, setPrev] = useState<DashboardSummaryRow | null>(null);
   const [inventory, setInventory] = useState<InventoryValueRow | null>(null);
@@ -70,9 +93,33 @@ export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
   const [retry, setRetry] = useState(0);
 
   const [loading, setLoading] = useState(true);
-  const ranges = dashboardRanges(period);
+  const customError =
+    period === "custom" && !validCustomRange(customDraft) ? CUSTOM_RANGE_ERROR : null;
+  const ranges =
+    period === "custom" ? customRanges(customApplied) : dashboardRanges(period);
   const { from, to } = ranges.current;
   const { from: prevFrom, to: prevTo } = ranges.previous;
+  const customDays = inclusiveDays(customApplied);
+
+  function choosePeriod(next: DashboardPeriod) {
+    if (next === "custom") {
+      const initial = defaultCustomRange();
+      setCustomDraft(initial);
+      setCustomApplied(initial);
+    } else {
+      setCustomDraft({ from: "", to: "" });
+    }
+    setPeriod(next);
+  }
+
+  /** Auto-apply: only a fully valid draft becomes the fetched range; an
+   * invalid draft keeps the last applied range and surfaces customError. */
+  function updateCustom(patch: Partial<DateRange>) {
+    const next = { ...customDraft, ...patch };
+    setCustomDraft(next);
+    if (validCustomRange(next)) setCustomApplied(next);
+  }
+
   useEffect(() => {
     let active = true;
     setLoading(true);
@@ -119,9 +166,6 @@ export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
   const revDelta = summary && prev ? deltaPct(summary.revenue, prev.revenue) : null;
   const ticketDelta = summary && prev ? deltaPct(summary.tickets, prev.tickets) : null;
 
-  const periodLabel =
-    period === "today" ? "Hoy" : period === "7d" ? "Últimos 7 días" : period === "month" ? "Este Mes" : "Últimos 30 días";
-
   const pendingCount = summary?.pending_count ?? 0;
   const needsAttention = pendingCount > 0 || low.length > 0;
 
@@ -134,40 +178,73 @@ export function Dashboard({ db, tenantId, refreshToken, onNavigate }: Props) {
     <div className="screen dashboard" aria-busy={loading}>
       <div className="dash-head">
         <h2>Resumen de Desempeño</h2>
-        <div className="seg" role="group" aria-label="Período">
-          <button
-            className={period === "today" ? "active" : ""}
-            data-testid="period-today"
-            aria-pressed={period === "today"}
-            onClick={() => setPeriod("today")}
-          >
-            Hoy
-          </button>
-          <button
-            className={period === "7d" ? "active" : ""}
-            data-testid="period-7d"
-            aria-pressed={period === "7d"}
-            onClick={() => setPeriod("7d")}
-          >
-            Últimos 7 días
-          </button>
-          <button className={period === "month" ? "active" : ""} data-testid="period-month" aria-pressed={period === "month"} onClick={() => setPeriod("month")}>Este Mes</button>
+        <div className="period-controls">
+          <label htmlFor="dash-period">
+            Período
+            <select
+              id="dash-period"
+              value={period}
+              data-testid="period-select"
+              onChange={(e) => choosePeriod(e.target.value as DashboardPeriod)}
+            >
+              <option value="today">Hoy</option>
+              <option value="7d">Últimos 7 días</option>
+              <option value="30d">Últimos 30 días</option>
+              <option value="90d">Últimos 3 meses</option>
+              <option value="180d">Últimos 6 meses</option>
+              <option value="365d">Último año</option>
+              <option value="custom">Personalizado</option>
+            </select>
+          </label>
+          {period === "custom" && (
+            <div className="period-range" role="group" aria-label="Rango personalizado">
+              <label>
+                Desde
+                <input
+                  id="dash-custom-from"
+                  data-testid="period-custom-from"
+                  type="date"
+                  value={customDraft.from}
+                  max={localDate(0)}
+                  aria-invalid={customError !== null}
+                  aria-describedby={customError ? "dash-custom-error" : undefined}
+                  onChange={(e) => updateCustom({ from: e.target.value })}
+                />
+              </label>
+              <label>
+                Hasta
+                <input
+                  id="dash-custom-to"
+                  data-testid="period-custom-to"
+                  type="date"
+                  value={customDraft.to}
+                  max={localDate(0)}
+                  aria-invalid={customError !== null}
+                  aria-describedby={customError ? "dash-custom-error" : undefined}
+                  onChange={(e) => updateCustom({ to: e.target.value })}
+                />
+              </label>
+            </div>
+          )}
         </div>
-        <details className="dash-extra-period"><summary>Más períodos</summary>
-          <button
-            className={period === "30d" ? "active" : ""}
-            data-testid="period-30d"
-            aria-pressed={period === "30d"}
-            onClick={() => setPeriod("30d")}
-          >
-            30 días
-          </button>
-        </details>
       </div>
+      {customError && (
+        <p className="error" id="dash-custom-error" data-testid="period-custom-error" role="alert">
+          {customError}
+        </p>
+      )}
 
       <p className="muted dash-subtitle" data-testid="period-label">
-        {periodLabel} · {from} — {to} (Bogotá). Comparación: {prevFrom} — {prevTo}.
-        {period === "month" && " Mes anterior hasta igual día, limitado a su último día."}
+        {period === "custom" ? (
+          <>
+            Rango: {from} — {to} · comparado con{" "}
+            {customDays === 1 ? "el día anterior" : `los ${customDays} días anteriores`}.
+          </>
+        ) : (
+          <>
+            {periodNames[period]} · {from} — {to} (Bogotá). Comparación: {prevFrom} — {prevTo}.
+          </>
+        )}
       </p>
       {loading && <p role="status">Calculando indicadores…</p>}
 

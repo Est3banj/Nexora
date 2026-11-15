@@ -25,3 +25,9 @@
 .admin-secret { display: block; padding: var(--space-4); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-accent); color: var(--text); font: 600 var(--text-lg)/1.5 var(--font-mono); overflow-wrap: anywhere; user-select: text; }
 @media (min-width: 640px) { .admin-grid, .admin-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (min-width: 1280px) { .admin-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+/* Resumen · período personalizado (auto-aplica; error inline role=alert).
+   El cluster select + par Desde/Hasta usa las clases compartidas .period-controls
+   y .period-range (app.css): misma presentación que el Panel, una sola fuente.
+   El min-width del label se mantiene acá porque .admin-screen label (min-width:0)
+   gana por especificidad a la regla compartida. */
+.admin-screen .period-controls > label { min-width: 170px; }

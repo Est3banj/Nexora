@@ -233,7 +233,25 @@ test("Batch 6 Resumen wires positive balances, pending transfers, recent voids a
   await expect(page.getByTestId("admin-pending")).toContainText("9.000");
   const voids = page.getByRole("article").filter({ has: page.getByRole("heading", { name: "Anulaciones recientes" }) });
   await expect(voids).toContainText("#77"); await expect(voids).toContainText("1.200");
-  await page.getByTestId("admin-period").selectOption("month");
+  /* rolling presets + custom (no calendar-month option left) */
+  expect(await page.getByTestId("admin-period").locator("option").evaluateAll(opts => opts.map(o => o.value)))
+    .toEqual(["today", "7d", "30d", "90d", "180d", "365d", "custom"]);
+  await page.getByTestId("admin-period").selectOption("90d");
+  await expect(page.getByTestId("admin-revenue")).toContainText("5.000");
+  const bogotaDay = (offset: number) =>
+    new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bogota" }).format(new Date(Date.now() + offset * 86_400_000));
+  await page.getByTestId("admin-period").selectOption("custom");
+  await expect(page.getByTestId("admin-custom-from")).toBeVisible();
+  await expect(page.getByTestId("admin-custom-to")).toBeVisible();
+  await page.getByTestId("admin-custom-from").fill(bogotaDay(-6));
+  await page.getByTestId("admin-custom-to").fill(bogotaDay(0));
+  await expect(page.getByTestId("admin-custom-error")).toHaveCount(0);
+  await expect(page.locator(".admin-toolbar")).toContainText(`${bogotaDay(-6)} — ${bogotaDay(0)}`);
+  await expect(page.getByTestId("admin-revenue")).toContainText("5.000");
+  /* desde > hasta → inline error, last valid range kept (no bad fetch) */
+  await page.getByTestId("admin-custom-to").fill(bogotaDay(-7));
+  await expect(page.getByTestId("admin-custom-error")).toBeVisible();
+  await expect(page.locator(".admin-toolbar")).toContainText(`${bogotaDay(-6)} — ${bogotaDay(0)}`);
   await expect(page.getByTestId("admin-revenue")).toContainText("5.000");
   await expect(page.getByTestId("admin-screen")).not.toContainText("Cuentas por Pagar");
 });

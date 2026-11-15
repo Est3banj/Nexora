@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { PGlite } from "@electric-sql/pglite";
-import { formatTicketNo, USERNAME_MAX_LENGTH, USERNAME_MIN_LENGTH, isValidUsername } from "@pos/shared";
+import { formatTicketNo, USERNAME_MAX_LENGTH, USERNAME_MIN_LENGTH, isValidUsername, localDate } from "@pos/shared";
 import { getOpenShiftLocal, listCustomerBalances, listLocalCashMovements, listLocalClosedCash, listLocalTickets } from "../db/local";
 import { localDashboardSummary, localLowStock, localPendingTransfers, localTopProducts } from "../db/local-reports";
-import { dashboardRanges, type DashboardPeriod } from "../lib/analytical-periods";
+import { CUSTOM_RANGE_ERROR, dashboardRanges, defaultCustomRange, validCustomRange, type DashboardPeriod, type DateRange } from "../lib/analytical-periods";
 import type { PublicSettings } from "../lib/settings";
 import { useSync } from "../hooks/useSync";
 import { scopedFetch } from "../sync/scoped-fetch";
@@ -75,10 +75,29 @@ async function loadSummary(db: PGlite, tenantId: string, from: string, to: strin
 function Resumen({ db, tenantId, refreshToken, settings }: LocalProps & SettingsProps) {
   const sync = useSync();
   const [period, setPeriod] = useState<DashboardPeriod>("today");
+  const [customDraft, setCustomDraft] = useState<DateRange>(defaultCustomRange);
+  const [customApplied, setCustomApplied] = useState<DateRange>(defaultCustomRange);
   const [data, setData] = useState<Awaited<ReturnType<typeof loadSummary>> | null>(null);
   const [error, setError] = useState(false);
   const [retry, setRetry] = useState(0);
-  const { from, to } = dashboardRanges(period).current;
+  const customError =
+    period === "custom" && !validCustomRange(customDraft) ? CUSTOM_RANGE_ERROR : null;
+  const { from, to } = period === "custom" ? customApplied : dashboardRanges(period).current;
+  function choosePeriod(next: DashboardPeriod) {
+    if (next === "custom") {
+      const initial = defaultCustomRange();
+      setCustomDraft(initial);
+      setCustomApplied(initial);
+    } else {
+      setCustomDraft({ from: "", to: "" });
+    }
+    setPeriod(next);
+  }
+  function updateCustom(patch: Partial<DateRange>) {
+    const next = { ...customDraft, ...patch };
+    setCustomDraft(next);
+    if (validCustomRange(next)) setCustomApplied(next);
+  }
   useEffect(() => {
     let alive = true; setData(null); setError(false);
     void loadSummary(db, tenantId, from, to).then(d => { if (alive) setData(d); }).catch(() => { if (alive) setError(true); });
@@ -86,9 +105,25 @@ function Resumen({ db, tenantId, refreshToken, settings }: LocalProps & Settings
   }, [db, tenantId, refreshToken, sync.lastSync, from, to, retry]);
   return <div className="admin-stack">
     <div className="admin-toolbar"><div><h3>Resumen gerencial</h3><p className="muted">{from} — {to} · Bogotá</p></div>
-      <label>Período<select value={period} data-testid="admin-period" onChange={e => setPeriod(e.target.value as DashboardPeriod)}>
-        <option value="today">Hoy</option><option value="7d">Últimos 7 días</option><option value="month">Este mes</option><option value="30d">Últimos 30 días</option>
-      </select></label></div>
+      <div className="period-controls">
+        <label htmlFor="admin-period">Período<select id="admin-period" value={period} data-testid="admin-period" onChange={e => choosePeriod(e.target.value as DashboardPeriod)}>
+          <option value="today">Hoy</option><option value="7d">Últimos 7 días</option><option value="30d">Últimos 30 días</option>
+          <option value="90d">Últimos 3 meses</option><option value="180d">Últimos 6 meses</option><option value="365d">Último año</option>
+          <option value="custom">Personalizado</option>
+        </select></label>
+        {period === "custom" && (
+          <div className="period-range">
+            <label>Desde<input data-testid="admin-custom-from" type="date" value={customDraft.from} max={localDate(0)}
+              aria-invalid={customError !== null} aria-describedby={customError ? "admin-custom-error" : undefined}
+              onChange={e => updateCustom({ from: e.target.value })} /></label>
+            <label>Hasta<input data-testid="admin-custom-to" type="date" value={customDraft.to} max={localDate(0)}
+              aria-invalid={customError !== null} aria-describedby={customError ? "admin-custom-error" : undefined}
+              onChange={e => updateCustom({ to: e.target.value })} /></label>
+          </div>
+        )}
+      </div>
+    </div>
+    {customError && <p className="error" id="admin-custom-error" data-testid="admin-custom-error" role="alert">{customError}</p>}
     {(!sync.online || sync.pending > 0) && <p className="warn-banner" role="status">Datos locales posiblemente incompletos · {sync.pending} cambios sin sincronizar.</p>}
     {error ? <div role="alert">No se pudieron cargar los indicadores. <button className="btn" onClick={() => setRetry(n => n + 1)}>Reintentar</button></div> : !data ? <p role="status">Calculando indicadores…</p> : <>
       <div className="admin-metrics">

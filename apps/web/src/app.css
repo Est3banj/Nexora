@@ -118,6 +118,20 @@ input:focus-visible, textarea:focus-visible {
   border-color: var(--primary);
 }
 
+/* Rango personalizado (Administración + Panel) — ÚNICA fuente del par Desde/Hasta.
+   Ambas pantallas montan la misma estructura <div.period-range><label>…<input/></label></div>
+   para que labels, alturas, gaps y anchos no puedan divergir. */
+.period-range { display: flex; flex-wrap: wrap; gap: var(--space-3); min-width: 0; max-width: 100%; }
+.period-range > label { flex: 1 1 150px; min-width: 0; display: grid; gap: var(--space-2); font-size: var(--text-sm); color: var(--muted); margin: 10px 0 4px; }
+.period-range input { width: 100%; min-width: 0; min-height: var(--tap); font-size: var(--text-base); }
+
+/* Cluster de período (Administración + Panel) — ÚNICA fuente del select "Período".
+   Estructura idéntica en ambas pantallas:
+   <div.period-controls><label>Período<select/></label> + .period-range cuando custom>
+   Select nativo: teclado/screen reader de regalo, una sola línea, sin seg ni details. */
+.period-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3); min-width: 0; }
+.period-controls > label { display: grid; gap: var(--space-2); min-width: 170px; font-size: var(--text-sm); }
+
 button {
   font: inherit;
   cursor: pointer;
@@ -2089,10 +2103,6 @@ select {
     flex-direction: column;
     align-items: stretch;
   }
-
-  .dash-head .seg {
-    width: 100%;
-  }
 }
 
 /* Tablet: dashboard KPIs breathe */
@@ -3696,14 +3706,21 @@ select {
 .nexora-shell .dashboard, .nexora-shell .reports { max-width: none; width: 100%; display: flex; flex-direction: column; gap: 24px; }
 .dashboard .dash-head { flex-wrap: wrap; gap: 12px; margin: 0; }
 .dashboard .dash-head h2 { font-size: 18px; line-height: 28px; }
-.dashboard .dash-head .seg, .reports .report-views { display: flex; flex: none; width: auto; background: var(--surface); padding: 4px; border: 1px solid var(--border); border-radius: 12px; gap: 0; }
-.dashboard .dash-head .seg { margin-left: auto; }
-.dashboard .dash-head .seg button, .reports .report-views button { flex: none; min-width: 0; padding: 8px 12px; font-size: 12px; border: 0; background: transparent; border-radius: 8px; }
-.dashboard .dash-head .seg button.active, .reports .report-views button.active { background: var(--primary); color: white; }
+.reports .report-views { display: flex; flex: none; width: auto; background: var(--surface); padding: 4px; border: 1px solid var(--border); border-radius: 12px; gap: 0; }
+/* Cluster de período del Panel: la clase compartida .period-controls (app.css)
+   vive como hijo directo de .dash-head. margin-left:auto la ancla a la derecha
+   tanto cuando comparte línea con el título como cuando wrappea a línea propia
+   (mismo criterio que el cluster de Administración en .admin-toolbar). */
+.dashboard .dash-head .period-controls { margin-left: auto; }
+/* En columna (móvil), el cluster ocupa el ancho completo y arranca a la
+   izquierda — misma disposición que .admin-toolbar en móvil. Debe ir DESPUÉS
+   de la regla base: misma especificidad, gana el orden de la cascada. */
+@media (max-width: 479px) {
+  .dashboard .dash-head .period-controls { margin-left: 0; }
+}
+.reports .report-views button { flex: none; min-width: 0; padding: 8px 12px; font-size: 12px; border: 0; background: transparent; border-radius: 8px; }
+.reports .report-views button.active { background: var(--primary); color: white; }
 .dashboard .dash-subtitle { margin: -12px 0 0; font-size: 11px; }
-.dash-extra-period { font-size: 11px; color: var(--muted); }
-.dash-extra-period summary { padding: 8px; cursor: pointer; }
-.dash-extra-period button { min-height: 44px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
 .dash-metrics { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
 .dashboard .dash-metrics .kpi { margin: 0; padding: 20px; border-left: 4px solid #6366f1; min-width: 0; display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
 .dashboard .dash-metrics .kpi-profit { border-left-color: #10b981; }

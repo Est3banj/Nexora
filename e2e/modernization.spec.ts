@@ -537,7 +537,7 @@ for (const width of [1440, 375]) {
         (gen_random_uuid(),'${tenant}',gen_random_uuid(),'${customer}',3000,'transfer','2026-11-03T17:00:00Z');`.replace(/\n/g, " "));
       await page.goto("/");
       await navigate(page, "dashboard");
-      await expect(page.getByTestId("period-today")).toHaveAttribute("aria-pressed", "true");
+      await expect(page.getByTestId("period-select")).toHaveValue("today");
       await expect(page.getByTestId("kpi-revenue")).toContainText("65.000");
       await expect(page.getByTestId("kpi-credit")).toContainText("55.000");
       await expect(page.getByTestId("kpi-abonos")).toContainText("8.000");
@@ -548,10 +548,11 @@ for (const width of [1440, 375]) {
       await page.screenshot({ path: `${evidence}/m7-${width}-dashboard.png`, fullPage: true });
       await page.getByTestId("dash-hours").scrollIntoViewIfNeeded();
       await page.screenshot({ path: `${evidence}/m7-${width}-dashboard-details.png`, fullPage: true });
-      await page.getByTestId("period-month").click();
-      await expect(page.getByTestId("period-label")).toContainText("2026-11-01 — 2026-11-03");
-      await expect(page.getByTestId("period-label")).toContainText("2026-10-01 — 2026-10-03");
-      await page.getByTestId("period-7d").click();
+      await page.getByTestId("period-select").selectOption("90d");
+      await expect(page.getByTestId("period-label")).toContainText("2026-08-06 — 2026-11-03");
+      await expect(page.getByTestId("period-label")).toContainText("2026-05-08 — 2026-08-05");
+      await expect(page.getByTestId("period-month")).toHaveCount(0);
+      await page.getByTestId("period-select").selectOption("7d");
       await expect(page.getByTestId("period-label")).toContainText("2026-10-28 — 2026-11-03");
       await navigate(page, "reports");
       await expect(page.getByTestId("sales-total")).toContainText("65.000");
