@@ -26,6 +26,12 @@ import { scopedFetch } from "./scoped-fetch";
  *   to `poison` after MAX_ATTEMPTS: isolated, visible, preserved — they
  *   can never stall the rest of the queue (sync §Partial batch failure)
  * - transport failures NEVER poison: they are retryable by definition
+ * - P2-2 · 401/403 on push is NOT a transport failure: the session was
+ *   revoked server-side, so no retry can ever succeed. Those rows are
+ *   failed with the deterministic reason `session_expired` and the queue
+ *   stops re-arming the retry timer (it used to hammer a dead session
+ *   every 4s forever). The next session boot — or any accepted push —
+ *   clears the gate and the queue resumes.
  */
 
 const MAX_ATTEMPTS = 3;
@@ -33,6 +39,11 @@ const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
 const MAX_DRAIN_ROUNDS = 10;
 const RETRY_TIMER_MS = 4_000;
+
+/** Shown verbatim by the sync banner (App.tsx) when the session is dead. */
+export const SESSION_EXPIRED_MESSAGE = "Sesión expirada — volvé a entrar";
+/** `last_error` written on the queue rows themselves (short, machine-ish). */
+const SESSION_EXPIRED_REASON = "session_expired";
 
 type QueueRow = {
   id: string;
@@ -55,6 +66,13 @@ let draining = false;
 let drainTask: Promise<void> | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let listenersBound = false;
+/**
+ * P2-2 · set when the server answered 401/403 to a push: the session is
+ * gone, so `scheduleRetry` must stay quiet until a new session boots
+ * (initSync) or a push is accepted again. Without this the 4s retry loop
+ * retried a revoked session forever with exponential backoff.
+ */
+let sessionExpired = false;
 
 function online(): boolean {
   return typeof navigator === "undefined" || navigator.onLine !== false;
@@ -158,7 +176,7 @@ async function drainOnce(
   tenantId: string,
   force: boolean,
   attempted: Set<string>,
-): Promise<{ synced: number; handled: number }> {
+): Promise<{ synced: number; handled: number; terminal?: boolean }> {
   await db.exec(SALE_OUTBOX_MIGRATION_SQL);
   // Resume immutable operations first, even when a newer queue payload now
   // references another sale. ACK comparisons below preserve those edits.
@@ -242,7 +260,19 @@ async function drainOnce(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ mutations: send }),
     });
+    // P2-2 · revoked/absent session: deterministic and terminal. The rows
+    // keep their payload (never poison-by-accident, never dropped) but the
+    // retry timer is NOT re-armed — retrying a dead session forever is the
+    // bug this branch fixes.
+    if (res.status === 401 || res.status === 403) {
+      for (const row of sendRows) await markFailure(db, row, SESSION_EXPIRED_REASON, true);
+      sessionExpired = true;
+      await refreshSyncStatus(db, tenantId);
+      patchSync({ error: SESSION_EXPIRED_MESSAGE });
+      return { synced: 0, handled: sendRows.length, terminal: true };
+    }
     if (!res.ok) throw new Error(`server_${res.status}`);
+    sessionExpired = false;
     results = syncPushResponseSchema.parse(await res.json()).results;
   } catch (err) {
     // transport / server failure → whole batch stays retryable (never poison)
@@ -309,11 +339,19 @@ async function drainSale(db: PGlite, tenantId: string, rows: QueueRow[], operati
       await tx.query("DELETE FROM sync_sale_outbox WHERE tenant_id=$1 AND operation_id=$2", [tenantId, operation]);
     });
     writeLastSync(tenantId);
+    sessionExpired = false;
     return { synced: rows.length, handled: rows.length };
   } catch (err) {
     const deterministic = err instanceof SaleUploadError && err.deterministic;
     const message = err instanceof Error ? err.message : String(err);
     for (const row of rows) await markFailure(db, row, message, deterministic);
+    // P2-2 · the snapshot POST hits the same auth gate as the batch push:
+    // a revoked session is terminal here too, and the retry loop stays off.
+    if (message === SESSION_EXPIRED_REASON) {
+      sessionExpired = true;
+      patchSync({ error: SESSION_EXPIRED_MESSAGE });
+      return { synced: 0, handled: rows.length, terminal: true };
+    }
     // Even an invalid snapshot is unacknowledged business evidence. Keep it
     // durable: a later edit must never make its older sale disappear.
     patchSync({ error: message });
@@ -322,7 +360,9 @@ async function drainSale(db: PGlite, tenantId: string, rows: QueueRow[], operati
 }
 
 function scheduleRetry(): void {
-  if (retryTimer || typeof window === "undefined") return;
+  // P2-2 · single choke point: while the session is dead no timer may be
+  // armed (the loop below used to retry a revoked session forever).
+  if (retryTimer || typeof window === "undefined" || sessionExpired) return;
   retryTimer = setTimeout(() => {
     retryTimer = null;
     const a = active;
@@ -360,12 +400,15 @@ async function drain(db: PGlite, tenantId: string, opts: { force?: boolean }): P
   try {
     const attempted = new Set<string>();
     for (let i = 0; i < MAX_DRAIN_ROUNDS; i++) {
-      const { handled } = await drainOnce(
+      const { handled, terminal } = await drainOnce(
         db,
         tenantId,
         opts.force ?? false,
         attempted,
       );
+      // P2-2 · a revoked session ends the run immediately: re-selecting the
+      // same rows (force pushes do) would only produce another 401.
+      if (terminal) break;
       if (handled === 0) break;
     }
     await refreshSyncStatus(db, tenantId);
@@ -384,6 +427,9 @@ async function drain(db: PGlite, tenantId: string, opts: { force?: boolean }): P
 export async function initSync(db: PGlite, tenantId: string): Promise<void> {
   const current = ++generation;
   active = { db, tenantId };
+  // P2-2 · a fresh session re-opens the retry gate: rows left behind by a
+  // revoked session are pushed again on the boot force-drain below.
+  sessionExpired = false;
   await resetInFlight(db, tenantId);
   if (current !== generation) return;
   patchSync({ lastSync: readLastSync(tenantId) });
@@ -406,6 +452,7 @@ export async function initSync(db: PGlite, tenantId: string): Promise<void> {
 export async function stopSync(): Promise<void> {
   generation++;
   active = null;
+  sessionExpired = false;
   if (retryTimer) clearTimeout(retryTimer);
   retryTimer = null;
   if (drainTask) await drainTask;

@@ -10,7 +10,7 @@ async function setup(page: Page) {
   wipeSalesAndCatalog();
   dbOne("DELETE FROM cash_movements; DELETE FROM credit_abonos; DELETE FROM customers; DELETE FROM shifts");
   const org = dbOne("SELECT id FROM organization WHERE slug='tienda-demo'");
-  expect((await page.request.post("/api/auth/sign-in/email", { data: { email: "owner@demo.test", password: "demo12345" } })).ok()).toBe(true);
+  expect((await page.request.post("/api/auth/sign-in/email", { data: { email: "owner@demo.test", password: "demo1234567890" } })).ok()).toBe(true);
   expect((await page.request.post("/api/auth/organization/set-active", { data: { organizationId: org } })).ok()).toBe(true);
   return org;
 }

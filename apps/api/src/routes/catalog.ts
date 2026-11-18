@@ -69,10 +69,20 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
       const variants = await repo.productVariants.list({
         ...(active.active !== undefined ? { active: active.active } : {}),
       });
+      // P2-4 · one pass over `variants` instead of one full scan per product
+      // (O(products × variants) → O(products + variants)). A product with no
+      // variant still gets `[]`, exactly like the old `filter` did, and the
+      // per-product order is the same (insertion order of the source array).
+      const variantsByProduct = new Map<string, Array<(typeof variants)[number]>>();
+      for (const v of variants) {
+        const bucket = variantsByProduct.get(v.product_id);
+        if (bucket) bucket.push(v);
+        else variantsByProduct.set(v.product_id, [v]);
+      }
       return {
         products: products.map((p) => ({
           ...p,
-          variants: variants.filter((v) => v.product_id === p.id),
+          variants: variantsByProduct.get(p.id) ?? [],
         })),
       };
     },

@@ -7,7 +7,7 @@ test("large offline cart → reload → interrupted upload/finalize → one atom
   dbOne("UPDATE shifts SET status='closed'");
   dbOne("INSERT INTO shifts(id,tenant_id,client_uuid,status) SELECT gen_random_uuid(),id::uuid,gen_random_uuid(),'open' FROM organization LIMIT 1");
   // Seed via the real catalog API before first local hydration.
-  await page.request.post("/api/auth/sign-in/email",{data:{email:"owner@demo.test",password:"demo12345"}});
+  await page.request.post("/api/auth/sign-in/email",{data:{email:"owner@demo.test",password:"demo1234567890"}});
   const org=dbOne("SELECT id FROM organization LIMIT 1");
   await page.request.post("/api/auth/organization/set-active",{data:{organizationId:org}});
   for(let i=0;i<18;i++) {

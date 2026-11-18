@@ -23,6 +23,10 @@
 .admin-metrics .kpi { display: grid; gap: var(--space-2); }
 .admin-dialog { width: min(448px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: var(--space-6); overflow-y: auto; }
 .admin-secret { display: block; padding: var(--space-4); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-accent); color: var(--text); font: 600 var(--text-lg)/1.5 var(--font-mono); overflow-wrap: anywhere; user-select: text; }
+/* Acciones de la tabla Empleados: reset + quitar apilados para que la columna
+   no ensanche la tabla (el scroll horizontal vive en .table-scroll). */
+.admin-row-actions { display: grid; gap: var(--space-2); width: max-content; }
+.admin-row-actions .btn { white-space: nowrap; }
 @media (min-width: 640px) { .admin-grid, .admin-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (min-width: 1280px) { .admin-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 /* Resumen · período personalizado (auto-aplica; error inline role=alert).

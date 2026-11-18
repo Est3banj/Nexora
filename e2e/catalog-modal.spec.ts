@@ -8,7 +8,7 @@ for (const width of [1440, 375]) {
     dbOne("DELETE FROM categories");
     await page.setViewportSize({ width, height: 1000 });
     const org = dbOne("SELECT id FROM organization WHERE slug='tienda-demo'");
-    await page.request.post("/api/auth/sign-in/email", { data: { email: "owner@demo.test", password: "demo12345" } });
+    await page.request.post("/api/auth/sign-in/email", { data: { email: "owner@demo.test", password: "demo1234567890" } });
     await page.request.post("/api/auth/organization/set-active", { data: { organizationId: org } });
     const offlineFlag = "pos:e2e-catalog-offline";
     await context.addInitScript(flag => Object.defineProperty(navigator, "onLine", { configurable: true, get: () => localStorage.getItem(flag) !== "1" }), offlineFlag);

@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { dbOne, wipeSalesAndCatalog } from "./helpers-db";
+import { createTenantViaFounder } from "./helpers-auth";
 import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -34,7 +35,7 @@ async function authenticate(page: Page) {
   wipeSalesAndCatalog();
   dbOne("DELETE FROM cash_movements; DELETE FROM credit_abonos; DELETE FROM customers");
   const org = dbOne("SELECT id FROM organization WHERE slug='tienda-demo'");
-  expect((await page.request.post("/api/auth/sign-in/email", { data: { email: "owner@demo.test", password: "demo12345" } })).ok()).toBe(true);
+  expect((await page.request.post("/api/auth/sign-in/email", { data: { email: "owner@demo.test", password: "demo1234567890" } })).ok()).toBe(true);
   expect((await page.request.post("/api/auth/organization/set-active", { data: { organizationId: org } })).ok()).toBe(true);
   return org;
 }
@@ -358,8 +359,11 @@ test("unknown membership never displays owner; tenant change discards prior cach
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/");
   await expect(page.getByTestId("member-role")).toHaveText("Dueño");
-  const other = await page.request.post("/api/auth/organization/create", { data: { name: "Otro tenant M4", slug: `m4-${Date.now()}` } });
-  const next = await other.json();
+  // P0-1: founder plane only — /api/auth/organization/create is closed.
+  const tag = `m4-${Date.now()}`;
+  const next = { id: await createTenantViaFounder(page.request, {
+    name: "Otro tenant M4", slug: tag, email: `${tag}@test.dev`, password: "m4-test-only-12345",
+  }) };
   expect((await page.request.post("/api/auth/organization/set-active", { data: { organizationId: next.id } })).ok()).toBe(true);
   await page.route("**/api/auth/organization/get-active-member-role**", route => route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ message: "membership unavailable" }) }));
   await page.reload();

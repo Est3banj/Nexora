@@ -1,4 +1,5 @@
 import { pathToFileURL } from "node:url";
+import { PASSWORD_MIN } from "@pos/shared";
 import { closeDb } from "../db";
 import { ensureAuthTables } from "../db/bootstrap";
 import { initBaseline } from "../db/init-baseline";
@@ -11,7 +12,7 @@ import { createTenantWithFirstUser, FounderError } from "../founder/service";
  *   pnpm --filter @pos/api tenant-create -- \
  *     --name "Tienda Granizados" \
  *     --email shop@tienda.co \
- *     --password "secret123" \
+ *     --password "secret123456789" \
  *     [--slug tienda-granizados] [--actor founder@example.com]
  *
  * Produces the SAME organization + owner membership + audit records the
@@ -48,12 +49,12 @@ export function parseTenantCreateArgs(argv: string[]): TenantCreateArgs {
   const { name, email, password, slug, actor } = flags;
   if (!name || !email || !password) {
     throw new FounderError(
-      "usage: tenant-create --name <org> --email <user@tip.com> --password <min8> [--slug <slug>] [--actor <who>]",
+      `usage: tenant-create --name <org> --email <user@tip.com> --password <min${PASSWORD_MIN}> [--slug <slug>] [--actor <who>]`,
       2,
     );
   }
-  if (password.length < 8) {
-    throw new FounderError("password must be at least 8 characters", 2);
+  if (password.length < PASSWORD_MIN) {
+    throw new FounderError(`password must be at least ${PASSWORD_MIN} characters`, 2);
   }
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
     throw new FounderError(`invalid email: ${email}`, 2);

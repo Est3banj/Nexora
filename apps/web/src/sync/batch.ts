@@ -11,11 +11,20 @@ export function groupQueue<T extends Item>(rows: T[]): T[][] {
   }
   for (const row of rows) {
     const p = row.payload as Record<string, unknown>;
-    const parent = row.entity === "ticket" ? row.client_uuid
-      : ["ticket_line", "payment"].includes(row.entity) ? p.ticket_id
-      : row.entity === "stockdiary" && p.reason === "initial" && !p.ref_ticket_id ? variantSale.get(p.variant_id as string)
-      : ["stockdiary", "variant"].includes(row.entity) ? p.ref_ticket_id : null;
-    const key = typeof parent === "string" ? `ticket:${parent}` : `solo:${row.id}`;
+    // mesas Fase 2: the comanda + its lines are ONE group (same shape as a
+    // sale), so the HTTP cap and any mid-batch split can never deliver lines
+    // without their order. The `table` catalog stays a SOLO group (topo
+    // deps below drag it ahead of the order that references it).
+    let key: string;
+    if (row.entity === "order") key = `order:${row.client_uuid}`;
+    else if (row.entity === "order_line" && typeof p.order_id === "string") key = `order:${p.order_id}`;
+    else {
+      const parent = row.entity === "ticket" ? row.client_uuid
+        : ["ticket_line", "payment"].includes(row.entity) ? p.ticket_id
+        : row.entity === "stockdiary" && p.reason === "initial" && !p.ref_ticket_id ? variantSale.get(p.variant_id as string)
+        : ["stockdiary", "variant"].includes(row.entity) ? p.ref_ticket_id : null;
+      key = typeof parent === "string" ? `ticket:${parent}` : `solo:${row.id}`;
+    }
     const group = groups.get(key) ?? [];
     group.push(row);
     groups.set(key, group);
@@ -42,7 +51,7 @@ export function groupQueue<T extends Item>(rows: T[]): T[][] {
             && (r.payload as Record<string, unknown>).shift_id === p.shift_id)) visit(depKey);
         }
       }
-      for(const field of ["product_id","category_id","variant_id","shift_id","customer_id"]) {
+      for(const field of ["product_id","category_id","variant_id","shift_id","customer_id","table_id","order_id"]) {
         const dep=owner.get(p[field] as string);
         if(dep && dep!==key) visit(dep);
       }

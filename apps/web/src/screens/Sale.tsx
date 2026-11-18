@@ -26,6 +26,7 @@ import {
 } from "../db/local-orders";
 import { annulTicket, AnnulError } from "../db/annul";
 import { ticketHasAbonos } from "../db/void-sale";
+import { fetchOpenOrders, pullOpenOrders } from "../sync/open-orders";
 import { isDueñoHint, type RoleHint } from "../components/navigation";
 import { useSale } from "../hooks/useSale";
 import { useMediaQuery } from "../hooks/useMediaQuery";
@@ -66,6 +67,9 @@ type Props = {
   onPendingTableOrderUsed: () => void;
   /** Reported to App so the tab-switch guard knows the cart is dirty. */
   onCartCountChange: (count: number) => void;
+  /** Fase 2 · the frescura check found the comanda settled/forked on ANOTHER
+   * device — App bumps refreshToken so the board re-pulls on next render. */
+  onStaleOrder?: () => void;
 };
 
 type View = "browse" | "success";
@@ -89,6 +93,7 @@ export function Sale({
   pendingTableOrder,
   onPendingTableOrderUsed,
   onCartCountChange,
+  onStaleOrder,
 }: Props) {
   const [items, setItems] = useState<SaleItem[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(true);
@@ -660,6 +665,15 @@ export function Sale({
    * F1/F2). Returns the TOTAL to charge, or null when the modal must not
    * open. For a mesa it persists the cart first and then reloads the FULL
    * comanda, so the ticket can never miss previously saved lines.
+   *
+   * FASE 2 · doble defensa (a) — FRESCURA before the payment modal: while
+   * online, `GET /api/orders/open` must still know this comanda as OPEN.
+   * A tombstone (closed elsewhere) or a DIFFERENT open comanda on the same
+   * table means another device settled/took the mesa → block with a clear
+   * message, re-pull so the board is honest, and never open the modal. The
+   * milliseconds between this check and the actual commit are the residual
+   * race window — covered server-side by the `tickets.order_id` unique
+   * backstop (b). Offline (or unreachable) → no check, offline-first wins.
    */
   async function prepareCheckout(): Promise<number | null> {
     if (activeTableId) {
@@ -671,6 +685,29 @@ export function Sale({
       if (!resumed || resumed.lines.length === 0) {
         setError("La mesa no tiene consumo guardado");
         return null;
+      }
+      if (typeof navigator === "undefined" || navigator.onLine !== false) {
+        const fresh = await fetchOpenOrders(tenantId);
+        if (fresh) {
+          const settled = (fresh.closed_orders ?? []).some((c) => c.id === resumed.orderId);
+          const forked = (fresh.orders ?? []).some(
+            (o) => String(o.table_id) === activeTableId && String(o.id) !== resumed.orderId,
+          );
+          if (settled || forked) {
+            try {
+              await pullOpenOrders(db, tenantId);
+            } catch {
+              /* best-effort: the message + board refresh still stand */
+            }
+            const message = settled
+              ? "Esta mesa se cobró en otro dispositivo — el tablero se actualizó"
+              : "Esta mesa se está atendiendo en otro dispositivo — el tablero se actualizó";
+            setError(message);
+            showToast(message);
+            onStaleOrder?.();
+            return null;
+          }
+        }
       }
       sale.loadLines(resumed.lines);
       return resumed.lines.reduce((acc, l) => acc + l.price * l.qty, 0);

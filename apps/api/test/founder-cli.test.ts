@@ -62,7 +62,7 @@ describe("D4-1 · CLI-created tenant is equivalent (§Degradation fallback)", ()
     const result = await createTenantWithFirstUser({
       name: "Tienda Granizados",
       email: "shop@tienda.co",
-      password: "secret1234",
+      password: "secret123456",
       actor: "cli:tenant-create",
       source: "cli",
     });
@@ -72,7 +72,7 @@ describe("D4-1 · CLI-created tenant is equivalent (§Degradation fallback)", ()
     // first user signs in fresh → set-active (web login flow) → full scope
     const cookie = await signIn(app, {
       email: "shop@tienda.co",
-      password: "secret1234",
+      password: "secret123456",
     });
     const active = await app.inject({
       method: "POST",
@@ -109,7 +109,7 @@ describe("D4-1 · CLI-created tenant is equivalent (§Degradation fallback)", ()
     const result = await createTenantWithFirstUser({
       name: "Tienda Auditada",
       email: "audit@tienda.co",
-      password: "secret1234",
+      password: "secret123456",
       actor: "founder-cli",
       source: "cli",
     });
@@ -136,14 +136,14 @@ describe("D4-1 · CLI-created tenant is equivalent (§Degradation fallback)", ()
     expect(() => parseTenantCreateArgs(["--name", "X"])).toThrow(/usage/);
     expect(() =>
       parseTenantCreateArgs(["--name", "X", "--email", "a@b.co", "--password", "short"]),
-    ).toThrow(/at least 8/);
+    ).toThrow(/at least 12/);
     const ok = parseTenantCreateArgs([
       "--name",
       "X",
       "--email",
       "a@b.co",
       "--password",
-      "secret1234",
+      "secret123456",
     ]);
     expect(ok.actor).toBe("cli:tenant-create");
   });
@@ -161,7 +161,7 @@ describe("D4-1 · CLI-created tenant is equivalent (§Degradation fallback)", ()
         "--email",
         "print@tienda.co",
         "--password",
-        "secret1234",
+        "secret123456",
         "--actor",
         "tester",
       ]);

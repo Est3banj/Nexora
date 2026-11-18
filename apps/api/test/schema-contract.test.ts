@@ -30,6 +30,10 @@ const SHARED_TABLES = [
   "sync_log",
   "customers",
   "credit_abonos",
+  // mesas Fase 2 — comanda domain synced as entities (opción B)
+  "tables",
+  "orders",
+  "order_lines",
 ] as const;
 
 const EXPECTED_INDEXES = [
@@ -276,6 +280,9 @@ describe("D1-2: drizzle-kit push created every design §2 index", () => {
       "sync_log",
       "customers",
       "credit_abonos",
+      "tables",
+      "orders",
+      "order_lines",
     ]) {
       expect(defs).toContain(`UNIQUE INDEX ${table}_tenant_client_uq ON public.${table} USING btree (tenant_id, client_uuid)`);
     }
@@ -286,5 +293,17 @@ describe("D1-2: drizzle-kit push created every design §2 index", () => {
       `SELECT indexdef FROM pg_indexes WHERE indexname = 'shifts_open_per_tenant_uq'`,
     );
     expect(res.rows[0]?.indexdef).toContain("WHERE (status = 'open'::text)");
+  });
+
+  it("mesas Fase 2 partial uniques: one open comanda per table + one ticket per comanda", async () => {
+    const res = await serverPool.query<{ indexname: string; indexdef: string }>(
+      `SELECT indexname, indexdef FROM pg_indexes
+       WHERE indexname IN ('orders_tenant_table_open_uq', 'tickets_tenant_order_id_uq')`,
+    );
+    const byName = new Map(res.rows.map((r) => [r.indexname, r.indexdef]));
+    // concurrent-open backstop: history (closed/cancelled) never conflicts
+    expect(byName.get("orders_tenant_table_open_uq")).toContain("WHERE (state = 'open'::text)");
+    // DOUBLE-COBRO BACKSTOP: at most ONE ticket may settle a comanda
+    expect(byName.get("tickets_tenant_order_id_uq")).toContain("WHERE (order_id IS NOT NULL)");
   });
 });

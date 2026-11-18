@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { PASSWORD_MIN } from "@pos/shared";
 import { founderSyncStatus } from "../db/founder";
 import { createTenantWithFirstUser, FounderError } from "../founder/service";
 
@@ -32,7 +33,7 @@ const createBodySchema = z.object({
     .regex(/^[a-z0-9-]+$/, "slug must be lowercase letters, digits and dashes")
     .optional(),
   email: z.email(),
-  password: z.string().min(8).max(100),
+  password: z.string().min(PASSWORD_MIN).max(100),
 });
 
 export async function founderRoutes(app: FastifyInstance): Promise<void> {

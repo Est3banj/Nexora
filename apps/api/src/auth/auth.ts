@@ -2,9 +2,10 @@ import { randomUUID } from "node:crypto";
 import { betterAuth } from "better-auth";
 import { organization } from "better-auth/plugins/organization";
 import { username as usernamePlugin } from "better-auth/plugins/username";
-import { USERNAME_MAX_LENGTH, USERNAME_MIN_LENGTH, USERNAME_RE } from "@pos/shared";
+import { USERNAME_MAX_LENGTH, USERNAME_MIN_LENGTH, PASSWORD_MIN, USERNAME_RE } from "@pos/shared";
 import { pool } from "../db";
 import { config } from "../config";
+import { authLogger } from "./logger";
 
 /**
  * Better-auth instance (task D1-3).
@@ -36,11 +37,18 @@ export const authOptions = {
   trustedOrigins: config.trustedOrigins,
   emailAndPassword: {
     enabled: true,
-    // Global floor for every credential path (owner signup, founder CLI,
-    // member creation). The admin "Crear usuario" dialog is stricter: 12..128
-    // (see routes/admin-users.ts, shared with packages/shared/username.ts).
-    minPasswordLength: 8,
+    // Global floor for every CREATION path (owner signup, founder API/CLI,
+    // member creation, admin reset). Sign-in never validates it — better-auth
+    // only calls assertPasswordNotTooShort from sign-up and reset-password —
+    // so accounts created before the floor was raised still get in.
+    minPasswordLength: PASSWORD_MIN,
   },
+  // PII in logs (audit P1-5): better-auth prints through its OWN console
+  // logger, not pino, so pino `redact` cannot reach it. `authLogger` pins the
+  // level at "warn" (which already drops the `sign-up.mjs:194` info line that
+  // interpolates the e-mail) and scrubs e-mail tokens from anything that does
+  // get printed. See src/auth/logger.ts.
+  logger: authLogger,
   database: pool,
   // Tenant ids are stored as uuid in every business table (design §2) —
   // better-auth must therefore generate uuid ids. A custom generator is used

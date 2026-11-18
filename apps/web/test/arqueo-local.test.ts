@@ -10,6 +10,7 @@ import {
   mirrorServerClose,
   openLocalShift,
 } from "../src/db/local";
+import { createLocalTable, releaseTable, saveOrderToTable } from "../src/db/local-orders";
 
 /**
  * D3-2 · Offline arqueo close against the LOCAL cache.
@@ -253,3 +254,31 @@ async function seedPayment(
   );
   return { id: paymentId };
 }
+
+describe("Fase 2 · cierre de caja bloqueado con mesas abiertas (decisión 6)", () => {
+  it("un turno NO cierra mientras haya comandas open/billing; al liberarlas sí", async () => {
+    const shift = await getOpenShiftLocal(db, TENANT);
+    expect(shift).not.toBeNull();
+    await seedPayment(shift!.id, 4000, "cash", "confirmed", 1);
+
+    const table = await createLocalTable(db, TENANT, { name: "Mesa Gate", zone: null, capacity: 2 });
+    const variant = (await db.query<{ id: string }>(
+      `SELECT id FROM product_variants WHERE tenant_id = $1`,
+      [TENANT],
+    )).rows[0].id;
+    await saveOrderToTable(db, TENANT, table.id, [
+      { variant_id: variant, name: "Granizado Mediano", price: 1000, qty: 1 },
+    ]);
+
+    await expect(closeLocalShift(db, TENANT, { counted: 4000 })).rejects.toThrow("OPEN_ORDERS_EXIST");
+    /* nothing closed: shift still open, no closedcash row */
+    expect(await getOpenShiftLocal(db, TENANT)).not.toBeNull();
+    expect(await listLocalClosedCash(db, TENANT)).toHaveLength(0);
+
+    /* liberar (cancel) frees the gate — the comanda is settled, no ticket */
+    await releaseTable(db, TENANT, table.id);
+    const closed = await closeLocalShift(db, TENANT, { counted: 4000 });
+    expect(closed.diff).toBe(0);
+    expect(await getOpenShiftLocal(db, TENANT)).toBeNull();
+  });
+});

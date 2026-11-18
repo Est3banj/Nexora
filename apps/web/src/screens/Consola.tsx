@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ArrowLeft, Building2, Globe2, ShieldCheck } from "lucide-react";
+import { PASSWORD_MIN } from "@pos/shared";
+import { PasswordInput } from "../components/PasswordInput";
 import "./consola.css";
 
 // Founder metadata only. No tenant-scoped fetch, local database or persistence.
@@ -151,10 +153,10 @@ function CreateTenant({ onCreated, onDenied }: { onCreated: (name: string) => vo
     <p className="muted">Creá la organización y su primer usuario dueño. La tienda comienza con un catálogo vacío.</p>
     <form onSubmit={event => void submit(event)} autoComplete="off" aria-busy={busy}>
       <fieldset disabled={busy} className="consola-fields"><legend>Datos de la tienda y acceso inicial</legend>
-        <label>Nombre de la tienda<input name="name" data-testid="consola-create-name" required minLength={2} maxLength={80} /></label>
-        <label>Slug (opcional)<input name="slug" data-testid="consola-create-slug" minLength={2} maxLength={48} pattern="[a-z0-9-]+" autoCapitalize="none" spellCheck={false} /><small>Minúsculas, números y guiones. Si lo dejás vacío, se genera en el servidor.</small></label>
-        <label>Correo del dueño<input name="email" type="email" data-testid="consola-create-email" autoCapitalize="none" required autoComplete="off" /></label>
-        <label>Contraseña inicial<input name="password" type="password" data-testid="consola-create-password" required minLength={8} maxLength={100} autoComplete="new-password" /><small>Se borra del formulario al enviar o salir de esta vista.</small></label>
+        <label htmlFor="consola-create-name">Nombre de la tienda<input id="consola-create-name" name="name" data-testid="consola-create-name" required minLength={2} maxLength={80} /></label>
+        <label htmlFor="consola-create-slug">Slug (opcional)<input id="consola-create-slug" name="slug" data-testid="consola-create-slug" minLength={2} maxLength={48} pattern="[a-z0-9-]+" autoCapitalize="none" spellCheck={false} /><small>Minúsculas, números y guiones. Si lo dejás vacío, se genera en el servidor.</small></label>
+        <label htmlFor="consola-create-email">Correo del dueño<input id="consola-create-email" name="email" type="email" data-testid="consola-create-email" autoCapitalize="none" required autoComplete="off" /></label>
+        <PasswordInput id="consola-create-password" label="Contraseña inicial" name="password" data-testid="consola-create-password" required minLength={PASSWORD_MIN} maxLength={100} autoComplete="new-password" hint="Se borra del formulario al enviar o salir de esta vista." />
       </fieldset>
       {error && <p role="alert">{error}</p>}
       <button className="btn primary" data-testid="consola-create-submit" disabled={busy}>{busy ? "Creando tienda…" : "Crear tienda"}</button>

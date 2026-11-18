@@ -118,6 +118,55 @@ input:focus-visible, textarea:focus-visible {
   border-color: var(--primary);
 }
 
+/* Password field (Login · Admin «Crear usuario» · Admin «Restablecer
+   contraseña» · Consola «Crear tienda»). ONE grid item so it replaces a plain
+   <label><input/></label> without changing how many children the surrounding
+   grid (.admin-stack, .consola-fields) counts.
+   The margins mirror the base `label` rule it stands in for, so the rhythm
+   inside a form stays identical; .consola-fields zeroes label margins, so it
+   zeroes this one too. */
+.pw-field {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 10px 0 4px;
+}
+.pw-field label { margin: 0; }
+.consola-fields .pw-field { margin: 0; }
+.pw-wrap {
+  position: relative;
+  min-width: 0;
+}
+/* Right padding clears the 48px toggle; higher specificity than the plain
+   `input` rule so it wins inside every dialog/form that also styles inputs. */
+.pw-wrap > input { padding-right: 52px; }
+.pw-toggle {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  min-height: 48px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    color var(--dur) var(--ease-out),
+    transform var(--dur) var(--ease-out);
+}
+.pw-toggle:active { transform: scale(0.97); }
+.pw-toggle:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .pw-toggle:hover { color: var(--text); }
+}
+
 /* Rango personalizado (Administración + Panel) — ÚNICA fuente del par Desde/Hasta.
    Ambas pantallas montan la misma estructura <div.period-range><label>…<input/></label></div>
    para que labels, alturas, gaps y anchos no puedan divergir. */

@@ -6,7 +6,10 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: "autoUpdate",
+      // P1-6 · prompt, never autoUpdate: an automatic reload would kill a
+      // sale in progress. The register announces the waiting version and the
+      // cashier decides when to restart (main.tsx → toast).
+      registerType: "prompt",
       includeAssets: ["favicon.svg", "fonts/*.woff2", "fonts/*-OFL.txt"],
       workbox: {
         // PGlite's postgres.wasm (~8.09 MB) MUST be precached: the POS has

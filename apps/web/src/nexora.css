@@ -104,6 +104,12 @@ table { width: 100%; border-collapse: collapse; }
 .toast-success { background: var(--success); } .toast-warning { background: var(--warning); } .toast-error { background: var(--danger); }
 .toast button { border: 0; color: inherit; background: transparent; display: grid; place-items: center; width: 44px; min-height: 44px; flex: none; }
 .toast-exit { opacity: 0; transform: translateY(8px); }
+/* P1-6 · the PWA update toast carries a decision: a real action button
+ * beside the dismiss control (the base `.toast button` rule sizes ICON
+ * buttons to 44px, which would clip a text label). */
+.toast button.toast-action { width: auto; min-height: 40px; padding: 0 14px; border-radius: 8px; background: rgb(255 255 255 / 20%); font-weight: 600; transition: transform 160ms var(--ease-out), background-color 160ms ease; }
+.toast button.toast-action:active { transform: scale(0.97); }
+@media (hover: hover) and (pointer: fine) { .toast button.toast-action:hover { background: rgb(255 255 255 / 32%); } }
 /* The legacy checkout bar stays functional until M5; reserve its space in the
  * new inner scroller so the last tile can never sit behind the fixed control. */
 @media (max-width: 1023px) {

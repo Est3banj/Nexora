@@ -43,10 +43,41 @@ pos.example.com {
 		try_files {path} /index.html
 		file_server
 
-		# Default for everything served from /srv/web: revalidate. The
-		# second rule overrides the first for /assets/* (same field, later
-		# match wins), which is what a content-hashed file wants.
+		# P1-7 · hardening for the SPA tree ONLY — /api/* never reaches this
+		# block, so business/auth responses are governed by the API itself
+		# (apps/api/src/app.ts onSend headers).
+		#
+		# CSP — every relaxation is deliberate and verified against the code:
+		#   · script-src 'wasm-unsafe-eval'  PGlite compiles postgres.wasm on
+		#     the MAIN thread (new PGlite(url) from @electric-sql/pglite — the
+		#     /worker entry is not used), and wasm compilation is gated by
+		#     script-src in Chrome/Firefox. Without it the POS cannot boot.
+		#     'wasm-unsafe-eval' does NOT allow JavaScript eval().
+		#   · worker-src 'self'             would fall back to default-src
+		#     anyway; stated explicitly for the PWA service worker (/sw.js).
+		#     NO blob: relaxation: nothing in apps/web/src creates a Worker
+		#     (grep "new Worker" → 0 hits) and the CSV export downloads via
+		#     an <a download> blob URL, which CSP does not block.
+		#   · style-src 'unsafe-inline'     React renders inline style
+		#     attributes (style-src-attr inherits from style-src).
+		#   · img-src data:                 defensive: product photos are
+		#     paths today, no data: image is built by the app.
+		#   · connect-src 'self'            every call is same-origin
+		#     /api/*; the source tree contains no external origin.
+		#   · base-uri/form-action/object-src  hardening, no relaxation: the
+		#     app has no <base>, posts nothing off-origin and embeds no
+		#     plugin/object.
+		#   · frame-ancestors 'none' + X-Frame-Options DENY  belt and braces
+		#     (the header is ignored by modern browsers that read CSP).
+		#
+		# Cache: default for everything served from /srv/web is revalidate;
+		# the /assets/* rule below overrides that one field for content-hashed
+		# files (same field, later match wins).
 		header {
+			Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; worker-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+			X-Content-Type-Options "nosniff"
+			X-Frame-Options "DENY"
+			Referrer-Policy "same-origin"
 			Cache-Control "no-cache"
 		}
 		header /assets/* {

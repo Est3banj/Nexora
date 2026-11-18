@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
+import { createTenantViaFounder } from "./helpers-auth";
 import { destinations, navigate } from "./helpers-navigation";
 
 /**
@@ -21,13 +22,11 @@ async function tenant(page: Page) {
   const tag = randomUUID();
   const email = `auth-${tag}@test.dev`;
   const password = "auth-test-only-123";
-  expect((await page.request.post("/api/auth/sign-up/email", { data: {
-    name: "Dueña de prueba AUTH", email, password,
-  } })).ok()).toBe(true);
-  const res = await page.request.post("/api/auth/organization/create", { data: { name: "Tienda de prueba AUTH", slug: `auth-${tag}` } });
-  expect(res.ok()).toBe(true);
-  const org = (await res.json()).id as string;
-  expect((await page.request.post("/api/auth/organization/set-active", { data: { organizationId: org } })).ok()).toBe(true);
+  // P0-1: tenants are minted by the founder plane, never by
+  // POST /api/auth/organization/create (closed for everybody).
+  const org = await createTenantViaFounder(page.request, {
+    name: "Tienda de prueba AUTH", slug: `auth-${tag}`, email, password,
+  });
   return { org, email, password };
 }
 
@@ -117,4 +116,75 @@ test("login errors are specific: bad '@' address, invalid username, wrong creden
   await attemptLogin(page, owner.email, owner.password);
   await expect(destinations(page)).toHaveCount(9);
   await expect(page.getByTestId("login-error")).toHaveCount(0);
+});
+
+test("owner resets an employee password → old credential dies → the NEW password opens the session", async ({ page }) => {
+  const owner = await tenant(page);
+  await page.goto("/");
+  await navigate(page, "admin");
+  await page.getByTestId("admin-tab-empleados").click();
+
+  const username = `resetuser${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+  const oldPassword = "empleado-antiguo-123";
+  const newPassword = "empleado-nuevo-456789";
+  await page.getByTestId("admin-user-new").click();
+  await page.getByTestId("admin-user-name").fill("Empleado Reset E2E");
+  await page.getByTestId("admin-user-username").fill(username);
+  await page.getByTestId("admin-user-password").fill(oldPassword);
+  await page.getByTestId("admin-user-submit").click();
+  await expect(page.getByTestId("admin-created-username")).toHaveText(username);
+  await page.getByRole("button", { name: "Listo" }).click();
+
+  // Reset dialog sits in the Acciones column, next to "Quitar acceso".
+  const row = page.getByTestId("admin-member").filter({ hasText: username });
+  await row.getByRole("button", { name: "Restablecer contraseña" }).click();
+  const dialog = page.getByRole("dialog", { name: "Restablecer contraseña", exact: true });
+  await expect(dialog).toBeVisible();
+  await expect(page.getByTestId("admin-reset-password")).toBeFocused();
+  await page.getByTestId("admin-reset-password").fill(newPassword);
+  const resetResponse = page.waitForResponse(
+    (r) => r.request().method() === "POST" && /\/api\/admin\/members\/[^/]+\/password$/.test(new URL(r.url()).pathname),
+  );
+  await page.getByTestId("admin-user-submit").click();
+  expect((await resetResponse).status()).toBe(200);
+  await expect(page.getByTestId("toast")).toContainText("La sesión del empleado quedó cerrada");
+  await expect(dialog).toHaveCount(0);
+
+  // Owner logs out, the employee tries the OLD credential first…
+  await signOut(page);
+  await attemptLogin(page, username, oldPassword);
+  await expect(page.getByTestId("login-error")).toHaveText("Usuario o contraseña incorrectos.");
+
+  // …then the NEW one, which must enter with the member scope (6 destinations).
+  await attemptLogin(page, username, newPassword);
+  await expect(page.getByTestId("login-error")).toHaveCount(0);
+  await expect(destinations(page)).toHaveCount(6);
+
+  // Owner still enters with their own email + password.
+  await signOut(page);
+  await attemptLogin(page, owner.email, owner.password);
+  await expect(destinations(page)).toHaveCount(9);
+  await expect(page.getByTestId("login-error")).toHaveCount(0);
+});
+
+test("password fields can be revealed: the toggle flips the type without losing the value or the focus", async ({ page }) => {
+  await page.goto("/");
+  const password = page.getByTestId("login-password");
+  await expect(password).toHaveAttribute("type", "password");
+
+  await password.fill("secreto-visible-123");
+  const toggle = page.getByRole("button", { name: "Mostrar contraseña" });
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+
+  await toggle.click();
+  await expect(password).toHaveAttribute("type", "text");
+  await expect(password).toHaveValue("secreto-visible-123");
+  // Focus never left the field: the caret is still where the user was typing.
+  await expect(password).toBeFocused();
+  await expect(page.getByRole("button", { name: "Ocultar contraseña" })).toHaveAttribute("aria-pressed", "true");
+
+  await page.getByRole("button", { name: "Ocultar contraseña" }).click();
+  await expect(password).toHaveAttribute("type", "password");
+  await expect(password).toHaveValue("secreto-visible-123");
+  await expect(password).toBeFocused();
 });

@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { dbOne } from "./helpers-db";
-import { createOrgUser } from "./helpers-auth";
+import { createOrgUser, createTenantViaFounder } from "./helpers-auth";
 import { navigate } from "./helpers-navigation";
 
 /**
@@ -22,14 +22,13 @@ const CODE_RE = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/;
 
 async function tenant(page: Page) {
   const tag = randomUUID();
-  expect((await page.request.post("/api/auth/sign-up/email", { data: {
-    name: "Dueña de prueba AC", email: `ac-${tag}@test.dev`, password: "roles-test-only-123",
-  } })).ok()).toBe(true);
-  const res = await page.request.post("/api/auth/organization/create", { data: { name: "Tienda de prueba AC", slug: `ac-${tag}` } });
-  expect(res.ok()).toBe(true);
-  const org = (await res.json()).id as string;
-  expect((await page.request.post("/api/auth/organization/set-active", { data: { organizationId: org } })).ok()).toBe(true);
-  return org;
+  // P0-1: founder plane only — /api/auth/organization/create is closed.
+  return createTenantViaFounder(page.request, {
+    name: "Tienda de prueba AC",
+    slug: `ac-${tag}`,
+    email: `ac-${tag}@test.dev`,
+    password: "roles-test-only-123",
+  });
 }
 
 async function seedProductAndShift(page: Page, org: string) {

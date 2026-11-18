@@ -14,6 +14,7 @@ import { PRESERVATION_SQL } from "../src/db/preservation";
 import { createLocalProduct } from "../src/db/local";
 import {
   MESAS_ERRORS,
+  backfillMesasMutations,
   commitTableSale,
   createLocalTable,
   getTable,
@@ -368,5 +369,140 @@ describe("persistencia tras reload", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Fase 2 · las escrituras encolan sus mutaciones (sync por entidad)", () => {
+  async function queueOf(...entities: string[]) {
+    const rows = await db.query<{ entity: string; payload: Record<string, unknown>; status: string }>(
+      `SELECT entity, payload, status FROM sync_log
+       WHERE tenant_id = $1 AND entity = ANY($2::text[]) ORDER BY entity, client_ts`,
+      [TENANT, entities],
+    );
+    return rows.rows;
+  }
+
+  it("crear/editar mesa encola `table`; guardar encola `order` + una mutación POR LÍNEA", async () => {
+    const table = await newTable("Mesa Sync");
+    let rows = await queueOf("table");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("pending");
+    expect(rows[0].payload).toMatchObject({ name: "Mesa Sync", zone: "Salón Principal", capacity: 4, active: true });
+
+    await updateLocalTable(db, TENANT, table.id, { capacity: 6 });
+    rows = await queueOf("table");
+    expect(rows).toHaveLength(1); // upsert-latest: one queue row per client_uuid
+    expect(rows[0].payload.capacity).toBe(6);
+
+    /* guardar: order + lines, per-line mutations (NOT a whole-comanda replace) */
+    await saveOrderToTable(db, TENANT, table.id, [lineA(2), lineB(1)]);
+    const orders = await queueOf("order");
+    expect(orders).toHaveLength(1);
+    expect(orders[0].payload).toMatchObject({ table_id: table.id, state: "open", billing_at: null });
+    const lines = await queueOf("order_line");
+    expect(lines).toHaveLength(2);
+    for (const row of lines) expect(row.payload.deleted_at).toBeNull();
+
+    /* quitar B → su mutation cambia a ESTADO deleted_at (nunca un delete) */
+    await saveOrderToTable(db, TENANT, table.id, [lineA(2)]);
+    const after = await queueOf("order_line");
+    expect(after).toHaveLength(2);
+    const removed = after.find((r) => (r.payload as { variant_id?: string }).variant_id === variantB)!;
+    expect(removed.payload.deleted_at).not.toBeNull();
+    expect(after.find((r) => (r.payload as { variant_id?: string }).variant_id === variantA)!.payload.qty).toBe(2);
+  });
+
+  it("pedir cuenta / liberar / cobrar reflejan su estado en la mutación `order`", async () => {
+    const table = await newTable("Mesa Estado");
+    await saveOrderToTable(db, TENANT, table.id, [lineA(1)]);
+
+    await setTableBilling(db, TENANT, table.id);
+    let orders = await queueOf("order");
+    expect(orders[0].payload.billing_at).not.toBeNull();
+    expect(orders[0].payload.state).toBe("open");
+
+    /* volver a guardar desfactura (Fase 1 decisión #20) */
+    await saveOrderToTable(db, TENANT, table.id, [lineA(2)]);
+    orders = await queueOf("order");
+    expect(orders[0].payload.billing_at).toBeNull();
+
+    const { committed, orderId } = await commitTableSale(db, TENANT, table.id, {
+      lines: [{ variant_id: variantA, qty: 2, unit_price: 4000 }],
+      tendered: 8000,
+      table_name: table.name,
+    });
+    /* ticket stamped with the comanda (server backstop key) + order → closed */
+    const tickets = await db.query<{ payload: { order_id?: string | null } }>(
+      `SELECT payload FROM sync_log WHERE tenant_id = $1 AND entity = 'ticket'`, [TENANT]);
+    expect(tickets.rows[0].payload.order_id).toBe(orderId);
+    orders = await queueOf("order");
+    expect(orders[0].payload).toMatchObject({ state: "closed" });
+    expect(committed.ticket.total).toBe(8000);
+  });
+
+  it("liberar encola `order` cancelled", async () => {
+    const table = await newTable("Mesa Cancel");
+    await saveOrderToTable(db, TENANT, table.id, [lineA(1)]);
+    await releaseTable(db, TENANT, table.id);
+    const orders = await queueOf("order");
+    expect(orders[0].payload.state).toBe("cancelled");
+  });
+});
+
+describe("Fase 2 · backfill de upgrade (filas Fase 1 pre-sync)", () => {
+  it("encola mesas + comandas ABERTAS sin sync_log, una sola vez y sin pisar ediciones", async () => {
+    /* legacy rows: written straight to SQL, exactly like a pre-Fase-2 cache */
+    const tableId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const openOrderId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const lineId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    const closedOrderId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    await db.query(
+      `INSERT INTO tables (id, tenant_id, client_uuid, name, zone, capacity, active)
+       VALUES ($1, $2, $1, 'Legacy Mesa', null, 4, true)`,
+      [tableId, TENANT],
+    );
+    await db.query(
+      `INSERT INTO orders (id, tenant_id, client_uuid, table_id, state, opened_at)
+       VALUES ($1, $2, $1, $3, 'open', now())`,
+      [openOrderId, TENANT, tableId],
+    );
+    await db.query(
+      `INSERT INTO orders (id, tenant_id, client_uuid, table_id, state, opened_at, closed_at)
+       VALUES ($1, $2, $1, $3, 'closed', now() - interval '2 day', now() - interval '1 day')`,
+      [closedOrderId, TENANT, tableId],
+    );
+    await db.query(
+      `INSERT INTO order_lines (id, tenant_id, client_uuid, order_id, variant_id, name, price, qty)
+       VALUES ($1, $2, $1, $3, $4, 'Cerveza 330ml', 4000, 2)`,
+      [lineId, TENANT, openOrderId, variantA],
+    );
+
+    expect(await backfillMesasMutations(db, TENANT)).toBe(3); // table + open order + line
+    const entities = await db.query<{ entity: string; client_uuid: string }>(
+      `SELECT entity, client_uuid FROM sync_log
+       WHERE tenant_id = $1 AND entity IN ('table', 'order', 'order_line')
+       ORDER BY entity`,
+      [TENANT],
+    );
+    expect(entities.rows.map((r) => r.entity).sort()).toEqual(["order", "order_line", "table"]);
+    expect(entities.rows.find((r) => r.entity === "order")!.client_uuid).toBe(openOrderId);
+    expect(entities.rows.find((r) => r.entity === "table")!.client_uuid).toBe(tableId);
+
+    /* settled Fase 1 history stays device-local (never pushed) */
+    expect(entities.rows.some((r) => r.client_uuid === closedOrderId)).toBe(false);
+
+    /* idempotent + never overwrites an edited queue payload */
+    expect(await backfillMesasMutations(db, TENANT)).toBe(0);
+    await db.query(
+      `UPDATE sync_log SET payload = payload || '{"state":"cancelled"}'::jsonb
+       WHERE tenant_id = $1 AND client_uuid = $2`,
+      [TENANT, openOrderId],
+    );
+    expect(await backfillMesasMutations(db, TENANT)).toBe(0);
+    const edited = await db.query<{ payload: { state: string } }>(
+      `SELECT payload FROM sync_log WHERE tenant_id = $1 AND client_uuid = $2`,
+      [TENANT, openOrderId],
+    );
+    expect(edited.rows[0].payload.state).toBe("cancelled");
   });
 });

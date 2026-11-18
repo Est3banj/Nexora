@@ -387,7 +387,10 @@ describe("sales by day (exact numbers)", () => {
       expect(accounts.json().rows).toEqual(expected);
       expect(parseCustomerAccounts((await local.query<Record<string, unknown>>(CUSTOMER_ACCOUNTS_SQL, [owner.orgId])).rows)).toEqual(expected);
       const { credit_limit: _limit, ...positive } = expected[0];
-      expect((await get("/api/reports/customer-balances")).json().rows).toEqual([positive]);
+      const balances = await get("/api/reports/customer-balances");
+      // P2-3 · customer name/phone/balance → never cacheable.
+      expect(balances.headers["cache-control"]).toBe("no-store");
+      expect(balances.json().rows).toEqual([positive]);
       expect(parseCustomerBalances((await local.query<Record<string, unknown>>(CUSTOMER_BALANCES_SQL, [owner.orgId])).rows)).toEqual([positive]);
       expect((await get("/api/reports/customer-accounts", other)).json().rows).toEqual([]);
       expect(parseCustomerAccounts((await local.query<Record<string, unknown>>(CUSTOMER_ACCOUNTS_SQL, [other.orgId])).rows)).toEqual([]);

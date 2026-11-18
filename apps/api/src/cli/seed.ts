@@ -1,4 +1,5 @@
 import { getAuth } from "../auth/auth";
+import { setUserPassword } from "../auth/password";
 import { config } from "../config";
 import { closeDb, db } from "../db";
 import { ensureAuthTables } from "../db/bootstrap";
@@ -11,10 +12,14 @@ import { scopedRepo } from "../db/scope";
  *
  *   pnpm seed
  *   SEED_OWNER_EMAIL=... SEED_OWNER_PASSWORD=... pnpm seed
+ *
+ * The password default honours packages/shared PASSWORD_MIN (12): a sign-up
+ * shorter than the floor is rejected by better-auth, so a fresh database
+ * would never get an owner.
  */
 
 const EMAIL = process.env.SEED_OWNER_EMAIL ?? "owner@demo.test";
-const PASSWORD = process.env.SEED_OWNER_PASSWORD ?? "demo12345";
+const PASSWORD = process.env.SEED_OWNER_PASSWORD ?? "demo1234567890";
 const ORG_NAME = "Tienda Demo";
 const ORG_SLUG = "tienda-demo";
 
@@ -26,30 +31,49 @@ async function cookieHeaders(res: Response): Promise<Headers> {
   return headers;
 }
 
-async function signInOrSignUp(): Promise<Headers> {
-  const auth = getAuth();
+async function trySignIn(): Promise<Headers | null> {
   try {
     // asResponse:true returns a Response instead of throwing on failure —
-    // a 401 here simply means "no such user yet".
-    const res = await auth.api.signInEmail({
+    // a 401 here simply means "no such user yet" (or a different password).
+    const res = await getAuth().api.signInEmail({
       body: { email: EMAIL, password: PASSWORD },
       asResponse: true,
     });
-    if (res.ok) return cookieHeaders(res);
+    return res.ok ? cookieHeaders(res) : null;
   } catch {
-    // fall through to sign-up
+    return null;
   }
-  const res = await auth.api.signUpEmail({
+}
+
+async function signInOrSignUp(): Promise<Headers> {
+  const signedIn = await trySignIn();
+  if (signedIn) return signedIn;
+
+  const signUp = await getAuth().api.signUpEmail({
     body: { email: EMAIL, password: PASSWORD, name: "Dueño Demo" },
     asResponse: true,
   });
-  if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(
-      `[seed] sign-up failed (${res.status}): ${detail || "unknown"}`,
-    );
+  if (signUp.ok) return cookieHeaders(signUp);
+
+  const detail = await signUp.text().catch(() => "");
+  const taken = signUp.status === 409 || signUp.status === 422 || /already|exists|taken/i.test(detail);
+  if (!taken) {
+    throw new Error(`[seed] sign-up failed (${signUp.status}): ${detail || "unknown"}`);
   }
-  return cookieHeaders(res);
+
+  // The owner exists with a DIFFERENT credential: SEED_OWNER_PASSWORD changed
+  // (or the account predates PASSWORD_MIN). Rotate it instead of failing
+  // forever — seed is the only holder of this value, so the printed login
+  // line below stays true and `pnpm seed` remains idempotent.
+  const ctx = await getAuth().$context;
+  const user = await ctx.internalAdapter.findUserByEmail(EMAIL);
+  if (!user) throw new Error(`[seed] owner exists but could not be loaded: ${EMAIL}`);
+  await setUserPassword(user.user.id, PASSWORD);
+  await ctx.internalAdapter.deleteUserSessions(user.user.id);
+  console.log(`[seed] owner credential rotated to SEED_OWNER_PASSWORD (${PASSWORD.length} chars)`);
+  const rotated = await trySignIn();
+  if (!rotated) throw new Error("[seed] owner credential rotated but sign-in still failed");
+  return rotated;
 }
 
 async function ensureOrg(headers: Headers): Promise<string> {

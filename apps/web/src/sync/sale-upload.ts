@@ -28,6 +28,10 @@ export async function uploadSaleSnapshot(db: PGlite, tenant: string, operation: 
   async function post(path: string, body: unknown) {
     const res = await scopedFetch(tenant, `/api/sync/sales/${operation}/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     if (!res.ok) {
+      // P2-2 · revoked session: same terminal reason as the batch push, so
+      // the queue stops re-arming its retry timer instead of hammering a
+      // dead session forever.
+      if (res.status === 401 || res.status === 403) throw new SaleUploadError("session_expired", true);
       const error = await res.json().catch(() => ({})) as { error?: string };
       const message = error.error ?? `server_${res.status}`;
       // Missing dependencies/expired staging and server errors stay retryable.

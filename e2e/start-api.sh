@@ -18,7 +18,7 @@ DATABASE_URL="$DB_URL" pnpm --filter @pos/api exec drizzle-kit push >/dev/null
 echo "[e2e] seed (owner + org + demo catalog + open shift)"
 DATABASE_URL="$DB_URL" \
   SEED_OWNER_EMAIL="owner@demo.test" \
-  SEED_OWNER_PASSWORD="demo12345" \
+  SEED_OWNER_PASSWORD="demo1234567890" \
   pnpm --filter @pos/api exec tsx src/cli/seed.ts
 
 echo "[e2e] starting API on :3000"

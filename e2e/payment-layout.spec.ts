@@ -1,5 +1,6 @@
 import { expect, test, type Locator } from "@playwright/test";
 import { randomUUID } from "node:crypto";
+import { createTenantViaFounder } from "./helpers-auth";
 
 async function fullyExposed(control: Locator, footer: Locator, gap = 0) {
   const bounds = (await control.boundingBox())!;
@@ -17,13 +18,10 @@ async function fullyExposed(control: Locator, footer: Locator, gap = 0) {
 
 test("payment fields stay fully above actions while editing and scrolling", async ({ page }, testInfo) => {
   const id = randomUUID();
-  expect((await page.request.post("/api/auth/sign-up/email", { data: {
-    name: "Cobro layout", email: `payment-${id}@test.dev`, password: "payment-test-123",
-  } })).ok()).toBe(true);
-  const response = await page.request.post("/api/auth/organization/create", { data: { name: "Cobro layout", slug: `payment-${id}` } });
-  expect(response.ok()).toBe(true);
-  const org = (await response.json()).id as string;
-  expect((await page.request.post("/api/auth/organization/set-active", { data: { organizationId: org } })).ok()).toBe(true);
+  // P0-1: founder plane only — /api/auth/organization/create is closed.
+  await createTenantViaFounder(page.request, {
+    name: "Cobro layout", slug: `payment-${id}`, email: `payment-${id}@test.dev`, password: "payment-test-123",
+  });
   expect((await page.request.post("/api/catalog/products", { data: {
     name: "Café cobro", variant: { name: "Único", price: 12000, stock: 100 },
   } })).ok()).toBe(true);

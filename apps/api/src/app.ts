@@ -13,6 +13,7 @@ import { reportRoutes } from "./routes/reports";
 import { founderRoutes } from "./routes/founder";
 import { settingsRoutes } from "./routes/settings";
 import { adminUsersRoutes } from "./routes/admin-users";
+import { orderRoutes } from "./routes/orders";
 import { syncRoutes } from "./sync/route";
 import { pool } from "./db";
 
@@ -74,8 +75,59 @@ async function readiness(): Promise<Readiness> {
 }
 
 export async function buildApp(opts: { logger?: boolean } = {}): Promise<FastifyInstance> {
+  const loggerEnabled = opts.logger ?? config.nodeEnv !== "test";
   const app = Fastify({
-    logger: opts.logger ?? config.nodeEnv !== "test",
+    /**
+     * P1-5 · PII in request logs.
+     *
+     * pino applies serializers FIRST and the redaction stringifiers AFTER
+     * (pino `lib/tools.js` → `_asJson`: serializer, then `stringifiers[key]`),
+     * so the paths below are matched against what the serializers EMIT —
+     * which is why the `req` serializer has to expose `headers` at all:
+     * fastify's own default serializer drops them, and a redact path that
+     * never exists censors nothing.
+     *
+     * The three credential-bearing headers are censored twice on purpose
+     * (serializer + redact): if either layer is ever edited, the other still
+     * holds. `res.headers['set-cookie']` is listed although the `res`
+     * serializer does not emit headers — a future `set-cookie` in a log line
+     * must not carry a session token.
+     */
+    logger: loggerEnabled === false ? false : {
+      redact: {
+        paths: [
+          "req.headers.authorization",
+          "req.headers.cookie",
+          "req.headers['set-cookie']",
+          "res.headers['set-cookie']",
+          "headers.authorization",
+          "headers.cookie",
+        ],
+        censor: "[redacted]",
+      },
+      serializers: {
+        req: (req: { method?: string; url?: string; host?: string; ip?: string; socket?: { remotePort?: number }; headers?: Record<string, unknown> }) => {
+          const acceptVersion = req.headers?.["accept-version"];
+          return {
+            method: req.method,
+            url: req.url,
+            host: req.host,
+            version: typeof acceptVersion === "string" ? acceptVersion : undefined,
+            remoteAddress: req.ip,
+            remotePort: req.socket?.remotePort,
+            headers: req.headers
+              ? {
+                  ...req.headers,
+                  authorization: "[redacted]",
+                  cookie: "[redacted]",
+                  "set-cookie": "[redacted]",
+                }
+              : undefined,
+          };
+        },
+        res: (reply: { statusCode?: number }) => ({ statusCode: reply.statusCode }),
+      },
+    },
     // Partition B · trust the proxy in front of us and nothing else.
     // Compose never publishes the API port, so the only peer that can reach
     // :3000 is the Caddy container on the Docker network: X-Forwarded-For is
@@ -120,7 +172,11 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
       if (e.constraint === "product_variants_tenant_code_uq") {
         return reply.code(409).send({ error: "duplicate_code", message: "El código ya pertenece a otra variante de este comercio" });
       }
-      return reply.code(409).send({ error: "conflict", detail: e.message });
+      // P2-1 · the raw driver message can echo column values (a duplicate
+      // e-mail, a slug, …). It is useful for the operator, not for the
+      // caller: the response gets a stable token, the detail goes to the log.
+      app.log.warn({ constraint: e.constraint, detail: e.message }, "unique constraint violated");
+      return reply.code(409).send({ error: "conflict", detail: "duplicate" });
     }
     if (e.code === "23503") {
       return reply.code(404).send({ error: "not_found" });
@@ -171,8 +227,15 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
         // admin permissions are broader than our owner/admin policy; invitation
         // acceptance and leaving can mutate membership too. In-process founder
         // provisioning bypasses this HTTP proxy intentionally.
+        // P0-1 · `create` closes POST /api/auth/organization/create: the
+        // plugin default (allowUserToCreateOrganization) lets ANY signed-up
+        // user mint a tenant and become its active owner, bypassing the
+        // founder/platform-admin plane. Tenant creation goes ONLY through
+        // POST /api/founder/tenants (requirePlatformAdmin) and the CLIs,
+        // which call better-auth's api.createOrganization IN-PROCESS and
+        // never traverse this proxy.
         const membershipWriters = ["add-member", "update-member-role", "remove-member", "invite-member",
-          "accept-invitation", "reject-invitation", "cancel-invitation", "leave", "delete"];
+          "accept-invitation", "reject-invitation", "cancel-invitation", "leave", "delete", "create"];
         if (req.method !== "GET" && membershipWriters.some(endpoint => path === `/api/auth/organization/${endpoint}`)) {
           return reply.code(403).send({ error: "use_admin_users_api" });
         }
@@ -192,6 +255,7 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
   await app.register(founderRoutes);
   await app.register(settingsRoutes);
   await app.register(adminUsersRoutes);
+  await app.register(orderRoutes);
 
   // Health probes (Partition B). Two endpoints, deliberately different:
   //

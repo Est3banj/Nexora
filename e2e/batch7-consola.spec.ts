@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { dbOne } from "./helpers-db";
-import { makePlatformAdmin } from "./helpers-auth";
+import { makePlatformAdmin, createTenantViaFounder } from "./helpers-auth";
 
 // Batch 7's own regression slice; 8.1/8.5 integration/refactor remain pending.
 // Authorization is always real: flag is seeded like founder-api.test.ts.
@@ -9,13 +9,21 @@ const evidence = "/var/folders/zq/6h6qz_616b371m8v3q93wklh0000gn/T/opencode";
 const keys = ["tenant_id", "name", "slug", "users", "pending", "last_sync", "errors", "last_error"].sort();
 async function account(page: Page, platform = true, withOrg = true) {
   const tag = randomUUID(), email = `b7-${tag}@test.dev`, password = "batch7-test-only-123";
-  const signup = await page.request.post("/api/auth/sign-up/email", { data: { name: "Operador B7", email, password } });
-  expect(signup.ok()).toBe(true);
-  const user = (await signup.json()).user.id as string;
+  let user: string;
   let org: string | null = null;
   if (withOrg) {
-    const res = await page.request.post("/api/auth/organization/create", { data: { name: `Tienda B7 ${tag}`, slug: `b7-${tag}` } });
-    expect(res.ok()).toBe(true); org = (await res.json()).id;
+    // P0-1: the founder plane mints the tenant AND its first user — that
+    // owner is the account every later assertion (session, revocation,
+    // deletion) refers to. /api/auth/organization/create is closed.
+    org = await createTenantViaFounder(page.request, {
+      name: `Tienda B7 ${tag}`, slug: `b7-${tag}`, email, password,
+    });
+    const session = await (await page.request.get("/api/auth/get-session")).json();
+    user = session.user.id as string;
+  } else {
+    const signup = await page.request.post("/api/auth/sign-up/email", { data: { name: "Operador B7", email, password } });
+    expect(signup.ok()).toBe(true);
+    user = (await signup.json()).user.id as string;
   }
   if (platform) makePlatformAdmin(email);
   expect((await page.request.post("/api/auth/sign-out")).ok()).toBe(true);
@@ -218,7 +226,7 @@ for (const width of [1440, 375]) {
       await expect(page.getByTestId("consola-tenant")).toHaveCount(0);
       await expect(page.getByTestId("consola-create-submit")).toHaveCount(0);
       await capture(page, width, "revoked");
-      expect((await page.request.post("/api/founder/tenants", { data: { name: "No permitido", email: "denied@test.dev", password: "secret1234" } })).status()).toBe(403);
+      expect((await page.request.post("/api/founder/tenants", { data: { name: "No permitido", email: "denied@test.dev", password: "secret123456" } })).status()).toBe(403);
       // Expired session cannot expose the formerly visible metadata either.
       dbOne(`DELETE FROM session WHERE "userId"='${actor.user}'`);
       await page.getByTestId("consola-retry").click();
@@ -233,13 +241,13 @@ test("ordinary owner has no account entry and founder denies owner403/unauth401"
   await page.getByLabel("Cuenta y caja", { exact: true }).click();
   await expect(page.getByTestId("consola-entry")).toHaveCount(0);
   for (const endpoint of ["sync-status", "tenants"]) {
-    const result = endpoint === "tenants" ? await page.request.post(`/api/founder/${endpoint}`, { data: { name: "No permitido", email: "denied@test.dev", password: "secret1234" } }) : await page.request.get(`/api/founder/${endpoint}`);
+    const result = endpoint === "tenants" ? await page.request.post(`/api/founder/${endpoint}`, { data: { name: "No permitido", email: "denied@test.dev", password: "secret123456" } }) : await page.request.get(`/api/founder/${endpoint}`);
     expect(result.status()).toBe(403); expect(await result.json()).toEqual({ error: "forbidden" });
   }
   const anonymous = await browser.newContext({ baseURL: test.info().project.use.baseURL });
   try {
     expect((await anonymous.request.get("/api/founder/sync-status")).status()).toBe(401);
-    expect((await anonymous.request.post("/api/founder/tenants", { data: { name: "No permitido", email: "denied@test.dev", password: "secret1234" } })).status()).toBe(401);
+    expect((await anonymous.request.post("/api/founder/tenants", { data: { name: "No permitido", email: "denied@test.dev", password: "secret123456" } })).status()).toBe(401);
   } finally { await anonymous.close(); }
 });
 

@@ -101,34 +101,41 @@ ALTER TABLE tickets ADD COLUMN IF NOT EXISTS table_name text;
 `;
 
 /**
- * Fase 1 (opción C) · mesas/órdenes are LOCAL PGlite domain — never pushed
- * to the sync queue, never rehydrated, absent from the Drizzle schema until
- * Fase 2 turns them into sync entities (CONTROL-MESAS.md §FASE 2 B).
+ * Mesas (control de comandas) — Fase 2 · sync entities (CONTROL-MESAS.md ·
+ * opción B). ONE idempotent string runs on BOTH stores:
+ *  - local PGlite open path (`pglite.ts`, after LOCAL_SCHEMA_SQL), and
+ *  - server boot (`apps/api/src/db/migrate-mesas.ts`) — the first-boot
+ *    BASELINE also embeds it via LOCAL_SCHEMA_SQL below, so a fresh server
+ *    gets the three tables with zero extra steps.
  *
- * Design decisions encoded here (see CONTROL-MESAS.md «Decisiones tomadas»):
- *  - `order_lines.variant_id` (not `product_id`): price and stock live on
- *    the variant and `commitLocalSale` takes variant_id — a product
- *    reference could not price a line nor charge it.
- *  - `order_lines.deleted_at`: soft-delete from day 1 — the sync protocol
- *    has no delete op, so removals must be representable as a state change.
- *  - `orders.state` + `tables.status` from day 1: Fase 2 reuses them with
- *    zero data migration.
- *  - `tables.total_amount` is DERIVED (SUM of live lines) — never stored,
- *    so it can never drift from the comanda.
+ * Fase 1 created `tables`/`orders`/`order_lines` WITHOUT `client_uuid` and
+ * with occupancy columns on the table. Fase 2 (additive, no datadir bump):
+ *  - `client_uuid` added to all three + backfill `client_uuid = id` — the
+ *    byte-for-byte upsert contract of every sync entity
+ *    (unique(tenant_id, client_uuid) + ON CONFLICT target).
+ *  - `orders.billing_at` — «Pedir cuenta» moves from `tables.status` to the
+ *    ORDER, so occupancy/billing derive from the comanda itself and the
+ *    table row only ever conflicts on catalog edits (decision 8).
+ *  - `tickets.order_id` + PARTIAL UNIQUE (where not null) — the double-cobro
+ *    backstop: the second ticket of the same comanda is rejected server-side.
+ *  - PARTIAL UNIQUE one `open` order per (tenant, table) — a second device
+ *    cannot silently fork a comanda for a table the server already has open.
  *
- * Idempotent (`IF NOT EXISTS`) like every additive migration: re-running on
- * every open is safe, so no DATA_DIR_VERSION bump.
+ * Legacy columns `tables.status/current_order_id/opened_at` are KEPT (schema
+ * parity + old data) but NO LONGER READ NOR WRITTEN by the app: every read
+ * derives occupancy from `orders` (listBoardTables/listTables/getTable).
  */
 export const MESAS_MIGRATION_SQL = /* sql */ `
 CREATE TABLE IF NOT EXISTS tables (
   id uuid PRIMARY KEY,
   tenant_id uuid NOT NULL,
+  client_uuid uuid NOT NULL,
   name text NOT NULL,
   zone text,
   capacity integer NOT NULL DEFAULT 1,
-  status text NOT NULL DEFAULT 'available',        -- 'available' | 'occupied' | 'billing'
-  current_order_id uuid,                           -- ref to orders.id (NO DB FK — business-table precedent)
-  opened_at timestamptz,
+  status text NOT NULL DEFAULT 'available',        -- LEGACY (Fase 1): derived from orders now
+  current_order_id uuid,                           -- LEGACY (Fase 1): derived from orders now
+  opened_at timestamptz,                           -- LEGACY (Fase 1): derived from orders now
   active boolean NOT NULL DEFAULT true,            -- soft-hide, mirrors products
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
@@ -139,10 +146,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS tables_tenant_name_uq ON tables (tenant_id, na
 CREATE TABLE IF NOT EXISTS orders (
   id uuid PRIMARY KEY,
   tenant_id uuid NOT NULL,
+  client_uuid uuid NOT NULL,
   table_id uuid NOT NULL,
   state text NOT NULL DEFAULT 'open',              -- 'open' | 'cancelled' | 'closed'
   opened_at timestamptz NOT NULL DEFAULT now(),
   closed_at timestamptz,
+  billing_at timestamptz,                          -- «Pedir cuenta» flag (Fase 2)
   notes text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
@@ -153,6 +162,7 @@ CREATE INDEX IF NOT EXISTS orders_tenant_state_idx ON orders (tenant_id, state);
 CREATE TABLE IF NOT EXISTS order_lines (
   id uuid PRIMARY KEY,
   tenant_id uuid NOT NULL,
+  client_uuid uuid NOT NULL,
   order_id uuid NOT NULL,
   variant_id uuid NOT NULL,                        -- price/stock live on the variant (see note above)
   name text NOT NULL,                              -- denormalized label: the comanda must read without joins
@@ -165,6 +175,35 @@ CREATE TABLE IF NOT EXISTS order_lines (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS order_lines_order_idx ON order_lines (order_id);
+
+-- Fase 1 → Fase 2 upgrade of EXISTING local rows (fresh installs get the
+-- columns straight from CREATE above; these ALTERs are no-ops there).
+ALTER TABLE tables ADD COLUMN IF NOT EXISTS client_uuid uuid;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS client_uuid uuid;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS billing_at timestamptz;
+ALTER TABLE order_lines ADD COLUMN IF NOT EXISTS client_uuid uuid;
+UPDATE tables SET client_uuid = id WHERE client_uuid IS NULL;
+UPDATE orders SET client_uuid = id WHERE client_uuid IS NULL;
+UPDATE order_lines SET client_uuid = id WHERE client_uuid IS NULL;
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_attribute a
+             WHERE a.attname = 'client_uuid' AND NOT a.attnotnull AND NOT a.attisdropped
+               AND a.attrelid IN ('tables'::regclass, 'orders'::regclass, 'order_lines'::regclass)) THEN
+    ALTER TABLE tables ALTER COLUMN client_uuid SET NOT NULL;
+    ALTER TABLE orders ALTER COLUMN client_uuid SET NOT NULL;
+    ALTER TABLE order_lines ALTER COLUMN client_uuid SET NOT NULL;
+  END IF;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS tables_tenant_client_uq ON tables (tenant_id, client_uuid);
+CREATE UNIQUE INDEX IF NOT EXISTS orders_tenant_client_uq ON orders (tenant_id, client_uuid);
+CREATE UNIQUE INDEX IF NOT EXISTS order_lines_tenant_client_uq ON order_lines (tenant_id, client_uuid);
+-- one OPEN comanda per table (concurrent-open backstop; state='open' only so
+-- closed/cancelled history never conflicts)
+CREATE UNIQUE INDEX IF NOT EXISTS orders_tenant_table_open_uq ON orders (tenant_id, table_id) WHERE state = 'open';
+
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS order_id uuid;
+-- DOUBLE-COBRO BACKSTOP: at most ONE ticket may ever settle a comanda.
+CREATE UNIQUE INDEX IF NOT EXISTS tickets_tenant_order_id_uq ON tickets (tenant_id, order_id) WHERE order_id IS NOT NULL;
 `;
 
 export const PROTOTYPE_MIGRATION_SQL = /* sql */ `
@@ -269,6 +308,14 @@ ${FIADO_MIGRATION_SQL}
 
 -- Mesas: additive ticket column (needs the tickets table for the ALTER).
 ${TICKET_TABLE_NAME_MIGRATION_SQL}
+
+-- Mesas Fase 2: tables/orders/order_lines as SYNC entities (needs the
+-- tickets table for the order_id backstop ALTER). Inside LOCAL_SCHEMA_SQL on
+-- purpose: this string is ALSO the server first-boot BASELINE, and Fase 2
+-- wants the comanda domain server-side. The PGlite open path re-runs
+-- MESAS_MIGRATION_SQL after this (idempotent) so legacy Fase 1 datadirs
+-- upgrade the same way.
+${MESAS_MIGRATION_SQL}
 
 CREATE TABLE IF NOT EXISTS ticket_lines (
   id uuid PRIMARY KEY,

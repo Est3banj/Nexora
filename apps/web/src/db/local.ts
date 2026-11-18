@@ -828,9 +828,9 @@ export type CommittedSale = {
  * both stores, the value is optional).
  */
 export type SaleCommitInput =
-  | { lines: SaleLineInput[]; method?: "cash"; tendered: number; table_name?: string | null }
-  | { lines: SaleLineInput[]; method: "transfer"; table_name?: string | null }
-  | { lines: SaleLineInput[]; method: "credit"; customerId: string; cashAmount: number; table_name?: string | null };
+  | { lines: SaleLineInput[]; method?: "cash"; tendered: number; table_name?: string | null; order_id?: string | null }
+  | { lines: SaleLineInput[]; method: "transfer"; table_name?: string | null; order_id?: string | null }
+  | { lines: SaleLineInput[]; method: "credit"; customerId: string; cashAmount: number; table_name?: string | null; order_id?: string | null };
 
 /**
  * ONE local transaction = ticket + lines + payment + shift lookup +
@@ -902,9 +902,9 @@ export async function commitLocalSale(
 
     const ticketId = newId();
     await tx.query(
-      `INSERT INTO tickets (id, tenant_id, client_uuid, shift_id, ticket_no, status, total, created_at, customer_id, table_name)
-       VALUES ($1, $2, $1, $3, $4, $5, $6, $7, $8, $9)`,
-      [ticketId, tenantId, shiftId, ticketNo, ticketStatus, total, createdAt, customerId, input.table_name ?? null],
+      `INSERT INTO tickets (id, tenant_id, client_uuid, shift_id, ticket_no, status, total, created_at, customer_id, table_name, order_id)
+       VALUES ($1, $2, $1, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [ticketId, tenantId, shiftId, ticketNo, ticketStatus, total, createdAt, customerId, input.table_name ?? null, input.order_id ?? null],
     );
 
     const lines: CommittedSale["lines"] = [];
@@ -1044,6 +1044,10 @@ export async function commitLocalSale(
       total,
       customer_id: customerId,
       table_name: input.table_name ?? null,
+      // mesas Fase 2: the comanda this ticket settles — SERVER backstop key
+      // (partial unique tickets.order_id: a second ticket of the same order
+      // is a deterministic rejection, sync-apply).
+      order_id: input.order_id ?? null,
       created_at: createdAt,
     });
 
@@ -1463,6 +1467,17 @@ export async function closeLocalShift(
     );
     const shift = open.rows[0];
     if (!shift) throw new Error("NO_OPEN_SHIFT");
+
+    /* Fase 2 · gate de cierre (CONTROL-MESAS.md decisión 6): a shift never
+     * closes while the tenant still has open/billing comandas ON THIS
+     * DEVICE. The Arqueo screen pre-checks with the SERVER count when online
+     * (cross-device); this is the data-layer backstop for the offline path
+     * and for a table opened between the screen check and this tx. */
+    const openOrders = await tx.query<{ n: string }>(
+      `SELECT count(*) AS n FROM orders WHERE tenant_id = $1 AND state = 'open'`,
+      [tenantId],
+    );
+    if (Number(openOrders.rows[0]?.n ?? 0) > 0) throw new Error("OPEN_ORDERS_EXIST");
 
     const expected = await computeLocalExpected(tx, tenantId, shift.id);
     const diff = arqueoDiff(counted.data, expected.expected);

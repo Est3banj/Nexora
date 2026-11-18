@@ -10,6 +10,7 @@ import {
   type BoardTable,
   type LocalTable,
 } from "../db/local-orders";
+import { pullOpenOrders } from "../sync/open-orders";
 import type { ToastKind } from "../components/Toast";
 import "./mesas.css";
 
@@ -66,22 +67,42 @@ export function Mesas({ db, tenantId, refreshToken, role, showToast, onOpenTable
 
   const canManage = isDueñoHint(role);
 
+  /* Fase 2 · the board is a RE-FETCH, never a reload: every refresh pulls
+   * server truth (`GET /api/orders/open`) into the local cache first, then
+   * renders from PGlite. Triggers: entering the tab (mount), refreshToken
+   * bump after save/cobro, window focus and the `online` event — so a mesa
+   * opened on another device appears without any manual action. Offline the
+   * pull is a no-op and the board stays on local truth. */
   useEffect(() => {
     let alive = true;
-    setLoading(true);
-    setError(false);
-    listBoardTables(db, tenantId)
-      .then((rows) => {
+    const refresh = async () => {
+      setLoading(true);
+      setError(false);
+      try {
+        if (typeof navigator === "undefined" || navigator.onLine !== false) {
+          try {
+            await pullOpenOrders(db, tenantId);
+          } catch {
+            /* pull is best-effort (sealed/offline race) — local truth still renders */
+          }
+        }
+        const rows = await listBoardTables(db, tenantId);
         if (alive) setTables(rows);
-      })
-      .catch(() => {
+      } catch {
         if (alive) setError(true);
-      })
-      .finally(() => {
+      } finally {
         if (alive) setLoading(false);
-      });
+      }
+    };
+    void refresh();
+    const onFocus = () => void refresh();
+    const onOnline = () => void refresh();
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("online", onOnline);
     return () => {
       alive = false;
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("online", onOnline);
     };
   }, [db, tenantId, refreshToken, reload]);
 

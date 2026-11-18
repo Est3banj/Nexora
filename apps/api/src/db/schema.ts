@@ -182,12 +182,19 @@ export const tickets = pgTable(
     customer_id: uuid("customer_id"),
     /** table name stamped at cobro (mesas) — additive nullable, mirrors local DDL */
     table_name: text("table_name"),
+    /** comanda this ticket settled (mesas Fase 2) — nullable, NO FK */
+    order_id: uuid("order_id"),
     created_at: createdAt(),
     updated_at: updatedAt(),
   },
   (t) => [
     uniqueIndex("tickets_tenant_client_uq").on(t.tenant_id, t.client_uuid),
     uniqueIndex("tickets_tenant_ticket_no_uq").on(t.tenant_id, t.ticket_no),
+    // DOUBLE-COBRO BACKSTOP (mesas Fase 2): at most ONE ticket may ever
+    // settle a comanda — the second concurrent cobro is rejected here.
+    uniqueIndex("tickets_tenant_order_id_uq")
+      .on(t.tenant_id, t.order_id)
+      .where(sql`${t.order_id} IS NOT NULL`),
     index("tickets_tenant_created_idx").on(t.tenant_id, t.created_at),
     index("tickets_tenant_customer_idx").on(t.tenant_id, t.customer_id),
   ],
@@ -255,6 +262,91 @@ export const cashMovements = pgTable("cash_movements", {
   index("cash_movements_tenant_shift_created_idx").on(t.tenant_id, t.shift_id, t.created_at),
   index("cash_movements_tenant_created_idx").on(t.tenant_id, t.created_at),
 ]);
+
+/* ── mesas Fase 2 · sync entities (CONTROL-MESAS.md · opción B) ───────────
+ * Column-for-column mirrors of packages/shared/src/local-schema.ts
+ * (MESAS_MIGRATION_SQL) — schema-contract parity covers these three.
+ * `tables.status/current_order_id/opened_at` are LEGACY Fase 1 columns kept
+ * for parity only: the app derives occupancy from `orders` everywhere. */
+
+export const tables = pgTable(
+  "tables",
+  {
+    id: idCol(),
+    tenant_id: tenantCol(),
+    client_uuid: clientUuidCol(),
+    name: text("name").notNull(),
+    zone: text("zone"),
+    capacity: integer("capacity").notNull().default(1),
+    /** LEGACY (Fase 1): derived from open orders now — never written by sync */
+    status: text("status").notNull().default("available"),
+    /** LEGACY (Fase 1): derived from open orders now */
+    current_order_id: uuid("current_order_id"),
+    /** LEGACY (Fase 1): derived from the order's opened_at now */
+    opened_at: timestamp("opened_at", { withTimezone: true }),
+    active: boolean("active").notNull().default(true),
+    created_at: createdAt(),
+    updated_at: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("tables_tenant_client_uq").on(t.tenant_id, t.client_uuid),
+    index("tables_tenant_active_idx").on(t.tenant_id, t.active),
+    uniqueIndex("tables_tenant_name_uq").on(t.tenant_id, t.name).where(sql`${t.active}`),
+  ],
+);
+
+export const orders = pgTable(
+  "orders",
+  {
+    id: idCol(),
+    tenant_id: tenantCol(),
+    client_uuid: clientUuidCol(),
+    table_id: uuid("table_id").notNull(),
+    /** 'open' | 'cancelled' | 'closed' — closed/cancelled are TERMINAL */
+    state: text("state").notNull().default("open"),
+    opened_at: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),
+    closed_at: timestamp("closed_at", { withTimezone: true }),
+    /** «Pedir cuenta» flag — lives on the comanda, dies with it */
+    billing_at: timestamp("billing_at", { withTimezone: true }),
+    notes: text("notes"),
+    created_at: createdAt(),
+    updated_at: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("orders_tenant_client_uq").on(t.tenant_id, t.client_uuid),
+    index("orders_tenant_table_idx").on(t.tenant_id, t.table_id),
+    index("orders_tenant_state_idx").on(t.tenant_id, t.state),
+    // concurrent-open backstop: one OPEN comanda per table (history never
+    // conflicts because the predicate only sees state = 'open')
+    uniqueIndex("orders_tenant_table_open_uq")
+      .on(t.tenant_id, t.table_id)
+      .where(sql`state = 'open'`),
+  ],
+);
+
+export const orderLines = pgTable(
+  "order_lines",
+  {
+    id: idCol(),
+    tenant_id: tenantCol(),
+    client_uuid: clientUuidCol(),
+    order_id: uuid("order_id").notNull(),
+    variant_id: uuid("variant_id").notNull(),
+    name: text("name").notNull(),
+    price: integer("price").notNull(),
+    qty: integer("qty").notNull(),
+    notes: text("notes"),
+    /** soft-delete state — removal is never a DELETE (sync has no delete op) */
+    deleted_at: timestamp("deleted_at", { withTimezone: true }),
+    sort: integer("sort").notNull().default(0),
+    created_at: createdAt(),
+    updated_at: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("order_lines_tenant_client_uq").on(t.tenant_id, t.client_uuid),
+    index("order_lines_order_idx").on(t.order_id),
+  ],
+);
 
 export const ticketLines = pgTable(
   "ticket_lines",

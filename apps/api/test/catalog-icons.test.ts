@@ -27,6 +27,8 @@ it("sync/repo/rehydrate preserve product/category icons across legacy edits and 
     else await repo.products.upsert({ client_uuid: id, name: "Café" });
     expect((await collection.byUuid(id))?.icon_key).toBe("coffee");
     const response = await app.inject({ method: "GET", url: "/api/rehydrate", headers: authHeaders(actor) });
+    // P2-3 · page 0 carries `customers` (name/phone/address) → never cacheable.
+    expect(response.headers["cache-control"]).toBe("no-store");
     expect(response.json()[entity === "category" ? "categories" : "products"]).toEqual(expect.arrayContaining([expect.objectContaining({ id, icon_key: "coffee" })]));
   }
 });

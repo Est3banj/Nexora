@@ -21,7 +21,9 @@ import {
   pushNow,
   refreshSyncStatus,
   repushSynced,
+  SESSION_EXPIRED_MESSAGE,
 } from "./sync/queue";
+import { PWA_UPDATE_EVENT, PWA_UPDATE_MESSAGE } from "./pwa";
 import { rehydrateFromServer } from "./sync/rehydrate";
 import { scopedFetch } from "./sync/scoped-fetch";
 import {
@@ -34,7 +36,7 @@ import {
 } from "./lib/settings";
 import { useSync } from "./hooks/useSync";
 import { useActiveMemberRole } from "./hooks/useActiveMemberRole";
-import type { BoardTable } from "./db/local-orders";
+import { backfillMesasMutations, type BoardTable } from "./db/local-orders";
 import { Login } from "./screens/Login";
 import { Sale } from "./screens/Sale";
 import { Mesas } from "./screens/Mesas";
@@ -249,6 +251,10 @@ export default function App() {
         if (!alive) { await sealLocal(local.db); return; }
         setAccessError(null);
         setReady(sessionKey);
+        /* Mesas Fase 2: Fase 1 rows (tables/open comandas) predate the sync
+         * queue — enqueue them BEFORE the boot drain so they reach the
+         * server/rehydrating devices. Idempotent (only unqueued rows). */
+        await backfillMesasMutations(local.db, tenantId);
         await initSync(local.db, tenantId);
       } catch (error) {
         if (alive) setAccessError(error instanceof Error ? error.message : "No se pudo recuperar la base protegida");
@@ -350,6 +356,26 @@ export default function App() {
     setToast({ id: ++toastId.current, message: msg, kind });
   }, []);
   const closeToast = useCallback(() => setToast(null), []);
+
+  // P1-6 · a new service worker is waiting (registered by main.tsx): the
+  // restart is offered as a STICKY toast — an update prompt that vanishes
+  // after the normal 3.5s is a decision nobody gets to make. The action
+  // hands back to the register (skipWaiting → reload), never a bare reload,
+  // which would boot the same stale worker again.
+  useEffect(() => {
+    const onPwaUpdate = (event: Event) => {
+      const restart = (event as CustomEvent<{ restart?: () => void }>).detail?.restart;
+      setToast({
+        id: ++toastId.current,
+        message: PWA_UPDATE_MESSAGE,
+        kind: "info",
+        sticky: true,
+        action: { label: "Reiniciar", onClick: () => (restart ?? (() => window.location.reload()))() },
+      });
+    };
+    window.addEventListener(PWA_UPDATE_EVENT, onPwaUpdate);
+    return () => window.removeEventListener(PWA_UPDATE_EVENT, onPwaUpdate);
+  }, []);
 
   const handleSignOut = useCallback(async () => {
     if (!local) return;
@@ -606,7 +632,13 @@ export default function App() {
 
         {sync.error && (
           <div className="sync-error-row" data-testid="sync-error">
-            <span>Error de sync: {sync.error}</span>
+            {/* P2-2 · a revoked session gets the plain instruction, not the
+                generic "Error de sync: server_401" the user cannot act on. */}
+            <span>
+              {sync.error === SESSION_EXPIRED_MESSAGE
+                ? sync.error
+                : `Error de sync: ${sync.error}`}
+            </span>
             <button
               className="btn small"
               data-testid="sync-retry"
@@ -693,6 +725,9 @@ export default function App() {
             pendingTableOrder={pendingTableOrder}
             onPendingTableOrderUsed={consumeTableOrder}
             onCartCountChange={onCartCountChange}
+            /* Frescura check hit (Fase 2): bump refreshToken — Mesas re-pulls
+             * on its next refresh so the board reflects the other device. */
+            onStaleOrder={onMutated}
           />
         )}
         {tabAllowed && tab === "mesas" && (

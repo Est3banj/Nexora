@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { dbOne } from "./helpers-db";
+import { createTenantViaFounder } from "./helpers-auth";
 import { destinations, navigate } from "./helpers-navigation";
 
 // Batch 6 regression slice; batch 8 will extend integration coverage.
@@ -8,14 +9,13 @@ import { destinations, navigate } from "./helpers-navigation";
 const evidence = "/var/folders/zq/6h6qz_616b371m8v3q93wklh0000gn/T/opencode";
 async function tenant(page: Page) {
   const tag = randomUUID();
-  expect((await page.request.post("/api/auth/sign-up/email", { data: {
-    name: "Dueña de prueba B6", email: `b6-${tag}@test.dev`, password: "batch6-test-only-123",
-  } })).ok()).toBe(true);
-  const res = await page.request.post("/api/auth/organization/create", { data: { name: "Tienda de prueba B6", slug: `b6-${tag}` } });
-  expect(res.ok()).toBe(true);
-  const org = (await res.json()).id as string;
-  expect((await page.request.post("/api/auth/organization/set-active", { data: { organizationId: org } })).ok()).toBe(true);
-  return org;
+  // P0-1: founder plane only — /api/auth/organization/create is closed.
+  return createTenantViaFounder(page.request, {
+    name: "Tienda de prueba B6",
+    slug: `b6-${tag}`,
+    email: `b6-${tag}@test.dev`,
+    password: "batch6-test-only-123",
+  });
 }
 async function capture(page: Page, width: number, state: string) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);

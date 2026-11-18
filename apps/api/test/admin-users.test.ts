@@ -75,6 +75,8 @@ describe("tenant-scoped employee BFF", () => {
     const createdRow = listing.members.find((m: { userId: string }) => m.userId === body.user.id);
     expect(createdRow.user.username).toBe("ana.perez");
     expect(createdRow.user.email).toBe("ana.perez@nexora.local");
+    // P2-3 · member listing carries name/e-mail/username → never cacheable.
+    expect((await list()).headers["cache-control"]).toBe("no-store");
     const audit = (await db.execute(sql`SELECT action,meta FROM audit_log WHERE action='member.create'`)).rows;
     expect(audit).toHaveLength(1);
     expect(JSON.stringify(audit)).not.toMatch(/password|code|hash/i);
@@ -100,7 +102,10 @@ describe("tenant-scoped employee BFF", () => {
     expect((await remove(id, admin)).json()).toEqual({ ok: true });
     const revoked = await app.inject({ method: "GET", url: "/api/catalog/products", headers: { cookie } });
     expect(revoked.statusCode).toBe(403); expect(revoked.json()).toEqual({ error: "no_active_tenant" });
-    const audit = (await db.execute(sql`SELECT action,meta FROM audit_log ORDER BY created_at`)).rows;
+    // P0-1 · setup mints tenants through the founder plane, which audits
+    // `tenant.create` (spec §Creation is audited). Every assertion here is
+    // about the operation under test → setup rows are excluded.
+    const audit = (await db.execute(sql`SELECT action,meta FROM audit_log WHERE action <> 'tenant.create' ORDER BY created_at`)).rows;
     expect(audit.map(a => a.action)).toEqual(["member.create", "member.role_change", "member.role_change", "member.remove"]);
     expect(JSON.stringify(audit)).not.toMatch(/password|hash|code|test-only-password/i);
   });
@@ -111,7 +116,7 @@ describe("tenant-scoped employee BFF", () => {
     const id = await memberId(admin.userId);
     expect((await patch(id, "member", admin)).statusCode).toBe(403);
     expect((await remove(id, admin)).statusCode).toBe(403);
-    expect((await db.execute(sql`SELECT id FROM audit_log`)).rows).toHaveLength(0);
+    expect((await db.execute(sql`SELECT id FROM audit_log WHERE action <> 'tenant.create'`)).rows).toHaveLength(0);
   });
 
   it("owner rows are read-only for BOTH owner and admin", async () => {
@@ -135,7 +140,7 @@ describe("tenant-scoped employee BFF", () => {
       expect((await remove(target.id, actor)).statusCode).toBe(404);
     }
     expect((await db.execute(sql`SELECT * FROM member WHERE id=${target.id}`)).rows).toEqual(before);
-    expect((await db.execute(sql`SELECT id FROM audit_log`)).rows).toHaveLength(0);
+    expect((await db.execute(sql`SELECT id FROM audit_log WHERE action <> 'tenant.create'`)).rows).toHaveLength(0);
   });
 
   it("duplicate username is 409; invalid role/body/username/password is 400, not an escalation", async () => {
@@ -162,7 +167,7 @@ describe("tenant-scoped employee BFF", () => {
     expect(res.statusCode).toBe(409);
     expect(res.json()).toEqual({ error: "membership_create_failed", account_created: false });
     expect((await db.execute(sql`SELECT id FROM "user" WHERE username='ana.perez'`)).rows).toHaveLength(0);
-    expect((await db.execute(sql`SELECT id FROM audit_log`)).rows).toHaveLength(0);
+    expect((await db.execute(sql`SELECT id FROM audit_log WHERE action <> 'tenant.create'`)).rows).toHaveLength(0);
   });
 });
 
@@ -191,4 +196,115 @@ it("blocks raw unauthenticated add-member including query/case/trailing/encoded 
   }
   expect((await db.execute(sql`SELECT count(*)::int AS n FROM member`)).rows).toEqual(before);
   expect((await list()).statusCode).toBe(200); // legitimate auth/session endpoints still work
+});
+
+/**
+ * A2 · restablecer la contraseña de un empleado (perdió el acceso).
+ * Route: POST /api/admin/members/:memberId/password
+ */
+describe("A2 · employee password reset", () => {
+  const reset = (id: string, newPassword: string, actor = owner) =>
+    app.inject({ method: "POST", url: `/api/admin/members/${id}/password`, headers: authHeaders(actor), payload: { newPassword } });
+  const attempt = (username: string, password: string) =>
+    app.inject({ method: "POST", url: "/api/auth/sign-in/username", payload: { username, password } });
+  const cookieOf = (res: { cookies: Array<{ name: string; value: string }> }) =>
+    res.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+
+  it("happy path: NEW password signs in, OLD password and OLD session die, audit carries ids only", async () => {
+    const created = await create();
+    expect(created.statusCode).toBe(201);
+    const { user, member } = created.json() as { user: { id: string }; member: { id: string } };
+
+    const before = await attempt("ana.perez", "test-only-password-123");
+    expect(before.statusCode).toBe(200);
+    const oldCookie = cookieOf(before);
+    // A fresh member has no active org yet — claim it, exactly like the web login does.
+    expect((await app.inject({
+      method: "POST", url: "/api/auth/organization/set-active", headers: { cookie: oldCookie },
+      payload: { organizationId: owner.orgId },
+    })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/api/catalog/products", headers: { cookie: oldCookie } })).statusCode).toBe(200);
+
+    const res = await reset(member.id, "nueva-clave-del-cajero-1");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
+    expect(res.headers["cache-control"]).toBe("no-store");
+
+    // The credential really changed…
+    expect((await attempt("ana.perez", "test-only-password-123")).statusCode).toBe(401);
+    expect((await attempt("ana.perez", "nueva-clave-del-cajero-1")).statusCode).toBe(200);
+    // …and every session opened with the old credential was revoked.
+    expect((await app.inject({ method: "GET", url: "/api/catalog/products", headers: { cookie: oldCookie } })).statusCode).toBe(401);
+
+    const audit = (await db.execute(sql`SELECT action, meta FROM audit_log WHERE action='member.password_reset'`)).rows;
+    expect(audit).toHaveLength(1);
+    expect(audit[0].meta).toMatchObject({ member_id: member.id, user_id: user.id });
+    expect(JSON.stringify(audit)).not.toContain("nueva-clave-del-cajero-1");
+    expect(JSON.stringify(audit)).not.toContain("test-only-password-123");
+  });
+
+  it("a member (cashier tier) is forbidden: 403 dueño_only, password untouched, no audit", async () => {
+    const created = await create();
+    const { member } = created.json() as { member: { id: string } };
+    const res = await reset(member.id, "password-robada-12345", cashier);
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ error: "forbidden", detail: "dueño_only" });
+    expect((await attempt("ana.perez", "test-only-password-123")).statusCode).toBe(200);
+    expect((await attempt("ana.perez", "password-robada-12345")).statusCode).toBe(401);
+    // `create()` wrote member.create; the RESET must not have written anything.
+    expect((await db.execute(sql`SELECT id FROM audit_log WHERE action='member.password_reset'`)).rows).toHaveLength(0);
+  });
+
+  it("a foreign memberId is 404 (tenant scope), never a write and never a leak", async () => {
+    const foreign = await createTenant(app, { email: "foreign-reset@test.dev", orgSlug: "foreign-reset" });
+    const employee = await joinOrg(app, foreign, "member", "foreign-employee-reset@test.dev");
+    const target = (await list(foreign)).json().members.find((m: { userId: string }) => m.userId === employee.userId);
+    const before = (await db.execute(sql`SELECT * FROM member WHERE id=${target.id}`)).rows;
+    for (const actor of [owner, admin]) {
+      expect((await reset(target.id, "clave-ajena-12345", actor)).statusCode).toBe(404);
+    }
+    expect((await signIn(app, employee)).length).toBeGreaterThan(0);
+    expect((await db.execute(sql`SELECT * FROM member WHERE id=${target.id}`)).rows).toEqual(before);
+    expect((await db.execute(sql`SELECT id FROM audit_log WHERE action <> 'tenant.create'`)).rows).toHaveLength(0);
+  });
+
+  it("cannot_reset_self: an actor never resets their own password through this route", async () => {
+    expect((await reset(await memberId(owner.userId), "clave-propia-12345")).json())
+      .toEqual({ error: "cannot_reset_self" });
+    expect((await reset(await memberId(admin.userId), "clave-propia-12345", admin)).json())
+      .toEqual({ error: "cannot_reset_self" });
+    expect((await signIn(app, owner)).length).toBeGreaterThan(0);
+    expect((await signIn(app, admin)).length).toBeGreaterThan(0);
+  });
+
+  it("owner_readonly: an admin cannot take over the owner account by resetting it", async () => {
+    const res = await reset(await memberId(owner.userId), "clave-de-ataque-123", admin);
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ error: "owner_readonly" });
+    expect((await signIn(app, owner)).length).toBeGreaterThan(0);
+    expect((await db.execute(sql`SELECT id FROM audit_log WHERE action <> 'tenant.create'`)).rows).toHaveLength(0);
+  });
+
+  it("password below the shared floor is 400 validation_error and nothing changes", async () => {
+    const created = await create();
+    const { member } = created.json() as { member: { id: string } };
+    const res = await reset(member.id, "corta");
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("validation_error");
+    expect(res.json().issues[0]).toEqual({ path: "newPassword", message: "La contraseña debe tener al menos 12 caracteres." });
+    expect((await attempt("ana.perez", "test-only-password-123")).statusCode).toBe(200);
+    expect((await db.execute(sql`SELECT id FROM audit_log WHERE action='member.password_reset'`)).rows).toHaveLength(0);
+  });
+
+  it("the body is strict: an unknown key is 400, not silently stripped", async () => {
+    const created = await create();
+    const { member } = created.json() as { member: { id: string } };
+    const res = await app.inject({
+      method: "POST", url: `/api/admin/members/${member.id}/password`, headers: authHeaders(owner),
+      payload: { newPassword: "clave-valida-12345", actor: owner.userId },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("validation_error");
+    expect((await attempt("ana.perez", "test-only-password-123")).statusCode).toBe(200);
+  });
 });

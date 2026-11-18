@@ -20,6 +20,8 @@ import {
 import { CashMovementModal } from "../components/CashMovementModal";
 import { pushNow } from "../sync/queue";
 import { scopedFetch } from "../sync/scoped-fetch";
+import { fetchOpenOrders } from "../sync/open-orders";
+import { listOpenOrderIds, openOrdersMessage } from "../db/local-orders";
 import { useSync } from "../hooks/useSync";
 
 const cop = (n: number) =>
@@ -201,6 +203,17 @@ export function Arqueo({ db, tenantId, refreshToken, tenantName, showToast, onMu
     }
   }
 
+  /** Fase 2 · open/billing comandas counting for the close gate: local ids
+   * UNION server ids (reachable), so a mesa pending push AND a mesa open on
+   * another device both count exactly once. */
+  async function openComandaCount(): Promise<number> {
+    const ids = new Set(await listOpenOrderIds(db, tenantId));
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return ids.size;
+    const fresh = await fetchOpenOrders(tenantId);
+    if (fresh) for (const order of fresh.orders ?? []) ids.add(String(order.id));
+    return ids.size;
+  }
+
   async function handleClose() {
     if (lock.current) return;
     if (!openShift) {
@@ -223,6 +236,20 @@ export function Arqueo({ db, tenantId, refreshToken, tenantName, showToast, onMu
           setError("Hay operaciones de este turno pendientes de sincronizar. Reintentá antes del cierre online.");
           return;
         }
+      }
+      /* FASE 2 · gate de cierre (CONTROL-MESAS.md decisión 6): a shift never
+       * closes while the tenant still has open/billing comandas. Placed AFTER
+       * the online flush so a just-released/comanda-free state is already on
+       * the server. The count is the UNION of local open orders (pending
+       * pushes) and `GET /api/orders/open` (other devices) when reachable —
+       * offline it degrades to local knowledge (documented limit). The data
+       * layer re-checks inside closeLocalShift (OPEN_ORDERS_EXIST backstop). */
+      const openComandas = await openComandaCount();
+      if (openComandas > 0) {
+        setError(openOrdersMessage(openComandas));
+        return;
+      }
+      if (online) {
         const res = await scopedFetch(tenantId, `/api/shifts/${openShift.id}/close`, {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -263,6 +290,17 @@ export function Arqueo({ db, tenantId, refreshToken, tenantName, showToast, onMu
       else if (code === "NEGATIVE_COUNTED")
         setError("El conteo no puede ser negativo");
       else if (code === "ALREADY_CLOSED") setError("La caja ya estaba cerrada");
+      else if (code === "OPEN_ORDERS_EXIST") {
+        /* data-layer backstop (race between the screen gate and the tx):
+         * same message, local count — the operator still knows what to do. */
+        let n = 1;
+        try {
+          n = Math.max((await listOpenOrderIds(db, tenantId)).length, 1);
+        } catch {
+          /* keep the conservative fallback */
+        }
+        setError(openOrdersMessage(n));
+      }
       else setError("No se pudo cerrar la caja");
     } finally {
       lock.current = false;

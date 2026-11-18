@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, sql, type SQL } from "drizzle-orm";
 import type { MutationEnvelope } from "@pos/shared";
 import { variantCodeSchema } from "@pos/shared";
 import * as t from "./schema";
@@ -132,16 +132,23 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
       },
     },
     categories: {
-      list(opts: { active?: boolean; limit?: number } = {}) {
+      /**
+       * P1-1 · `offset` joins the rehydrate page loop (same `next_offset`
+       * counter as tickets): a tenant beyond the default cap is delivered
+       * across pages instead of being truncated on page 0. `id` is the
+       * tie-break so offset paging over duplicate names is stable.
+       */
+      list(opts: { active?: boolean; limit?: number; offset?: number } = {}) {
         const conds: SQL[] = [eq(t.categories.tenant_id, tenantId)];
         if (opts.active !== undefined)
           conds.push(eq(t.categories.active, opts.active));
-        return db
+        const query = db
           .select()
           .from(t.categories)
           .where(and(...conds))
-          .orderBy(t.categories.name)
+          .orderBy(t.categories.name, t.categories.id)
           .limit(opts.limit ?? 200);
+        return opts.offset ? query.offset(opts.offset) : query;
       },
       async byUuid(id: string) {
         const rows = await db
@@ -248,16 +255,23 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
       },
     },
     products: {
-      list(opts: { active?: boolean; limit?: number } = {}) {
+      /**
+       * P1-1 · paged the same way as categories: rehydrate pulls
+       * `limit`/`offset` slices on EVERY page until `next_offset` is null,
+       * so a rebuilt device with >1000 products receives all of them.
+       * `id` tie-break keeps offset paging stable over duplicate names.
+       */
+      list(opts: { active?: boolean; limit?: number; offset?: number } = {}) {
         const conds: SQL[] = [eq(t.products.tenant_id, tenantId)];
         if (opts.active !== undefined)
           conds.push(eq(t.products.active, opts.active));
-        return db
+        const query = db
           .select()
           .from(t.products)
           .where(and(...conds))
-          .orderBy(t.products.name)
+          .orderBy(t.products.name, t.products.id)
           .limit(opts.limit ?? 1000);
+        return opts.offset ? query.offset(opts.offset) : query;
       },
       async byUuid(id: string) {
         const rows = await db
@@ -328,18 +342,20 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
     },
 
     productVariants: {
-      list(opts: { active?: boolean; product_id?: string; limit?: number } = {}) {
+      /** P1-1 · paged with the rehydrate `next_offset` counter (see products). */
+      list(opts: { active?: boolean; product_id?: string; limit?: number; offset?: number } = {}) {
         const conds: SQL[] = [eq(t.productVariants.tenant_id, tenantId)];
         if (opts.active !== undefined)
           conds.push(eq(t.productVariants.active, opts.active));
         if (opts.product_id !== undefined)
           conds.push(eq(t.productVariants.product_id, opts.product_id));
-        return db
+        const query = db
           .select()
           .from(t.productVariants)
           .where(and(...conds))
-          .orderBy(t.productVariants.name)
+          .orderBy(t.productVariants.name, t.productVariants.id)
           .limit(opts.limit ?? 2000);
+        return opts.offset ? query.offset(opts.offset) : query;
       },
       /** Sale flow: only variants of active products, variants active. */
       listForSale() {
@@ -833,6 +849,33 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
             ),
           );
       },
+      /**
+       * P1-2 · rehydrate page helper: every line of a ticket slice in ONE
+       * query (inArray, same shape as payments.listByTickets) instead of
+       * one query per ticket. The result keeps the exact order the old
+       * `Promise.all(ticketIds.map(listByTicket))` produced: groups follow
+       * `ticket_ids` (the page's ticket order), rows inside a group keep
+       * the database's natural order.
+       */
+      async listByTickets(ticket_ids: string[]) {
+        if (ticket_ids.length === 0) return [];
+        const rows = await db
+          .select()
+          .from(t.ticketLines)
+          .where(
+            and(
+              eq(t.ticketLines.tenant_id, tenantId),
+              inArray(t.ticketLines.ticket_id, ticket_ids),
+            ),
+          );
+        const byTicket = new Map<string, typeof rows>();
+        for (const row of rows) {
+          const bucket = byTicket.get(row.ticket_id);
+          if (bucket) bucket.push(row);
+          else byTicket.set(row.ticket_id, [row]);
+        }
+        return ticket_ids.flatMap((id) => byTicket.get(id) ?? []);
+      },
       async insertMany(
         lines: Array<{
           client_uuid: string;
@@ -1050,6 +1093,58 @@ export function scopedRepo(db: Db, tenantId: TenantId) {
             ),
           )
           .orderBy(desc(t.creditAbonos.created_at));
+      },
+    },
+
+    /* ── mesas Fase 2 (CONTROL-MESAS.md · opción B) — reads for the pull
+     * endpoint and the paged rehydrate. Writes go exclusively through
+     * sync-apply (client-pushed mutations), never through this repo. ── */
+    tables: {
+      async list(opts: { limit?: number; offset?: number } = {}) {
+        const q = db.select().from(t.tables).where(eq(t.tables.tenant_id, tenantId))
+          .orderBy(t.tables.name).limit(opts.limit ?? 500);
+        return opts.offset ? q.offset(opts.offset) : q;
+      },
+    },
+    orders: {
+      /** Rehydrate page: newest first (tickets pattern). */
+      async list(opts: { limit?: number; offset?: number } = {}) {
+        const q = db.select().from(t.orders).where(eq(t.orders.tenant_id, tenantId))
+          .orderBy(desc(t.orders.created_at), t.orders.id).limit(opts.limit ?? 100);
+        return opts.offset ? q.offset(opts.offset) : q;
+      },
+      /** GET /api/orders/open: every live comanda — billing included (billing is a FLAG on the order, not a state). */
+      async listOpen() {
+        return db.select().from(t.orders)
+          .where(and(eq(t.orders.tenant_id, tenantId), eq(t.orders.state, "open")))
+          .orderBy(t.orders.opened_at);
+      },
+      /** Settled tombstones (id + state, bounded) so a pull can reconcile locally-open comandas the server already closed. */
+      async listSettled(limit = 200) {
+        return db.select({ id: t.orders.id, state: t.orders.state }).from(t.orders)
+          .where(and(eq(t.orders.tenant_id, tenantId), ne(t.orders.state, "open")))
+          .orderBy(desc(t.orders.updated_at))
+          .limit(limit);
+      },
+      async countOpen() {
+        const rows = await db.select({ n: sql<string>`count(*)` }).from(t.orders)
+          .where(and(eq(t.orders.tenant_id, tenantId), eq(t.orders.state, "open")));
+        return Number(rows[0]?.n ?? 0);
+      },
+    },
+    orderLines: {
+      /** Rehydrate helper (listByTickets pattern): every line of an order slice in ONE query. */
+      async listByOrders(order_ids: string[]) {
+        if (order_ids.length === 0) return [];
+        const rows = await db.select().from(t.orderLines)
+          .where(and(eq(t.orderLines.tenant_id, tenantId), inArray(t.orderLines.order_id, order_ids)));
+        const byOrder = new Map<string, typeof rows>();
+        for (const row of rows) {
+          const bucket = byOrder.get(row.order_id);
+          if (bucket) bucket.push(row);
+          else byOrder.set(row.order_id, [row]);
+        }
+        return order_ids.flatMap((id) => byOrder.get(id) ?? []);
       },
     },
 

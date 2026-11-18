@@ -473,7 +473,7 @@ describe("D4-3 · founder endpoints rejected for tenant owner", () => {
       method: "POST",
       url: "/api/founder/tenants",
       headers: authHeaders(tenantA),
-      payload: { name: "Nope", email: "nope@x.test", password: "secret1234" },
+      payload: { name: "Nope", email: "nope@x.test", password: "secret123456" },
     });
     expect(create.statusCode).toBe(403);
 

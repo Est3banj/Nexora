@@ -65,7 +65,7 @@ describe("D4-2 · platform-admin gates", () => {
       payload: {
         name: "Tienda Hack",
         email: "hack@tienda.test",
-        password: "secret1234",
+        password: "secret123456",
       },
     });
     expect(res.statusCode).toBe(401);
@@ -84,7 +84,7 @@ describe("D4-2 · platform-admin gates", () => {
       payload: {
         name: "Tienda Owner Hack",
         email: "hack2@tienda.test",
-        password: "secret1234",
+        password: "secret123456",
       },
     });
     expect(res.statusCode).toBe(403);
@@ -108,7 +108,7 @@ describe("D4-2 · platform-admin gates", () => {
       payload: {
         name: "Tienda Granizados",
         email: "shop@granizados.test",
-        password: "secret1234",
+        password: "secret123456",
         slug: "tienda-granizados",
       },
     });
@@ -127,7 +127,7 @@ describe("D4-2 · platform-admin gates", () => {
     // first user signs in → active org = new tenant → empty catalog
     const cookie = await signIn(app, {
       email: "shop@granizados.test",
-      password: "secret1234",
+      password: "secret123456",
     });
     const orgs = await app.inject({
       method: "GET",
@@ -170,7 +170,7 @@ describe("D4-2 · platform-admin gates", () => {
     const payload = {
       name: "Dup Tienda",
       email: "dup@tienda.test",
-      password: "secret1234",
+      password: "secret123456",
     };
     const first = await app.inject({
       method: "POST",
@@ -198,7 +198,7 @@ describe("D4-2 · platform-admin gates", () => {
     const before = await countOrgs();
     for (const method of ["GET", "POST"] as const) {
       const denied = await app.inject({ method, url: method === "GET" ? "/api/founder/sync-status" : "/api/founder/tenants",
-        headers: authHeaders(founder), ...(method === "POST" ? { payload: { name: "Revoked", email: "revoked@test.dev", password: "secret1234" } } : {}) });
+        headers: authHeaders(founder), ...(method === "POST" ? { payload: { name: "Revoked", email: "revoked@test.dev", password: "secret123456" } } : {}) });
       expect(denied.statusCode).toBe(403);
       expect(denied.json()).toEqual({ error: "forbidden" });
     }

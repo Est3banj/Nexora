@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
-import { authHeaders, buildTestApp, createTenant } from "./helpers";
-import { closeDb, db } from "../src/db";
+import { authHeaders, buildTestApp, createTenant, signIn } from "./helpers";
+import { closeDb, db, pool } from "../src/db";
 import * as t from "../src/db/schema";
 
 /**
@@ -106,5 +106,59 @@ describe("annul-code leak scan (roles-admin 4.7)", () => {
     expect(putAgain.body).not.toContain("annul_code_hash");
     expect(putAgain.body).not.toContain(hash);
     expect(putAgain.body).not.toContain(code);
+  });
+});
+
+describe("P0-1 · tenant auto-provisioning is closed", () => {
+  it("organization/create → 403 for an owner AND for a platform admin, no org minted", async () => {
+    // createTenant itself now goes through POST /api/founder/tenants, so the
+    // tenant below exists BEFORE the shortcut is probed.
+    const owner = await createTenant(app, { email: "sec-create@test.dev", orgSlug: "sec-create" });
+
+    const asOwner = await app.inject({
+      method: "POST",
+      url: "/api/auth/organization/create",
+      headers: authHeaders(owner),
+      payload: { name: "Tienda Hackeada", slug: "sec-hack" },
+    });
+    expect(asOwner.statusCode).toBe(403);
+    expect(asOwner.json()).toEqual({ error: "use_admin_users_api" });
+
+    // The flag does NOT reopen the shortcut: a platform admin creates
+    // tenants through the founder plane (requirePlatformAdmin), never here.
+    await pool.query(`UPDATE "user" SET "platformAdmin" = true WHERE id = $1`, [owner.userId]);
+    const adminCookie = await signIn(app, owner);
+    const asAdmin = await app.inject({
+      method: "POST",
+      url: "/api/auth/organization/create",
+      headers: { cookie: adminCookie },
+      payload: { name: "Tienda Hackeada 2", slug: "sec-hack-2" },
+    });
+    expect(asAdmin.statusCode).toBe(403);
+
+    // Anonymous is refused by the same proxy (no session is ever minted).
+    const anon = await app.inject({
+      method: "POST",
+      url: "/api/auth/organization/create",
+      payload: { name: "Anon", slug: "sec-hack-3" },
+    });
+    expect(anon.statusCode).toBe(403);
+
+    const { rows } = await pool.query(
+      `SELECT count(*)::int AS n FROM organization WHERE slug LIKE 'sec-hack%'`,
+    );
+    expect(rows[0].n).toBe(0);
+  });
+
+  it("the founder plane (platform admin) still mints the tenant + first user", async () => {
+    const founder = await createTenant(app, { email: "sec-founder@test.dev", orgSlug: "sec-founder" });
+    const org = await pool.query(`SELECT slug FROM organization WHERE id = $1`, [founder.orgId]);
+    expect(org.rows[0].slug).toBe("sec-founder");
+    const owner = await pool.query(
+      `SELECT m.role FROM member m JOIN "user" u ON u.id = m."userId"
+        WHERE m."organizationId" = $1 AND u.email = $2`,
+      [founder.orgId, founder.email],
+    );
+    expect(owner.rows[0].role).toBe("owner");
   });
 });

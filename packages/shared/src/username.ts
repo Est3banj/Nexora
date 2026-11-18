@@ -14,6 +14,18 @@
 export const USERNAME_MIN_LENGTH = 3;
 export const USERNAME_MAX_LENGTH = 20;
 
+/**
+ * Single password floor for every CREATION path: better-auth sign-up,
+ * founder tenant creation (API + CLI), admin "Crear usuario" and admin
+ * "Restablecer contraseña".
+ *
+ * Sign-IN deliberately does NOT validate this — an account created before
+ * the floor was raised must keep working (better-auth only calls
+ * `assertPasswordNotTooShort` from sign-up and reset-password, never from
+ * sign-in). Raising the floor must never lock existing users out.
+ */
+export const PASSWORD_MIN = 12;
+
 /** Lowercase letters, digits and . _ - — never "@" and never spaces. */
 export const USERNAME_PATTERN = "^[a-z0-9._-]+$";
 

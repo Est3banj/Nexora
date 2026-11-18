@@ -27,6 +27,10 @@ export type RehydratePage = {
   categories?: Row[];
   products?: Row[];
   variants?: Row[];
+  /** mesas Fase 2 — comanda domain rides every page (orders first below). */
+  tables?: Row[];
+  orders?: Row[];
+  order_lines?: Row[];
   open_shift?: Row | null;
   stock?: Row[];
   tickets?: Row[];
@@ -62,6 +66,35 @@ export async function applyRehydratePage(
   return localTx(db, async (tx) => {
     await assertWritable(tx, tenantId);
     let inserted = 0;
+
+    /* mesas Fase 2 — tables → orders → lines (parents before children, the
+     * same habit as catalog; no DB FKs, but the board reads them in this
+     * order). Legacy occupancy columns (tables.status/current_order_id/
+     * opened_at) are deliberately NOT copied: the client derives them from
+     * `orders` on every read (decision 8). */
+    for (const table of page.tables ?? []) {
+      await insertIgnore(tx, "tables",
+        ["id", "tenant_id", "client_uuid", "name", "zone", "capacity", "active", "created_at", "updated_at"],
+        [table.id, tenantId, table.client_uuid ?? table.id, table.name, table.zone ?? null,
+          table.capacity, table.active, iso(table.created_at), iso(table.updated_at)]);
+      inserted += 1;
+    }
+    for (const order of page.orders ?? []) {
+      await insertIgnore(tx, "orders",
+        ["id", "tenant_id", "client_uuid", "table_id", "state", "opened_at", "closed_at", "billing_at", "notes", "created_at", "updated_at"],
+        [order.id, tenantId, order.client_uuid ?? order.id, order.table_id, order.state,
+          iso(order.opened_at), iso(order.closed_at), iso(order.billing_at), order.notes ?? null,
+          iso(order.created_at), iso(order.updated_at)]);
+      inserted += 1;
+    }
+    for (const line of page.order_lines ?? []) {
+      await insertIgnore(tx, "order_lines",
+        ["id", "tenant_id", "client_uuid", "order_id", "variant_id", "name", "price", "qty", "notes", "deleted_at", "sort", "created_at", "updated_at"],
+        [line.id, tenantId, line.client_uuid ?? line.id, line.order_id, line.variant_id, line.name,
+          line.price, line.qty, line.notes ?? null, iso(line.deleted_at), line.sort ?? 0,
+          iso(line.created_at), iso(line.updated_at)]);
+      inserted += 1;
+    }
 
     for (const c of page.customers ?? []) {
       await insertIgnore(tx, "customers",

@@ -223,6 +223,7 @@ export function ClientModal({ open, db, tenantId, customer, defaultLimit, onClos
                   data-testid="client-phone"
                   className="mono"
                   inputMode="tel"
+                  autoComplete="tel"
                   value={phone}
                   maxLength={40}
                   disabled={busy}
@@ -239,6 +240,7 @@ export function ClientModal({ open, db, tenantId, customer, defaultLimit, onClos
                   data-testid="client-limit"
                   className="mono"
                   inputMode="numeric"
+                  autoComplete="off"
                   value={limitNone ? "" : limit}
                   maxLength={32}
                   aria-invalid={!limitNone && limit !== "" && (!/^\d+$/.test(limit.trim()) || Number(limit) > 2147483647)}

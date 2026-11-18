@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { PGlite } from "@electric-sql/pglite";
-import { formatTicketNo, USERNAME_MAX_LENGTH, USERNAME_MIN_LENGTH, isValidUsername, localDate } from "@pos/shared";
+import { formatTicketNo, USERNAME_MAX_LENGTH, USERNAME_MIN_LENGTH, PASSWORD_MIN, isValidUsername, localDate } from "@pos/shared";
 import { getOpenShiftLocal, listCustomerBalances, listLocalCashMovements, listLocalClosedCash, listLocalTickets } from "../db/local";
 import { listTables, type LocalTable } from "../db/local-orders";
 import { TableModal } from "../components/TableModal";
+import { PasswordInput } from "../components/PasswordInput";
 import { localDashboardSummary, localLowStock, localPendingTransfers, localTopProducts } from "../db/local-reports";
 import { CUSTOM_RANGE_ERROR, dashboardRanges, defaultCustomRange, validCustomRange, type DashboardPeriod, type DateRange } from "../lib/analytical-periods";
 import type { PublicSettings } from "../lib/settings";
@@ -28,15 +29,23 @@ async function api<T>(tenantId: string, url: string, method = "GET", body?: unkn
     const error = await res.json().catch(() => ({})) as {
       error?: string; account_created?: boolean; issues?: Array<{ message?: string }>;
     };
-    throw new Error(res.status === 403 || res.status === 401 ? "Tu sesión ya no tiene permiso. Volvé a ingresar."
-      : error.error === "username_taken" ? "Ese usuario ya está en uso. Elegí otro."
-        : error.error === "email_taken" ? "No se pudo crear la cuenta por un conflicto de identificador. Elegí otro usuario."
-          : error.error === "validation_error" && error.issues?.[0]?.message
-            ? `Revisá los datos: ${error.issues[0].message}`
-            : error.error === "membership_create_failed" ? (error.account_created
-              ? "La cuenta se creó, pero no se pudo asignar a la tienda. Contactá al administrador antes de reintentar."
-              : "No se pudo asignar el empleado; la cuenta nueva fue descartada. Podés reintentar.")
-              : "No se pudo completar la operación. Reintentá.");
+    // Specific codes FIRST: they are 4xx too, but the generic 403 copy
+    // ("tu sesión ya no tiene permiso") would hide what actually happened.
+    throw new Error(
+      error.error === "not_found" ? "Ese empleado ya no está en esta tienda."
+        : error.error === "cannot_reset_self" ? "No podés restablecer tu propia contraseña desde esta pantalla."
+          : error.error === "owner_readonly" ? "La cuenta del dueño no se modifica desde esta pantalla."
+            : error.error === "policy" ? "El servidor rechazó la operación por política de seguridad. Revisá la contraseña e intentá de nuevo."
+              : res.status === 403 || res.status === 401 ? "Tu sesión ya no tiene permiso. Volvé a ingresar."
+                : error.error === "username_taken" ? "Ese usuario ya está en uso. Elegí otro."
+                  : error.error === "email_taken" ? "No se pudo crear la cuenta por un conflicto de identificador. Elegí otro usuario."
+                    : error.error === "validation_error" && error.issues?.[0]?.message
+                      ? `Revisá los datos: ${error.issues[0].message}`
+                      : error.error === "membership_create_failed" ? (error.account_created
+                        ? "La cuenta se creó, pero no se pudo asignar a la tienda. Contactá al administrador antes de reintentar."
+                        : "No se pudo asignar el empleado; la cuenta nueva fue descartada. Podés reintentar.")
+                        : "No se pudo completar la operación. Reintentá.",
+    );
   }
   return res.json() as Promise<T>;
 }
@@ -116,10 +125,10 @@ function Resumen({ db, tenantId, refreshToken, settings }: LocalProps & Settings
         </select></label>
         {period === "custom" && (
           <div className="period-range">
-            <label>Desde<input data-testid="admin-custom-from" type="date" value={customDraft.from} max={localDate(0)}
+            <label htmlFor="admin-custom-from">Desde<input id="admin-custom-from" data-testid="admin-custom-from" type="date" value={customDraft.from} max={localDate(0)}
               aria-invalid={customError !== null} aria-describedby={customError ? "admin-custom-error" : undefined}
               onChange={e => updateCustom({ from: e.target.value })} /></label>
-            <label>Hasta<input data-testid="admin-custom-to" type="date" value={customDraft.to} max={localDate(0)}
+            <label htmlFor="admin-custom-to">Hasta<input id="admin-custom-to" data-testid="admin-custom-to" type="date" value={customDraft.to} max={localDate(0)}
               aria-invalid={customError !== null} aria-describedby={customError ? "admin-custom-error" : undefined}
               onChange={e => updateCustom({ to: e.target.value })} /></label>
           </div>
@@ -175,6 +184,8 @@ function Cajas({ db, tenantId, refreshToken }: LocalProps) {
 type Member = { id: string; userId: string; role: string; createdAt: string; user: { id: string; name: string; email: string; username: string | null } };
 /** Owner rows have no username — they still identify themselves by email. */
 const memberHandle = (user: Member["user"]) => user.username ?? user.email;
+/** Empleados dialog: one discriminated union so each branch has a member in scope. */
+type MembersModal = { kind: "create" } | { kind: "remove"; member: Member } | { kind: "reset"; member: Member };
 function Empleados({ tenantId, showToast, role }: LocalProps & Feedback & { role: RoleHint }) {
   const isOwner = role === "owner";
   const canManage = (member: Member) => member.role === "member" || (isOwner && member.role === "admin");
@@ -185,7 +196,7 @@ function Empleados({ tenantId, showToast, role }: LocalProps & Feedback & { role
   const [reload, setReload] = useState(0);
   const [busy, setBusy] = useState(false);
   const lock = useRef(false);
-  const [modal, setModal] = useState<"create" | Member | null>(null);
+  const [modal, setModal] = useState<MembersModal | null>(null);
   const dialog = useRef<HTMLDialogElement>(null);
   const [created, setCreated] = useState<string | null>(null);
   const [modalError, setModalError] = useState("");
@@ -206,9 +217,9 @@ function Empleados({ tenantId, showToast, role }: LocalProps & Feedback & { role
     finally { lock.current = false; setBusy(false); }
   }
   async function submit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault(); if (lock.current || !online || !modal || (modal !== "create" && !canManage(modal))) return;
+    e.preventDefault(); if (lock.current || !online || !modal) return;
     const form = new FormData(e.currentTarget);
-    if (modal === "create") {
+    if (modal.kind === "create") {
       // Same rules as the server (packages/shared/username.ts + zod) so the
       // owner gets a clear Spanish message instead of a generic 400.
       const username = String(form.get("username") ?? "").trim();
@@ -217,8 +228,8 @@ function Empleados({ tenantId, showToast, role }: LocalProps & Feedback & { role
         setModalError(`El usuario debe tener entre ${USERNAME_MIN_LENGTH} y ${USERNAME_MAX_LENGTH} caracteres: solo minúsculas, números y . _ - (sin arroba ni espacios).`);
         return;
       }
-      if (password.length < 12 || password.length > 128) {
-        setModalError("La contraseña debe tener entre 12 y 128 caracteres.");
+      if (password.length < PASSWORD_MIN || password.length > 128) {
+        setModalError(`La contraseña debe tener entre ${PASSWORD_MIN} y 128 caracteres.`);
         return;
       }
       lock.current = true; setBusy(true); setModalError("");
@@ -233,24 +244,51 @@ function Empleados({ tenantId, showToast, role }: LocalProps & Feedback & { role
       finally { lock.current = false; setBusy(false); }
       return;
     }
+    if (!canManage(modal.member)) return;
+    if (modal.kind === "reset") {
+      const newPassword = String(form.get("newPassword") ?? "");
+      // Validated here too: the server answer (validation_error) would be a
+      // generic "Revisá los datos" instead of a precise rule.
+      if (newPassword.length < PASSWORD_MIN || newPassword.length > 128) {
+        setModalError(`La contraseña debe tener entre ${PASSWORD_MIN} y 128 caracteres.`);
+        return;
+      }
+      lock.current = true; setBusy(true); setModalError("");
+      try {
+        await api(tenantId, `/api/admin/members/${modal.member.id}/password`, "POST", { newPassword });
+        setModal(null); setReload(n => n + 1);
+        showToast("Contraseña restablecida. La sesión del empleado quedó cerrada.");
+      } catch (err) { setModalError((err as Error).message); }
+      finally { lock.current = false; setBusy(false); }
+      return;
+    }
     lock.current = true; setBusy(true); setModalError("");
     try {
-      await api(tenantId, `/api/admin/members/${modal.id}`, "DELETE"); setModal(null); showToast("Acceso a la tienda eliminado");
+      await api(tenantId, `/api/admin/members/${modal.member.id}`, "DELETE"); setModal(null); showToast("Acceso a la tienda eliminado");
       setReload(n => n + 1);
     } catch (err) { setModalError((err as Error).message); }
     finally { lock.current = false; setBusy(false); }
   }
   if (!online) return <p className="warn-banner" data-testid="admin-employees-offline" role="status">La gestión de empleados requiere conexión.</p>;
   return <div className="admin-stack">
-    <div className="admin-toolbar"><h3>Empleados y roles</h3><button className="btn primary" data-testid="admin-user-new" disabled={busy} onClick={() => { setModalError(""); setCreated(null); setModal("create"); }}>Crear usuario</button></div>
+    <div className="admin-toolbar"><h3>Empleados y roles</h3><button className="btn primary" data-testid="admin-user-new" disabled={busy} onClick={() => { setModalError(""); setCreated(null); setModal({ kind: "create" }); }}>Crear usuario</button></div>
     {loading && <p role="status">Cargando empleados…</p>}
-    {error ? <p role="alert">{error} <button className="btn" onClick={() => setReload(n => n + 1)}>Reintentar</button></p> : <div className="card table-scroll" role="region" aria-label="Empleados y roles, desplazamiento horizontal" tabIndex={0}><table data-testid="admin-members"><thead><tr><th>Empleado</th><th>Rol</th><th>Acciones</th></tr></thead><tbody>{members.map(m => <tr key={m.id} data-testid="admin-member"><td><strong>{m.user.name}</strong><small>{memberHandle(m.user)}</small></td><td>{isOwner && canManage(m) ? <select aria-label={`Rol de ${m.user.name}`} value={m.role} disabled={busy || loading} onChange={e => void changeRole(m, e.target.value)}><option value="member">Cajero</option><option value="admin">Administrador</option></select> : m.role === "owner" ? "Dueño" : m.role === "admin" ? "Administrador" : m.role === "member" ? "Cajero" : "Rol sin verificar"}</td><td>{canManage(m) && <button className="btn danger" disabled={busy || loading} onClick={() => { setModalError(""); setModal(m); }}>Quitar acceso</button>}</td></tr>)}</tbody></table>{!loading && members.length === 0 && <p className="muted">No se encontraron empleados.</p>}</div>}
+    {error ? <p role="alert">{error} <button className="btn" onClick={() => setReload(n => n + 1)}>Reintentar</button></p> : <div className="card table-scroll" role="region" aria-label="Empleados y roles, desplazamiento horizontal" tabIndex={0}><table data-testid="admin-members"><thead><tr><th>Empleado</th><th>Rol</th><th>Acciones</th></tr></thead><tbody>{members.map(m => <tr key={m.id} data-testid="admin-member"><td><strong>{m.user.name}</strong><small>{memberHandle(m.user)}</small></td><td>{isOwner && canManage(m) ? <select aria-label={`Rol de ${m.user.name}`} value={m.role} disabled={busy || loading} onChange={e => void changeRole(m, e.target.value)}><option value="member">Cajero</option><option value="admin">Administrador</option></select> : m.role === "owner" ? "Dueño" : m.role === "admin" ? "Administrador" : m.role === "member" ? "Cajero" : "Rol sin verificar"}</td><td>{canManage(m) && <span className="admin-row-actions"><button className="btn small" data-testid="admin-member-reset" disabled={busy || loading} onClick={() => { setModalError(""); setModal({ kind: "reset", member: m }); }}>Restablecer contraseña</button><button className="btn danger" disabled={busy || loading} onClick={() => { setModalError(""); setModal({ kind: "remove", member: m }); }}>Quitar acceso</button></span>}</td></tr>)}</tbody></table>{!loading && members.length === 0 && <p className="muted">No se encontraron empleados.</p>}</div>}
     <dialog ref={dialog} className="admin-dialog" aria-labelledby="admin-user-title" onCancel={e => { e.preventDefault(); close(); }} onClose={close}>
-      <h3 id="admin-user-title">{modal === "create" ? created ? "Usuario creado" : "Crear usuario" : "Quitar acceso a la tienda"}</h3>
+      <h3 id="admin-user-title">{modal?.kind === "create" ? created ? "Usuario creado" : "Crear usuario" : modal?.kind === "reset" ? "Restablecer contraseña" : "Quitar acceso a la tienda"}</h3>
       {created ? <div className="admin-stack"><p>Ya puede ingresar con este usuario y la contraseña que elegiste.</p><output className="admin-secret" data-testid="admin-created-username">{created}</output><button className="btn primary" onClick={close}>Listo</button></div> : <form onSubmit={e => void submit(e)} className="admin-stack">
-        {modal === "create" ? <><label>Nombre completo<input name="name" data-testid="admin-user-name" required maxLength={120} autoFocus autoComplete="off" /></label><label>Usuario<input name="username" data-testid="admin-user-username" type="text" required maxLength={USERNAME_MAX_LENGTH} autoComplete="off" autoCapitalize="none" spellCheck={false} /></label><small>Solo minúsculas, números y . _ - · {USERNAME_MIN_LENGTH} a {USERNAME_MAX_LENGTH} caracteres. Sin arroba ni espacios.</small><label>Contraseña<input name="password" data-testid="admin-user-password" type="password" required minLength={12} maxLength={128} autoComplete="new-password" /></label><label>Rol<select name="role" data-testid="admin-user-role"><option value="member">Cajero</option>{isOwner && <option value="admin">Administrador</option>}</select></label></> : <p>¿Quitar el acceso de <strong>{modal?.user.name}</strong>? Su cuenta sigue existiendo, pero ya no podrá acceder a esta tienda.</p>}
+        {modal?.kind === "create" ? <>
+          <label htmlFor="admin-user-name">Nombre completo<input id="admin-user-name" name="name" data-testid="admin-user-name" required maxLength={120} autoFocus autoComplete="off" /></label>
+          <label htmlFor="admin-user-username">Usuario<input id="admin-user-username" name="username" data-testid="admin-user-username" type="text" required maxLength={USERNAME_MAX_LENGTH} autoComplete="off" autoCapitalize="none" spellCheck={false} /></label>
+          <small>Solo minúsculas, números y . _ - · {USERNAME_MIN_LENGTH} a {USERNAME_MAX_LENGTH} caracteres. Sin arroba ni espacios.</small>
+          <PasswordInput id="admin-user-password" label="Contraseña" name="password" data-testid="admin-user-password" required minLength={PASSWORD_MIN} maxLength={128} autoComplete="new-password" />
+          <label htmlFor="admin-user-role">Rol<select id="admin-user-role" name="role" data-testid="admin-user-role"><option value="member">Cajero</option>{isOwner && <option value="admin">Administrador</option>}</select></label>
+        </> : modal?.kind === "reset" ? <>
+          <p>Restablecé la contraseña de <strong>{modal.member.user.name}</strong> ({memberHandle(modal.member.user)}). Su cuenta sigue existiendo.</p>
+          <PasswordInput id="admin-reset-password" label="Nueva contraseña" name="newPassword" data-testid="admin-reset-password" required minLength={PASSWORD_MIN} maxLength={128} autoComplete="new-password" autoFocus hint={`Mínimo ${PASSWORD_MIN} caracteres. Al guardar se cierra la sesión que el empleado tenga abierta.`} />
+        </> : <p>¿Quitar el acceso de <strong>{modal?.member.user.name}</strong>? Su cuenta sigue existiendo, pero ya no podrá acceder a esta tienda.</p>}
         {modalError && <p role="alert" className="error">{modalError}</p>}
-        <div className="admin-actions"><button type="button" className="btn" disabled={busy} onClick={close}>Cancelar</button><button className={`btn ${modal === "create" ? "primary" : "danger"}`} data-testid="admin-user-submit" disabled={busy} aria-busy={busy}>{busy ? "Guardando…" : modal === "create" ? "Crear usuario" : "Confirmar eliminación"}</button></div>
+        <div className="admin-actions"><button type="button" className="btn" disabled={busy} onClick={close}>Cancelar</button><button className={`btn ${modal?.kind === "remove" ? "danger" : "primary"}`} data-testid="admin-user-submit" disabled={busy} aria-busy={busy}>{busy ? "Guardando…" : modal?.kind === "create" ? "Crear usuario" : modal?.kind === "reset" ? "Guardar contraseña" : "Confirmar eliminación"}</button></div>
       </form>}
     </dialog>
   </div>;
@@ -438,13 +476,13 @@ function Configuracion({ tenantId, settings, onSettingsChanged, showToast }: Loc
   return <div className="admin-stack" data-testid="admin-settings">
     {!online && <p className="warn-banner" data-testid="admin-settings-offline" role="status">Sin conexión: configuración cacheada de solo lectura. Los cambios requieren conexión.</p>}
     <form className="admin-stack" onSubmit={e => void save(e)}>
-      <fieldset className="card" disabled={!online || busy}><legend>Identidad fiscal y encabezado</legend><p className="muted">Solo se imprime la información que configurás.</p><div className="admin-grid">{textFields.map(([key, label, max]) => <label key={key}>{label}<input data-testid={`admin-setting-${key}`} maxLength={max} type={key === "phone" ? "tel" : "text"} value={draft[key] ?? ""} onChange={e => setDraft(d => ({ ...d, [key]: e.target.value || null }))} /></label>)}</div></fieldset>
+      <fieldset className="card" disabled={!online || busy}><legend>Identidad fiscal y encabezado</legend><p className="muted">Solo se imprime la información que configurás.</p><div className="admin-grid">{textFields.map(([key, label, max]) => <label key={key} htmlFor={`admin-setting-${key}`}>{label}<input id={`admin-setting-${key}`} data-testid={`admin-setting-${key}`} maxLength={max} type={key === "phone" ? "tel" : "text"} value={draft[key] ?? ""} onChange={e => setDraft(d => ({ ...d, [key]: e.target.value || null }))} /></label>)}</div></fieldset>
       <fieldset className="card" disabled={!online || busy}><legend>Ticket y crédito</legend><div className="admin-grid">
         <label>Prefijo del ticket<input data-testid="admin-setting-ticket_prefix" maxLength={8} value={draft.ticket_prefix ?? ""} onChange={e => setDraft(d => ({ ...d, ticket_prefix: e.target.value || null }))} /><small>Ejemplo: <output data-testid="admin-prefix-example">{formatTicketNo(draft.ticket_prefix, 123)}</output> · no cambia la secuencia.</small></label>
         <label>IVA (%)<input data-testid="admin-setting-iva_pct" type="number" min={0} max={100} step={1} value={draft.iva_pct ?? ""} onChange={e => setDraft(d => ({ ...d, iva_pct: e.target.value === "" ? null : Number(e.target.value) }))} /><small>Guardado para uso futuro — no se calcula aún.</small></label>
         <label>Cupo de crédito por defecto (COP)<input data-testid="admin-setting-default_credit_limit" type="number" min={0} max={2147483647} step={1} value={draft.default_credit_limit ?? ""} onChange={e => setDraft(d => ({ ...d, default_credit_limit: e.target.value === "" ? null : Number(e.target.value) }))} /><small>Precarga el alta de clientes; no modifica cupos existentes.</small></label>
       </div></fieldset>
-      <fieldset className="card admin-stack" disabled={!online || busy}><legend>Reglas de operación</legend>{toggles.map(([key, label, hint]) => <label key={key} className="admin-toggle"><input type="checkbox" data-testid={`admin-setting-${key}`} checked={draft[key]} onChange={e => setDraft(d => ({ ...d, [key]: e.target.checked }))} /><span>{label}<small>{hint}</small><small>Guardado actualmente: {settings[key] ? "activado" : "desactivado"}.</small></span></label>)}</fieldset>
+      <fieldset className="card admin-stack" disabled={!online || busy}><legend>Reglas de operación</legend>{toggles.map(([key, label, hint]) => <label key={key} className="admin-toggle" htmlFor={`admin-setting-${key}`}><input id={`admin-setting-${key}`} type="checkbox" data-testid={`admin-setting-${key}`} checked={draft[key]} onChange={e => setDraft(d => ({ ...d, [key]: e.target.checked }))} /><span>{label}<small>{hint}</small><small>Guardado actualmente: {settings[key] ? "activado" : "desactivado"}.</small></span></label>)}</fieldset>
       {error && <p className="error" role="alert">{error}</p>}
       <div className="admin-actions"><button className="btn primary" data-testid="admin-settings-save" disabled={!online || busy} aria-busy={busy}>{busy ? "Guardando…" : "Guardar configuración"}</button></div>
     </form>

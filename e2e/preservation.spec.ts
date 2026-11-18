@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { dbOne, wipeSalesAndCatalog } from "./helpers-db";
+import { createTenantViaFounder } from "./helpers-auth";
 
 const flag = "pos:e2e-preservation-offline";
 const runtimeErrors = new WeakMap<Page, string[]>();
@@ -23,7 +24,7 @@ async function setup(page: Page) {
   dbOne("UPDATE shifts SET status='closed'");
   const org = dbOne("SELECT id FROM organization WHERE slug='tienda-demo'");
   dbOne(`INSERT INTO shifts(id,tenant_id,client_uuid,status) VALUES(gen_random_uuid(),'${org}',gen_random_uuid(),'open')`);
-  expect((await page.request.post("/api/auth/sign-in/email", { data: { email: "owner@demo.test", password: "demo12345" } })).ok()).toBe(true);
+  expect((await page.request.post("/api/auth/sign-in/email", { data: { email: "owner@demo.test", password: "demo1234567890" } })).ok()).toBe(true);
   expect((await page.request.post("/api/auth/organization/set-active", { data: { organizationId: org } })).ok()).toBe(true);
   return org;
 }
@@ -43,7 +44,7 @@ async function sell(page: Page) {
   /* receipt opens only after the durable commit — dismiss before touching chrome */
   await page.getByTestId("receipt-close").click();
 }
-async function login(page: Page, email = "owner@demo.test", password = "demo12345") {
+async function login(page: Page, email = "owner@demo.test", password = "demo1234567890") {
   await page.getByTestId("login-identifier").fill(email);
   await page.getByTestId("login-password").fill(password);
   await page.getByTestId("login-submit").click();
@@ -107,16 +108,15 @@ for (const width of [375, 1440]) {
       expect(await localState(page)).toMatchObject({ tickets: 1, work: 5 });
       await page.evaluate(f => localStorage.removeItem(f), flag);
       const email = `other-${width}@recovery.test`;
-      expect((await page.request.post("/api/auth/sign-up/email", { data: { email, password: "other12345", name: "Otro comercio" } })).ok()).toBe(true);
-      const created = await page.request.post("/api/auth/organization/create", { data: { name: "Comercio ajeno", slug: `other-${width}` } });
-      expect(created.ok()).toBe(true);
-      const org = await created.json();
-      expect((await page.request.post("/api/auth/organization/set-active", { data: { organizationId: org.id } })).ok()).toBe(true);
+      // P0-1: founder plane only — /api/auth/organization/create is closed.
+      const orgId = await createTenantViaFounder(page.request, {
+        name: "Comercio ajeno", slug: `other-${width}`, email, password: "other1234567890",
+      });
       await page.reload();
       await expect(page.getByTestId("access-blocked")).toContainText("otro comercio");
       await expect(page.getByTestId("tab-tickets")).toHaveCount(0);
       expect(await localState(page)).toMatchObject({ tickets: 1, work: 5 });
-      expect(dbOne(`SELECT count(*) FROM tickets WHERE tenant_id='${org.id}'`)).toBe("0");
+      expect(dbOne(`SELECT count(*) FROM tickets WHERE tenant_id='${orgId}'`)).toBe("0");
       await page.screenshot({ path: info.outputPath(`tenant-blocked-${width}.png`), fullPage: true });
       await page.getByTestId("reauthenticate").click();
       await expect(page.getByTestId("recovery-note")).toBeVisible();

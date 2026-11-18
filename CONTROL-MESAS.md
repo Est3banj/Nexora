@@ -552,3 +552,216 @@ E2E_API_PORT=3101 E2E_WEB_PORT=5181 pnpm e2e
   se libera desde el board con «Liberar»). Aceptado para Fase 1.
 - **Cobro parcial / split / mover mesa** siguen fuera de alcance (Fase 3).
 - **Gate de cierre de caja con mesas abiertas** sin tocar (Fase 2, §4).
+
+---
+
+## Fase2 implementada — decisiones (multi-dispositivo)
+
+> **Gate completo en verde** (un worker, secuencial, árbol sin staged/commits,
+> sin builds, sin DB de dev, dev server intacto):
+>
+> | Paso | Resultado |
+> |---|---|
+> | `pnpm typecheck` (`-r`) | shared + api + web → **0 errores** |
+> | `pnpm lint` (`eslint .`) | **0 problemas** |
+> | `pnpm --filter @pos/shared test` | **3 archivos · 50 tests** ✓ |
+> | `pnpm --filter @pos/web exec vitest run --no-file-parallelism` | **18 archivos · 190 tests** ✓ |
+> | `pnpm --filter @pos/api exec vitest run` | **31 archivos · 297 tests** ✓ |
+> | `E2E_API_PORT=3101 E2E_WEB_PORT=5181 pnpm e2e` | **102 passed · 0 failed (11.7 m)** ✓ |
+
+### Decisiones tomadas
+
+1. **Entidades `table` / `order` / `order_line` byte-al-patrón.** Las tres en
+   `MUTATION_ENTITIES` + zod (`shared/mutations.ts`) + `applyOne`/`upsertEntity`
+   + `groupKeyOf` (`sync-apply.ts:groupKeyOf`), upsert LWW por mutación con
+   `client_ts` como en todas. `unique(tenant_id, client_uuid)` en ambas
+   DDL; `client_uuid` aditivo con backfill `= id` en los datadirs Fase 1.
+   Agrupación: cliente (`batch.ts`) y servidor comparten la clave
+   `order:{order_id}` (orden + líneas = UN grupo, como una venta); el
+   `table` viaja SOLO con dependencia topológica (`table_id`) para aterrizar
+   antes que su comanda.
+2. **«Guardar en Mesa» = mutaciones POR LÍNEA (no era wipe-and-reinsert).**
+   Verificado: `saveOrderToTable` ya hacía upsert por `variant_id` +
+   soft-delete de faltantes **en una sola tx**; lo que Fase 1 no hacía era
+   encolar. Fase 2 agrega, en la MISMA tx: `order_line` por cada línea
+   cambiada/insertada (client_uuid estable = id de la fila), `deleted_at` como
+   ESTADO en la mutation de las removidas, y `order` refrescado en cada
+   guardar. Dos dispositivos guardando líneas distintas no se pisan: cada
+   línea resuelve por LWW independiente. **Ningún test de Fase 1 tuvo que
+   romperse** (las transiciones pasan porque el board ya derivaba).
+3. **Doble cobro — doble defensa, sin claims/leases:**
+   - **(a) Frescura en `prepareCheckout`** (el choke-point que comparten
+     todos los entry points de cobro, ANTES del modal): `GET /api/orders/open`
+     ⇒ si la orden está en `closed_orders` (tombstone) o el server tiene
+     OTRA comanda abierta en esa mesa ⇒ bloqueo con «Esta mesa se cobró en
+     otro dispositivo — el tablero se actualizó» (o «se está atendiendo en
+     otro dispositivo» para el fork), `pullOpenOrders` inmediato + refresh
+     vía `onStaleOrder` → `refreshToken`. Offline/sin respuesta ⇒ sin check
+     (offline-first).
+   - **(b) Backstop server: `tickets.order_id` único** (índice parcial
+     `WHERE order_id IS NOT NULL` en AMBOS schemas + pre-check en-tx
+     `ne(id, cu)`). Manejo idéntico al oversell backstop: pre-check ⇒
+     `InvalidSync` ⇒ `rejected: validation`; carrera de índice ⇒
+     `rejectedConstraint()` mapea el 23505 de esos dos índices
+     (`tickets_tenant_order_id_uq`, `orders_tenant_table_open_uq`) a
+     `validation`, **NUNCA a `db_error`** — eso era justamente el «estado
+     malo de cola» que el encargo mandaba reportar antes de inventar:
+     `db_error` reintenta para siempre y apararía un cobro duplicado en la
+     cola. Con `validation` el cliente sigue el patrón existente:
+     determinista → `poison` a los 3 intentos (aislado, visible, preservado,
+     con «Reintentar tras corregir» en el banner). **Test: misma sesión y
+     DOS sesiones concurrentes ⇒ exactamente 1 ticket, perdedor con
+     `reason: "validation"`.**
+4. **Pull `GET /api/orders/open`** (tenant-scoped, `requireAuth` — miembros
+   incluidos, `Cache-Control: no-store`): tableros derivados
+   (`available|occupied|billing` + items/total con el mismo math local),
+   comandas `open` (billing como flag `billing_at`), TODAS sus líneas
+   (incl. soft-deleteds, para replicar remociones) y `closed_orders`
+   (tombstones acotados a 200). `Mesas.tsx` refresca con RE-FETCH en: montar
+   la pestaña, `focus`, `online` y cambio de `refreshToken` (tras
+   guardar/cobrar) — nunca reload. Merge en `sync/open-orders.ts`: filas con
+   mutación local en vuelo NO se pisan (la excepción son los tombstones:
+   verdad terminal del server > fantasma «ocupada»), upsert del resto,
+   guardas de divergencia (comanda bifurcada + nombre de mesa duplicado).
+5. **Rehydrate (web + api) con paginación de Tanda 2.** `tables`, `orders` y
+   `order_lines` (líneas de ESTA página de órdenes, patrón `listByTickets`)
+   vuelan en cada página de `GET /api/rehydrate` y entran al local con
+   `ON CONFLICT DO NOTHING`. Test: fixture con órdenes ⇒ dispositivo nuevo
+   las ve en el board (lado API) + `applyRehydratePage` (lado web).
+6. **Cierre de caja bloqueado con mesas abiertas.** En `Arqueo.handleClose`,
+   después del flush online: `N` = unión de órdenes locales abiertas y las
+   del server (si responde) ⇒ `«Hay N mesas con comandas abiertas — cobralas
+   o libralas antes de cerrar»` (visible, `arqueo-error`). Data-layer backstop
+   en `closeLocalShift` (`OPEN_ORDERS_EXIST`) para el path offline y para la
+   carrera entre pantalla y tx. Tests: unit (`arqueo-local`) + e2e en
+   `corte.spec` (bloquea → liberar → cierra).
+7. **Estado de mesa: DERIVADO (decisión 8 elegida — derivar).** Todo lector
+   (`listTables`/`getTable`/`listBoardTables`/`loadTableOrder`/
+   `ensureOpenOrder`/`closeOrCancel`/`setTableBilling`/guardia
+   `TABLE_IN_USE`) pasa a `LEFT JOIN LATERAL` sobre la comanda `open` más
+   antigua. `tables.status/current_order_id/opened_at` quedan como columnas
+   LEGACY en ambos DDL (paridad + datos viejos), **sin leer ni escribir**;
+   «Pedir cuenta» es `orders.billing_at` (muere con la orden). Superficie de
+   conflicto LWW sobre mesas reducida a CATÁLOGO (name/zone/capacity/active).
+   Tests Fase 1 de estado pasaron sin cambios porque ya asumían la
+   normalización por join.
+8. **Autoridad de member.** `table` es catálogo ⇒ prohibido para
+   `member` (pre-scan de la ruta + `validateMemberHints`, mismo trato que
+   category/product — decisión #5 de Fase 1 server-side). `order`/`order_line`
+   abiertos a cualquier rol: atender mesa ES vender. Test incluido.
+9. **Terminalidad de comanda.** `closed`/`cancelled` son FINALES en el
+   server (guard igual al de `payments` en `sync-apply`): un `open` LWW de un
+   dispositivo viejo jamás resucita una comanda cobrada.
+10. **Backfill de upgrade (Fase 1 → Fase 2).** Las mesas/comandas que Fase 1
+    dejó SIN sync_log se encolan una vez por boot (`backfillMesasMutations`,
+    antes del primer drain): TODAS las mesas + comandas ABERTAS y sus
+    líneas. El histórico Fase 1 cerrado queda device-local a propósito (ningún
+    otro dispositivo lo vio abierto; sus tickets ya llevan `table_name`).
+    Idempotente y jamás pisa una edición encolada (test).
+11. **`table_name` + `order_id` en tickets.** El ticket del cobro lleva
+    `order_id` en payload/DB — es la llave del backstop (b). Los counter
+    sales mandan `null` (el índice parcial los ignora).
+
+### Límites documentados (a propósito)
+
+- **Ventana de carrera residual (a)→(b):** entre el fetch de frescura y el
+  commit pueden pasar segundos (el cajero cuenta el efectivo). Si otro
+  dispositivo cobra en esa ventana, gana (b): exactamente 1 ticket; el
+  perdedor queda `rejected: validation` → `poison` visible en el banner de
+  sync con «Reintentar tras corregir». **No hay claims/leases** (decisión).
+- **Stock SIN reservas:** igual que Fase 1 — se debita recién al cobro
+  (`commitLocalSale` intacto); dos mesas pueden pedir el último plato y el
+  backstop de oversell server sólo actúa en el cobro. Reportes NO invadidos.
+- **Cobro con OFFLINE en la frestura:** sin fetch no hay check (offline-first);
+  el backstop (b) sigue aplicando cuando la cola drena.
+- **Gate de cierre de caja es CLIENT-side** (pantalla + `closeLocalShift`).
+  El endpoint server `POST /api/shifts/:id/close` NO valida mesas: una mesa
+  abierta en OTRO dispositivo después del check del cliente puede colar un
+  cierre online (ventana de milisegundos, post-flush). Aceptado; subirlo al
+  server arriesga envenenar cierres legítimos por carrera (reportado, no
+  inventado).
+- **Comanda bifurcada (dos dispositivos offline abren la misma mesa):** el
+  server acepta UNA (`orders_tenant_table_open_uq`), la del otro dispositivo
+  queda `poison` + guardas de merge/frescura impiden servirla; se resuelve
+  «Liberando» la local (el push del `cancelled` limpio pasa el guard
+  terminal). Sin merge automático (LWW sin merge, como todo el protocolo).
+- **Comanda con >48 líneas:** el grupo (1 orden + N líneas) supera el cap
+  `MUTATION_BATCH_MAX=50` y cae al path de snapshot de venta que exige
+  ≥1 payment ⇒ rechazo determinista ⇒ `poison`. Límite heredado del diseño
+  de Fase 1 (documentado, no nuevo); en la práctica una comanda típica queda
+  muy por debajo.
+- **Tombstones acotados:** `closed_orders` = 200 filas más recientes; si el
+  server no conoce una orden local pendiente de push, no se concluye nada
+  (la frestura solo bloquea con evidencia: tombstone u otra orden abierta).
+- **Tablas en el pull:** tope 500 por respuesta; colisión de nombre activo
+  entre una mesa local y una remota queda en «operatoria» (skip + board local),
+  nunca aborta la transacción de merge.
+- **Histórico Fase 1 cerrado no se sincroniza** (ver backfill) — solo
+  afecta a datos previos a este deploy.
+
+### Qué NO se hizo (sigue en Fase 3)
+
+- Split / mover mesa, comandas a cocina (`order_lines.state` + impresora),
+  board multi-sala/layout, **cobro parcial / abonos sobre cuenta**,
+  reutilización de tickets. Nada de eso fue pedido en esta fase.
+- Sin columnas nuevas en reportes/arqueo (excepto el gate del punto 6, que
+  es de UI+data-local, no de reportes).
+- Sin `op: delete` (todo es estado/upsert, como el protocolo actual).
+
+### Tests nuevos / actualizados
+
+- **Nuevos API:** `apps/api/test/mesas-sync.test.ts` (14): idempotencia
+  double-push de las 3 entidades, LWW de línea, guard terminal, un-open-por-
+  mesa, doble cobro misma sesión y DOS SESIONES concurrentes (exactamente 1
+  ticket + rechazo `validation`), counter-sale intacto, `GET /api/orders/open`
+  (401 / no-store / estado derivado / billing / tombstones / member 200 /
+  tenant-scoped), rehydrate con fixture de órdenes, autoridad de member.
+- **Actualizados API:** `schema-contract.test.ts` (+3 tablas en
+  `SHARED_TABLES`, +10 índices en `EXPECTED_INDEXES`, uniques por cliente y
+  test de los 2 índices parciales nuevos).
+- **Nuevos web:** `apps/web/test/open-orders.test.ts` (7: rehydrate de
+  comandas, pull, offline-first, no-pisar-ediciones-en-coladas, tombstones,
+  fork guard) y en `local-orders.test.ts` (+4: encolado por escritura,
+  backfill idempotente) y `arqueo-local.test.ts` (+1: gate de cierre).
+- **E2E:** `mesas.spec` — comentario «device-local» reescrito con honestidad
+  (liberar SÍ empuja `order=cancelled`, sigue sin ticket/pago/stock), poll
+  para server-truth del cobro directo, y test NUEVO «otro dispositivo»:
+  mesa abierta seedeada vía `POST /api/sync/mutations` ⇒ aparece tras
+  `focus`, es servible (retoma la comanda) y la segunda aparece tras
+  re-entrar al tablero. `corte.spec` — test NUEVO del gate de cierre
+  (bloquea con el conteo → liberar → cierra) + restauración del turno abierto
+  (patrón `cash-movements.afterEach`; sin eso la anulación de `fiado` rompe
+  porque exige turno abierto — descubierto y corregido en el gate).
+  `helpers-db.wipeSalesAndCatalog` ahora limpia `order_lines/orders/tables`.
+
+### Archivos (mapa)
+
+- **Shared:** `mutations.ts` (3 entidades + zod + `ticket.order_id`),
+  `local-schema.ts` (`MESAS_MIGRATION_SQL` con client_uuid/billing_at/
+  order_id + índices parciales, interpolada en `LOCAL_SCHEMA_SQL` = baseline).
+- **API:** `db/schema.ts` (+3 tablas Drizzle + `tickets.order_id`),
+  `db/sync-apply.ts` (groupKeyOf/rank/applyOne/catch), `db/scope.ts` (repos),
+  `db/migrate-mesas.ts` (DDL completo), `sync/route.ts` (member vs `table`),
+  `routes/rehydrate.ts` (+colecciones), **`routes/orders.ts` (nuevo GET)**,
+  `app.ts` (registro).
+- **Web:** `db/local-orders.ts` (deriva + enqueues + backfill + count),
+  `db/local.ts` (`order_id` en ticket + gate `closeLocalShift`),
+  **`sync/open-orders.ts` (nuevo pull/frescura)**, `sync/rehydrate.ts`
+  (+colecciones), `sync/batch.ts` (grupos `order:` + deps), `screens/Mesas.tsx`
+  (re-fetch focus/online/montaje), `screens/Sale.tsx` (frescura),
+  `screens/Arqueo.tsx` (gate), `App.tsx` (backfill + `onStaleOrder`),
+  `db/pglite.ts` (comentario del open path).
+- **E2E/tests:** `mesas.spec`, `corte.spec`, `helpers-db.ts`,
+  `test/mesas-sync.test.ts`, `test/open-orders.test.ts`,
+  `test/local-orders.test.ts`, `test/arqueo-local.test.ts`,
+  `test/schema-contract.test.ts`.
+
+### Pendientes / deuda conocida
+
+- Subir el gate de cierre al server `POST /api/shifts/:id/close` (requiere
+  resolver la carrera de cierre legítimo vs. mesa abierta tardía — hoy
+  documentado arriba).
+- Aislamiento cross-tenant de `tables/orders/order_lines` en
+  `isolation.test.ts` (la varita de 12 tablas de D4-3 no se extendió; la
+  lectura cross-tenant del pull SÍ está cubierta por el test de authz).
+- `op: delete` / merge real entre comandas bifurcadas: fuera de alcance.

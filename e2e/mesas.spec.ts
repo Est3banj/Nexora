@@ -1,17 +1,22 @@
 import { expect, test, type Page } from "@playwright/test";
+import { randomUUID } from "node:crypto";
 import { dbOne, wipeSalesAndCatalog } from "./helpers-db";
-import { createOrgUser } from "./helpers-auth";
+import { createOrgUser, createTenantViaFounder } from "./helpers-auth";
 import { navigate } from "./helpers-navigation";
 
 /**
- * Fase 1 · Control de Mesas & Comandas (CONTROL-MESAS.md).
+ * Control de Mesas & Comandas (CONTROL-MESAS.md) — Fase 1 flows + Fase 2
+ * multi-dispositivo.
  *
  *  - happy path: board → abrir mesa → agregar → guardar → retomar →
  *    cobro efectivo → mesa libre + ticket con `table_name` + cobro en caja;
  *  - edge: liberar sin cobrar (confirmación, SIN ticket), guard de salida
  *    con cambios sin guardar, «Pedir cuenta» → estado billing;
  *  - Admin CRUD de mesas (patrón Cajas/Empleados);
- *  - el cajero ve el tablero pero NO «+ Agregar Mesa».
+ *  - el cajero ve el tablero pero NO «+ Agregar Mesa»;
+ *  - FASE 2: comandas now SYNC (orders/order_line are mutation entities) —
+ *    an open mesa seeded by «another device» through POST /api/sync/mutations
+ *    appears on the board after the focus/mount re-fetch and is servable.
  *
  * Screenshots are captured to the evidence dir for the human visual audit —
  * they are NEVER read back by the test.
@@ -24,7 +29,7 @@ async function login(page: Page, identifier = "owner@demo.test") {
   await page.goto("/");
   await page.getByTestId("login-identifier").fill(identifier);
   await page.getByTestId("login-password").fill(
-    identifier === "owner@demo.test" ? "demo12345" : "roles-test-only-123",
+    identifier === "owner@demo.test" ? "demo1234567890" : "roles-test-only-123",
   );
   await page.getByTestId("login-submit").click();
   await expect(page.getByTestId("tab-sale")).toBeVisible();
@@ -182,6 +187,10 @@ test.describe("Mesas · happy path", () => {
       .toBe("Mesa 1");
     expect(dbOne("SELECT count(*) FROM payments")).toBe("1");
     expect(dbOne("SELECT method FROM payments")).toBe("cash");
+    /* Fase 2: the comanda itself reached the server as settled (sync entity) */
+    await expect
+      .poll(() => dbOne("SELECT state FROM orders"), { timeout: 15_000 })
+      .toBe("closed");
     await navigate(page, "arqueo");
     await expect(page.getByTestId("expected-cash")).toContainText("4.000");
     await page.screenshot({
@@ -314,12 +323,25 @@ test.describe("Mesas · edges", () => {
     await expect(card(page, "Mesa Libre").getByTestId("table-badge")).toHaveText(
       "DISPONIBLE",
     );
-    /* NO ticket, NO payment, NO stock movement */
+    /* NO ticket, NO payment, NO stock movement.
+       FASE 2 HONESTY: «liberar» DOES push now — the `order` mutation goes
+       to the server as `cancelled` (orders are sync entities since Fase 2),
+       while tickets/payments/stock stay untouched (there was no cobro).
+       Force the drain before reading SERVER truth, same pattern as
+       annul-code/d3-oversell, and pin BOTH sides of that statement. */
+    await page.evaluate(() =>
+      (window as unknown as { __pos: { pushNow: () => Promise<void> } }).__pos.pushNow(),
+    );
+    await expect
+      .poll(() => dbOne("SELECT state FROM orders"), { timeout: 15_000 })
+      .toBe("cancelled");
     expect(dbOne("SELECT count(*) FROM tickets")).toBe("0");
     expect(dbOne("SELECT count(*) FROM payments")).toBe("0");
-    expect(dbOne("SELECT stock FROM product_variants WHERE name='Único'")).toBe(
-      "20",
-    );
+    await expect
+      .poll(() => dbOne("SELECT stock FROM product_variants WHERE name='Único'"), {
+        timeout: 15_000,
+      })
+      .toBe("20");
   });
 
   test("«Pedir cuenta» pasa la mesa a POR COBRAR", async ({ page }) => {
@@ -375,7 +397,10 @@ test.describe("Mesas · edges", () => {
     await expect(
       card(page, "Mesa Directa").getByTestId("table-badge"),
     ).toHaveText("DISPONIBLE");
-    expect(dbOne("SELECT table_name FROM tickets")).toBe("Mesa Directa");
+    /* server truth rides the async queue — POLL like the happy path does */
+    await expect
+      .poll(() => dbOne("SELECT table_name FROM tickets"), { timeout: 15_000 })
+      .toBe("Mesa Directa");
   });
 
   test("selector rápido de mesas: guardar un carrito de mostrador en una mesa", async ({
@@ -493,15 +518,10 @@ test.describe("Mesas · Admin + roles", () => {
   }) => {
     /* own tenant so the member's board is empty and isolated */
     const tag = `mesas-${Date.now()}`;
-    const signup = await page.request.post("/api/auth/sign-up/email", {
-      data: { name: "Dueña Mesas", email: `${tag}@test.dev`, password: "mesas-test-only-123" },
+    // P0-1: founder plane only — /api/auth/organization/create is closed.
+    const org = await createTenantViaFounder(page.request, {
+      name: "Tienda Mesas", slug: tag, email: `${tag}@test.dev`, password: "mesas-test-only-123",
     });
-    expect(signup.ok()).toBe(true);
-    const created = await page.request.post("/api/auth/organization/create", {
-      data: { name: "Tienda Mesas", slug: tag },
-    });
-    expect(created.ok()).toBe(true);
-    const org = (await created.json()).id as string;
 
     const staffContext = await browser.newContext({
       baseURL: test.info().project.use.baseURL,
@@ -530,5 +550,105 @@ test.describe("Mesas · Admin + roles", () => {
     } finally {
       await staffContext.close();
     }
+  });
+});
+
+test.describe("Mesas · multi-dispositivo (Fase 2)", () => {
+  test.use({ viewport: { width: 1440, height: 1000 } });
+
+  test("otro dispositivo: mesa abierta seedeada vía API aparece tras focus y re-entrada", async ({
+    page,
+  }) => {
+    wipeSalesAndCatalog();
+    await login(page);
+    await seedProduct(page, "Remota E2E", 4000);
+    const variantId = dbOne("SELECT id FROM product_variants WHERE name = 'Único'");
+    await navigate(page, "mesas");
+    await expect(page.getByTestId("mesas-empty")).toBeVisible();
+
+    const ts = Date.now();
+    const seedOpenMesa = (name: string) => {
+      const tableId = randomUUID();
+      const orderId = randomUUID();
+      const lineId = randomUUID();
+      return [
+        {
+          client_uuid: tableId,
+          client_ts: ts,
+          entity: "table",
+          op: "upsert",
+          payload: { name, zone: "Salón", capacity: 4, active: true },
+        },
+        {
+          client_uuid: orderId,
+          client_ts: ts + 1,
+          entity: "order",
+          op: "upsert",
+          payload: {
+            table_id: tableId,
+            state: "open",
+            opened_at: new Date(ts).toISOString(),
+            closed_at: null,
+            billing_at: null,
+          },
+        },
+        {
+          client_uuid: lineId,
+          client_ts: ts + 2,
+          entity: "order_line",
+          op: "upsert",
+          payload: {
+            order_id: orderId,
+            variant_id: variantId,
+            name: "Remota E2E Único",
+            price: 4000,
+            qty: 1,
+            sort: 0,
+            deleted_at: null,
+          },
+        },
+      ];
+    };
+
+    /* the "other device": open mesa pushed through the PUBLIC sync API with
+     * this session's cookies (tenant comes from the session, never the body) */
+    const push = async (name: string) => {
+      const res = await page.request.post("/api/sync/mutations", {
+        data: { mutations: seedOpenMesa(name) },
+      });
+      expect(res.status()).toBe(200);
+      const body = (await res.json()) as { results: Array<{ status: string; reason?: string }> };
+      expect(body.results.map((r) => r.status)).toEqual(["applied", "applied", "applied"]);
+    };
+
+    await push("Mesa Remota");
+    const remote = page.getByTestId("table-card").filter({ hasText: "Mesa Remota" });
+    /* the board mounted BEFORE the seed and has no polling → nothing yet */
+    await expect(remote).toHaveCount(0);
+
+    /* FOCUS refresh (window focus event) → pull → the foreign mesa shows */
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(remote).toBeVisible();
+    await expect(remote.getByTestId("table-badge")).toHaveText("OCUPADA");
+    await expect(remote.getByTestId("table-total")).toContainText("4.000");
+    await expect(page.getByTestId("count-occupied")).toHaveText("● Ocupada (1)");
+    await page.screenshot({
+      path: `${evidence}/mesas-1440-cross-device.png`,
+      fullPage: true,
+    });
+
+    /* and it is SERVABLE: «Abrir / Cobrar» resumes the foreign comanda */
+    await remote.getByTestId("table-charge").click();
+    await expect(page.getByTestId("cart-count")).toHaveText("1 ítems");
+    await expect(page.getByTestId("cart-total")).toContainText("4.000");
+
+    /* second seed while AWAY from the tab → MOUNT re-fetch on re-entry */
+    await push("Mesa Remota 2");
+    await navigate(page, "tickets"); // leave-pos guard discards the cart (helper)
+    await navigate(page, "mesas");
+    const remote2 = page.getByTestId("table-card").filter({ hasText: "Mesa Remota 2" });
+    await expect(remote2).toBeVisible();
+    await expect(remote2.getByTestId("table-total")).toContainText("4.000");
+    await expect(page.getByTestId("count-occupied")).toHaveText("● Ocupada (2)");
   });
 });

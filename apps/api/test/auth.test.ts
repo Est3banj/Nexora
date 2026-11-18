@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { getAuth } from "../src/auth/auth";
+import { authOptions, getAuth } from "../src/auth/auth";
+import { authLogger, scrubPII } from "../src/auth/logger";
+import { setUserPassword } from "../src/auth/password";
 import { authHeaders, buildTestApp, createTenant, resetTables, signIn, signInUsername, type Actor } from "./helpers";
 import { closeDb } from "../src/db";
 
@@ -273,5 +275,91 @@ describe("username sign-in", () => {
     expect(res.statusCode).toBe(200);
     const user = res.json().data?.user ?? res.json().user;
     expect(user.username ?? null).toBeNull();
+  });
+});
+
+/**
+ * P2-5 · PASSWORD_MIN is a CREATION floor, never a login gate.
+ * Evidence in better-auth 1.7.19: `assertPasswordNotTooShort` is called from
+ * `sign-up.mjs:153` and `password.mjs:152` (reset) — `sign-in.mjs:316` only
+ * asserts the MAX. Raising the floor must not lock existing accounts out.
+ */
+describe("P2-5 · password floor applies to creation only", () => {
+  it("sign-up below PASSWORD_MIN is rejected before any row exists", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/sign-up/email",
+      payload: { name: "Corta", email: "corta@tenant.test", password: "corta12" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe("PASSWORD_TOO_SHORT");
+    const again = await app.inject({
+      method: "POST",
+      url: "/api/auth/sign-in/email",
+      payload: { email: "corta@tenant.test", password: "corta12" },
+    });
+    expect(again.statusCode).toBe(401);
+  });
+
+  it("sign-in does NOT validate the floor: a sub-floor credential still opens a session", async () => {
+    // Written through the reset helper (the same code path the admin reset
+    // uses), so this also proves `updatePassword` really rotates an existing
+    // credential account.
+    await setUserPassword(owner.userId, "corta");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/sign-in/email",
+      payload: { email: owner.email, password: "corta" },
+    });
+    expect(res.statusCode).toBe(200);
+  });
+});
+
+/**
+ * P1-5 · better-auth logs to its own console logger, not to pino, so the only
+ * levers are `level` (drops the flagged `sign-up.mjs:194` info line) and the
+ * `log` sink (scrubs e-mail tokens from anything that still gets printed).
+ */
+describe("P1-5 · better-auth logger policy", () => {
+  it("level is pinned at warn and the sink scrubs e-mail tokens", () => {
+    expect(authLogger.level).toBe("warn");
+    expect(authOptions.logger).toBe(authLogger);
+    const flagged = "Sign-up attempt for existing email: ana.perez@nexora.local";
+    expect(scrubPII(flagged)).toBe("Sign-up attempt for existing email: [email]");
+    expect(scrubPII(flagged)).not.toContain("ana.perez");
+    // No false positives on ordinary copy.
+    expect(scrubPII("Password is too short")).toBe("Password is too short");
+  });
+
+  /**
+   * Integration proof against better-auth's OWN logger factory: the flagged
+   * `sign-up.mjs:194` line is an `info`, so at level `warn` it must never
+   * reach the sink; anything that does reach it (warn/error) must come out
+   * with the address replaced.
+   */
+  it("the live better-auth logger drops info and scrubs the e-mail from what still prints", async () => {
+    const ctx = await getAuth().$context;
+    expect(ctx.logger.level).toBe("warn");
+    const printed: string[] = [];
+    const original = { log: console.log, warn: console.warn, error: console.error };
+    console.log = (...args: unknown[]) => { printed.push(String(args[0])); };
+    console.warn = (...args: unknown[]) => { printed.push(String(args[0])); };
+    console.error = (...args: unknown[]) => { printed.push(String(args[0])); };
+    try {
+      // The real level of sign-up.mjs:194 → suppressed before the sink.
+      ctx.logger.info("Sign-up attempt for existing email: ana.perez@nexora.local");
+      // Hypothetical level raise → the sink must scrub instead.
+      ctx.logger.warn("Sign-up attempt for existing email: ana.perez@nexora.local");
+      ctx.logger.error("failure for ana.perez@nexora.local");
+    } finally {
+      console.log = original.log;
+      console.warn = original.warn;
+      console.error = original.error;
+    }
+    expect(printed).toHaveLength(2);
+    const output = printed.join("\n");
+    expect(output).toContain("[email]");
+    expect(output).not.toContain("ana.perez@nexora.local");
+    expect(output).not.toContain("ana.perez");
   });
 });

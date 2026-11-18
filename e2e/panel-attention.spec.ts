@@ -18,7 +18,7 @@ test.describe("Panel — attention metrics", () => {
 
     await page.goto("/");
     await page.getByTestId("login-identifier").fill("owner@demo.test");
-    await page.getByTestId("login-password").fill("demo12345");
+    await page.getByTestId("login-password").fill("demo1234567890");
     await page.getByTestId("login-submit").click();
     await expect(page.getByTestId("tab-sale")).toBeVisible();
 
@@ -97,7 +97,7 @@ test.describe("Panel — attention metrics", () => {
 
     await page.goto("/");
     await page.getByTestId("login-identifier").fill("owner@demo.test");
-    await page.getByTestId("login-password").fill("demo12345");
+    await page.getByTestId("login-password").fill("demo1234567890");
     await page.getByTestId("login-submit").click();
     await expect(page.getByTestId("tab-sale")).toBeVisible();
 

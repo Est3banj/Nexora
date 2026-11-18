@@ -7,6 +7,7 @@ import { migrateSaleStage } from "../src/db/sale-stage";
 import { randomUUID } from "node:crypto";
 import { mutationEnvelopeSchema, type MutationEnvelope } from "@pos/shared";
 import { getAuth } from "../src/auth/auth";
+import { pool } from "../src/db";
 
 // `id: string` (not the randomUUID template literal) so callers can pass an
 // EXISTING row id as the replay key (e.g. variant refreshes keyed by
@@ -85,49 +86,101 @@ export type Actor = {
 };
 
 /**
+ * P0-1 · bootstrap platform-admin FACTORY.
+ *
+ * `POST /api/auth/organization/create` is closed (app.ts membershipWriters):
+ * tenant creation is the founder plane's job and it demands the
+ * `platformAdmin` flag. Every test tenant therefore goes through ONE
+ * disposable admin that owns NO tenant of its own — `createTenant` signs it
+ * in, flags it and re-signs it so `getSession` reads the fresh row (same
+ * pattern as founder-api.test.ts).
+ */
+const BOOTSTRAP_ADMIN = {
+  email: "bootstrap-admin@platform.test",
+  password: "bootstrap-admin-123",
+};
+
+async function bootstrapAdminCookie(app: FastifyInstance): Promise<string> {
+  const { email, password } = BOOTSTRAP_ADMIN;
+  const signUp = await app.inject({
+    method: "POST",
+    url: "/api/auth/sign-up/email",
+    payload: { email, password, name: "Founder Test" },
+  });
+  if (signUp.statusCode !== 200) {
+    const signInRes = await app.inject({
+      method: "POST",
+      url: "/api/auth/sign-in/email",
+      payload: { email, password },
+    });
+    if (signInRes.statusCode !== 200) {
+      throw new Error(`bootstrap admin sign-in failed: ${signInRes.statusCode} ${signInRes.body}`);
+    }
+  }
+  await pool.query(`UPDATE "user" SET "platformAdmin" = true WHERE email = $1`, [email]);
+  // fresh sign-in so getSession reloads platformAdmin from the user row
+  const fresh = await app.inject({
+    method: "POST",
+    url: "/api/auth/sign-in/email",
+    payload: { email, password },
+  });
+  if (fresh.statusCode !== 200) {
+    throw new Error(`bootstrap admin re-sign-in failed: ${fresh.statusCode} ${fresh.body}`);
+  }
+  return cookieHeader(fresh);
+}
+
+/**
  * Signs up a user, creates their tenant organization and sets it active —
  * all over real HTTP (app.inject on the better-auth routes), so the session
  * cookie we get back is exactly what a browser would hold.
+ *
+ * P0-1 · the org is created through the FOUNDER plane
+ * (POST /api/founder/tenants → createTenantWithFirstUser), the sanctioned
+ * production path: the bootstrap platform-admin creates the tenant and the
+ * FIRST USER is `opts.email`, who then owns it. The HTTP shortcut
+ * `/api/auth/organization/create` is closed to everybody.
  */
 export async function createTenant(
   app: FastifyInstance,
   opts: { email: string; password?: string; orgSlug: string; orgName?: string },
 ): Promise<Actor> {
   const password = opts.password ?? "password1234";
+  const adminCookie = await bootstrapAdminCookie(app);
 
-  const signUp = await app.inject({
+  const created = await app.inject({
     method: "POST",
-    url: "/api/auth/sign-up/email",
-    payload: { email: opts.email, password, name: opts.email.split("@")[0] },
+    url: "/api/founder/tenants",
+    headers: { cookie: adminCookie },
+    payload: {
+      name: opts.orgName ?? opts.orgSlug,
+      slug: opts.orgSlug,
+      email: opts.email,
+      password,
+    },
   });
-  if (signUp.statusCode !== 200) {
-    throw new Error(`sign-up failed: ${signUp.statusCode} ${signUp.body}`);
+  if (created.statusCode !== 201) {
+    throw new Error(`founder tenant create failed: ${created.statusCode} ${created.body}`);
   }
-  const cookie = cookieHeader(signUp);
-  const userId = signUp.json().data?.user?.id ?? signUp.json().user?.id;
+  const body = created.json() as {
+    tenant: { id: string };
+    first_user: { id: string };
+  };
+  const orgId = body.tenant.id;
+  const userId = body.first_user.id;
 
-  const orgRes = await app.inject({
-    method: "POST",
-    url: "/api/auth/organization/create",
-    headers: { cookie },
-    payload: { name: opts.orgName ?? opts.orgSlug, slug: opts.orgSlug },
-  });
-  if (orgRes.statusCode !== 200) {
-    throw new Error(`org create failed: ${orgRes.statusCode} ${orgRes.body}`);
-  }
-  const org = orgRes.json().data ?? orgRes.json();
-
+  const cookie = await signIn(app, { email: opts.email, password });
   const activeRes = await app.inject({
     method: "POST",
     url: "/api/auth/organization/set-active",
     headers: { cookie },
-    payload: { organizationId: org.id },
+    payload: { organizationId: orgId },
   });
   if (activeRes.statusCode !== 200) {
     throw new Error(`set-active failed: ${activeRes.statusCode} ${activeRes.body}`);
   }
 
-  return { email: opts.email, password, userId, orgId: org.id, cookie };
+  return { email: opts.email, password, userId, orgId, cookie };
 }
 
 /** Fresh sign-in of an existing user (stale-active-org scenarios). */

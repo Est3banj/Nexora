@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { authClient, loginErrorMessage } from "../auth";
+import { PasswordInput } from "../components/PasswordInput";
 
 /**
  * ONE identity field: "Usuario o correo".
@@ -60,11 +61,10 @@ export function Login({ recovery = false, onAuthenticated }: { recovery?: boolea
           value={identifier}
           onChange={(e) => setIdentifier(e.target.value)}
         />
-        <label htmlFor="password">Contraseña</label>
-        <input
+        <PasswordInput
           id="password"
+          label="Contraseña"
           data-testid="login-password"
-          type="password"
           autoComplete="current-password"
           required
           value={password}

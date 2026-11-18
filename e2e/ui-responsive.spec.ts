@@ -1,17 +1,25 @@
 import { expect, test, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { dbOne } from "./helpers-db";
+import { createTenantViaFounder } from "./helpers-auth";
 import { navigate } from "./helpers-navigation";
 
 const evidence = "/var/folders/zq/6h6qz_616b371m8v3q93wklh0000gn/T/opencode";
 
-async function tenant(page: Page, name = "Auditoría UI") {
+async function tenant(page: Page, displayName?: string) {
   const id = randomUUID();
-  expect((await page.request.post("/api/auth/sign-up/email", { data: { name, email: `ui-${id}@test.dev`, password: "ui-test-only-123" } })).ok()).toBe(true);
-  const response = await page.request.post("/api/auth/organization/create", { data: { name: "Comercio UI", slug: `ui-${id}` } });
-  expect(response.ok()).toBe(true);
-  const org = (await response.json()).id as string;
-  expect((await page.request.post("/api/auth/organization/set-active", { data: { organizationId: org } })).ok()).toBe(true);
+  const email = `ui-${id}@test.dev`;
+  // P0-1: founder plane only — /api/auth/organization/create is closed.
+  const org = await createTenantViaFounder(page.request, {
+    name: "Comercio UI", slug: `ui-${id}`, email, password: "ui-test-only-123",
+  });
+  // The founder route derives the first user's name from the email local
+  // part; a spec that stresses LONG actor names (shift-actor layout) renames
+  // the row before page.goto — get-session joins the user table fresh, so the
+  // session the app mounts with already carries the new name.
+  if (displayName) {
+    dbOne(`UPDATE "user" SET name='${displayName.replaceAll("'", "''")}' WHERE email='${email}'`);
+  }
   return org;
 }
 
@@ -220,6 +228,7 @@ test("failed local queries are retryable errors, never false empty catalog or hi
 
 test("Caja uses available space across opening, count, close and long history without page overflow", async ({ page }, testInfo) => {
   test.setTimeout(180_000);
+  // Long actor name on purpose: shift-actor must render it without overflow.
   const name = `Cajero ${"Apellido".repeat(16)}`;
   await tenant(page, name);
   await page.goto("/");

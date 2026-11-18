@@ -12,9 +12,15 @@ export function dbOne(sql: string): string {
  * Hermetic wipe for specs that assert EMPTY local/server state after login.
  * First-boot rehydrate (D4-4) pulls server truth into a fresh cache — so the
  * server must actually be empty for empty-* assertions to hold.
- * Wipes sales + catalog + stock + queue (keeps org/users/shift).
+ * Wipes sales + catalog + stock + queue + the mesas comanda domain
+ * (Fase 2: tables/orders/order_lines are rehydrated and pulled now — a
+ * leftover open comanda from a previous spec would haunt every later board
+ * and even the cierre-de-caja gate) (keeps org/users/shift).
  */
 export function wipeSalesAndCatalog(): void {
+  dbOne("DELETE FROM order_lines");
+  dbOne("DELETE FROM orders");
+  dbOne("DELETE FROM tables");
   dbOne("DELETE FROM ticket_lines");
   dbOne("DELETE FROM payments");
   dbOne("DELETE FROM tickets");

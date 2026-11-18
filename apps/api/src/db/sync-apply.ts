@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, eq, inArray, lt, ne, sql } from "drizzle-orm";
 import {
   contentHash,
   CUSTOMER_ACCOUNT_BY_ID_SQL,
@@ -53,8 +53,30 @@ class InvalidSync extends Error {}
 
 function duplicateCode(err: unknown): boolean {
   const e = err as { code?: string; constraint?: string; cause?: unknown };
-  return e?.code === "23505" && e.constraint === "product_variants_tenant_code_uq"
+  return e?.code === "23505" && (e.constraint === "product_variants_tenant_code_uq"
+      // mesas Fase 2: two devices created the same table name — a catalog
+      // duplicate, same shape as a variant code collision (→ duplicate_code).
+      || e.constraint === "tables_tenant_name_uq")
     || !!e?.cause && duplicateCode(e.cause);
+}
+
+/**
+ * Mesas Fase 2 · deterministic CONTENT guards enforced by partial unique
+ * indexes (the RACE twin of an in-tx `throw new InvalidSync()`):
+ *  - `tickets_tenant_order_id_uq` — double-cobro backstop: a second ticket
+ *    for the same comanda,
+ *  - `orders_tenant_table_open_uq` — a second OPEN comanda for one table.
+ *
+ * These surface exactly like the oversell backstop (sync-apply:249-261):
+ * reason `validation` → client marks the group deterministic → poison after
+ * MAX_ATTEMPTS (isolated, visible, preserved). NEVER `db_error`: that status
+ * retries forever and would park a permanently-duplicate cobro in the queue.
+ */
+function rejectedConstraint(err: unknown): boolean {
+  const e = err as { code?: string; constraint?: string; cause?: unknown };
+  return e?.code === "23505" && (e.constraint === "tickets_tenant_order_id_uq"
+      || e.constraint === "orders_tenant_table_open_uq")
+    || !!e?.cause && rejectedConstraint(e.cause);
 }
 
 /**
@@ -77,6 +99,11 @@ function groupKeyOf(m: MutationEnvelope): string {
   if (m.entity === "variant" && typeof p.ref_ticket_id === "string") {
     return `ticket:${p.ref_ticket_id}`;
   }
+  // mesas Fase 2: the comanda + its lines share ONE tx (a mid-group failure
+  // never leaves a half-applied comanda on the board). The order entity's
+  // client_uuid IS the order id, so both sides of the group key coincide.
+  if (m.entity === "order") return `order:${m.client_uuid}`;
+  if (m.entity === "order_line") return `order:${p.order_id}`;
   return `solo:${m.client_uuid}`;
 }
 
@@ -217,8 +244,10 @@ export async function applyMutationGroups(
         const dirtyVariants = new Set<string>();
         if (!isDueño(role)) await validateMemberHints(tx, tenantId, group.map(({ m }) => m));
         // Dependencies, not timestamp ties: a newly-created variant can travel
-        // with its first sale. Preserve result alignment with the input group.
-        const rank = (m: MutationEnvelope) => m.entity === "ticket" ? 0 : m.entity === "variant" ? 1 : 2;
+        // with its first sale; the order parent lands before its lines
+        // (mesas Fase 2 — lines validate order existence at apply time).
+        // Preserve result alignment with the input group.
+        const rank = (m: MutationEnvelope) => m.entity === "ticket" || m.entity === "order" ? 0 : m.entity === "variant" ? 1 : 2;
         const execution = group.map((item, i) => ({ ...item, i })).sort((a,b) => rank(a.m) - rank(b.m));
         for (const { m, i } of execution)
           inner[i] = !isDueño(role) && m.entity === "variant"
@@ -273,11 +302,19 @@ export async function applyMutationGroups(
     } catch (err) {
       // Whole group rolled back: report db_error for its members only —
       // the rest of the batch is unaffected (design §3 rule 3).
+      // Mesas Fase 2: a partial-unique backstop hit (double cobro /
+      // concurrent open) is DETERMINISTIC like InvalidSync → `validation`
+      // (client poisons after MAX_ATTEMPTS), never a forever-retrying
+      // `db_error` (rejectedConstraint above).
       for (const item of group) {
         byIndex.set(item.index, {
           client_uuid: item.m.client_uuid,
           status: "rejected",
-          reason: duplicateCode(err) ? "duplicate_code" : err instanceof InvalidSync ? "validation" : "db_error",
+          reason: duplicateCode(err)
+            ? "duplicate_code"
+            : err instanceof InvalidSync || rejectedConstraint(err)
+              ? "validation"
+              : "db_error",
         });
       }
     }
@@ -288,7 +325,11 @@ export async function applyMutationGroups(
 
 async function validateMemberHints(tx: Tx, tenantId: string, items: MutationEnvelope[]) {
   for (const m of items) {
-    if (m.entity === "category" || m.entity === "product") throw new InvalidSync();
+    // mesas Fase 2: `table` is CATALOG (same authority as category/product —
+    // only Dueño/Admin manages the table catalog, Fase 1 decision #5). The
+    // comanda itself (`order`/`order_line`) stays open to members: serving
+    // a mesa IS selling.
+    if (m.entity === "category" || m.entity === "product" || m.entity === "table") throw new InvalidSync();
     if (m.entity !== "variant" && m.entity !== "stockdiary") continue;
     const ref = m.payload.ref_ticket_id;
     if (!ref || (m.entity === "stockdiary" && (m.payload.reason !== "sale" || m.payload.delta >= 0))) throw new InvalidSync();
@@ -488,6 +529,17 @@ async function upsertEntity(
           .where(and(eq(t.customers.tenant_id, tenantId), eq(t.customers.id, p.customer_id)));
         if (!customer) throw new InvalidSync();
       }
+      // DOUBLE-COBRO BACKSTOP (mesas Fase 2, deterministic twin first): if a
+      // DIFFERENT ticket already settled this comanda, reject the whole sale
+      // group BEFORE writing anything (same shape as the fiado H7 backstop
+      // above). The partial unique index tickets_tenant_order_id_uq is the
+      // race twin — rejectedConstraint() maps its 23505 to the same
+      // `validation` reason (client: poison after MAX_ATTEMPTS).
+      if (p.order_id) {
+        const [settled] = await tx.select({ id: t.tickets.id }).from(t.tickets)
+          .where(and(eq(t.tickets.tenant_id, tenantId), eq(t.tickets.order_id, p.order_id), ne(t.tickets.id, cu)));
+        if (settled) throw new InvalidSync();
+      }
       await tx
         .insert(t.tickets)
         .values({
@@ -502,6 +554,8 @@ async function upsertEntity(
           ...(p.customer_id !== undefined ? { customer_id: p.customer_id } : {}),
           // mesas: additive nullable; legacy payloads omit it (never wipe)
           ...(p.table_name !== undefined ? { table_name: p.table_name } : {}),
+          // mesas Fase 2: comanda settled by this ticket (backstop key)
+          ...(p.order_id !== undefined ? { order_id: p.order_id } : {}),
           ...(p.created_at ? { created_at: new Date(p.created_at) } : {}),
         })
         .onConflictDoUpdate({
@@ -513,6 +567,7 @@ async function upsertEntity(
             total: p.total,
             ...(p.customer_id !== undefined ? { customer_id: p.customer_id } : {}),
             ...(p.table_name !== undefined ? { table_name: p.table_name } : {}),
+            ...(p.order_id !== undefined ? { order_id: p.order_id } : {}),
             updated_at: now,
           },
         });
@@ -890,6 +945,125 @@ async function upsertEntity(
           ...(p.created_at ? { created_at: new Date(p.created_at) } : {}),
         })
         .onConflictDoNothing();
+      return;
+    }
+    /* ── mesas Fase 2 (CONTROL-MESAS.md · opción B) ─────────────────── */
+    case "table": {
+      // Catalog upsert (category pattern). The payload carries NO occupancy
+      // state: status/current_order_id/opened_at stay legacy-local and the
+      // server columns keep their defaults — occupancy is derived from
+      // `orders` on every board read (decision 8: no LWW fight over tables).
+      const p = m.payload;
+      await tx
+        .insert(t.tables)
+        .values({
+          id: cu,
+          tenant_id: tenantId,
+          client_uuid: cu,
+          name: p.name,
+          zone: p.zone ?? null,
+          capacity: p.capacity,
+          active: p.active,
+        })
+        .onConflictDoUpdate({
+          target: [t.tables.tenant_id, t.tables.client_uuid],
+          set: { name: p.name, zone: p.zone ?? null, capacity: p.capacity, active: p.active, updated_at: now },
+        });
+      return;
+    }
+    case "order": {
+      const p = m.payload;
+      // Parent table must exist IN THIS TENANT (product→category pattern):
+      // a forged/cross-tenant table_id never yields an orphan comanda. The
+      // client's topological queue drains the table's solo group first, so a
+      // same-batch table+order applies table-then-order.
+      const [table] = await tx.select({ id: t.tables.id }).from(t.tables)
+        .where(and(eq(t.tables.tenant_id, tenantId), eq(t.tables.id, p.table_id)));
+      if (!table) throw new InvalidSync();
+      const [existing] = await tx.select({ state: t.orders.state }).from(t.orders)
+        .where(and(eq(t.orders.tenant_id, tenantId), eq(t.orders.id, cu)));
+      // TERMINAL guard (payment-confirm pattern): a settled comanda can never
+      // be resurrected as `open` by a later LWW write from a stale device.
+      if (existing && existing.state !== "open" && p.state === "open") throw new InvalidSync();
+      // Concurrent-open backstop: the open-uq partial unique index is the
+      // race twin (its 23505 maps to the same `validation`); this in-tx check
+      // makes the ordinary sequential case deterministic without an error.
+      if (p.state === "open") {
+        const [other] = await tx.select({ id: t.orders.id }).from(t.orders)
+          .where(and(
+            eq(t.orders.tenant_id, tenantId),
+            eq(t.orders.table_id, p.table_id),
+            eq(t.orders.state, "open"),
+            ne(t.orders.id, cu),
+          ));
+        if (other) throw new InvalidSync();
+      }
+      await tx
+        .insert(t.orders)
+        .values({
+          id: cu,
+          tenant_id: tenantId,
+          client_uuid: cu,
+          table_id: p.table_id,
+          state: p.state,
+          ...(p.opened_at ? { opened_at: new Date(p.opened_at) } : {}),
+          closed_at: p.closed_at ? new Date(p.closed_at) : null,
+          billing_at: p.billing_at ? new Date(p.billing_at) : null,
+          ...(p.created_at ? { created_at: new Date(p.created_at) } : {}),
+        })
+        .onConflictDoUpdate({
+          target: [t.orders.tenant_id, t.orders.client_uuid],
+          set: {
+            table_id: p.table_id,
+            state: p.state,
+            ...(p.opened_at !== undefined ? { opened_at: new Date(p.opened_at) } : {}),
+            ...(p.closed_at !== undefined ? { closed_at: p.closed_at === null ? null : new Date(p.closed_at) } : {}),
+            ...(p.billing_at !== undefined ? { billing_at: p.billing_at === null ? null : new Date(p.billing_at) } : {}),
+            updated_at: now,
+          },
+        });
+      return;
+    }
+    case "order_line": {
+      const p = m.payload;
+      // Parent order must exist in-tenant (rank() applies the order entity
+      // first inside the same group/tx; a line whose order was rejected
+      // server-side dies here instead of orphaning consumption rows).
+      const [order] = await tx.select({ id: t.orders.id }).from(t.orders)
+        .where(and(eq(t.orders.tenant_id, tenantId), eq(t.orders.id, p.order_id)));
+      if (!order) throw new InvalidSync();
+      await tx
+        .insert(t.orderLines)
+        .values({
+          id: cu,
+          tenant_id: tenantId,
+          client_uuid: cu,
+          order_id: p.order_id,
+          variant_id: p.variant_id,
+          name: p.name,
+          price: p.price,
+          qty: p.qty,
+          notes: p.notes ?? null,
+          deleted_at: p.deleted_at ? new Date(p.deleted_at) : null,
+          sort: p.sort ?? 0,
+          ...(p.created_at ? { created_at: new Date(p.created_at) } : {}),
+        })
+        .onConflictDoUpdate({
+          target: [t.orderLines.tenant_id, t.orderLines.client_uuid],
+          set: {
+            order_id: p.order_id,
+            variant_id: p.variant_id,
+            name: p.name,
+            price: p.price,
+            qty: p.qty,
+            ...(p.notes !== undefined ? { notes: p.notes } : {}),
+            ...(p.deleted_at !== undefined
+              ? { deleted_at: p.deleted_at === null ? null : new Date(p.deleted_at) }
+              : {}),
+            ...(p.sort !== undefined ? { sort: p.sort } : {}),
+            updated_at: now,
+          },
+        });
       return;
     }
   }

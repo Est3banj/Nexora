@@ -32,6 +32,12 @@ export const MUTATION_ENTITIES = [
   "customer",
   "credit_abono",
   "cash_movement",
+  // mesas Fase 2 (CONTROL-MESAS.md · opción B): table catalog + comanda
+  // lifecycle + per-line consumption. Orders sync so an open mesa opened on
+  // device A is servable/chargeable on device B of the same tenant.
+  "table",
+  "order",
+  "order_line",
 ] as const;
 
 export const mutationEntitySchema = z.enum(MUTATION_ENTITIES);
@@ -67,6 +73,13 @@ const ticketPayloadSchema = z.object({
    * Nullable: a counter sale carries an explicit null.
    */
   table_name: z.string().min(1).max(120).nullable().optional(),
+  /**
+   * comanda this ticket settled (mesas Fase 2) — OPTIONAL like `table_name`
+   * (legacy queued tickets stay valid) but the SERVER backstops it: a partial
+   * unique index on (tenant_id, order_id) makes a SECOND ticket for the same
+   * order a deterministic rejection (double-cobro backstop, sync-apply).
+   */
+  order_id: uuid.nullable().optional(),
   created_at: isoDate.optional(),
 });
 
@@ -193,6 +206,57 @@ export const cashMovementPayloadSchema = z.object({
   created_at: isoDate.optional(),
 });
 
+/* ------------------------------------------------------------------ */
+/* mesas Fase 2 (CONTROL-MESAS.md · opción B)                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Table CATALOG row (name/zone/capacity/active) — deliberately WITHOUT any
+ * occupancy state: `status`/`current_order_id`/`opened_at` are DERIVED from
+ * the existence of an open `orders` row (decision: reduce the LWW conflict
+ * surface to catalog edits only; billing lives on the ORDER below).
+ */
+export const tablePayloadSchema = z.object({
+  name: z.string().trim().min(1).max(60),
+  zone: z.string().max(60).nullable().optional(),
+  capacity: z.number().int().min(1).max(999),
+  active: z.boolean().default(true),
+});
+
+/**
+ * The comanda lifecycle. `state` is LWW like everything else BUT
+ * closed/cancelled are TERMINAL server-side (sync-apply rejects a later
+ * `open` payload for the same order — payment-confirm guard pattern), so a
+ * stale device can never resurrect a settled comanda.
+ * `billing_at` («Pedir cuenta») rides the order so the flag dies WITH it.
+ */
+export const orderPayloadSchema = z.object({
+  table_id: uuid,
+  state: z.enum(["open", "cancelled", "closed"]),
+  opened_at: isoDate.optional(),
+  closed_at: isoDate.nullable().optional(),
+  billing_at: isoDate.nullable().optional(),
+  created_at: isoDate.optional(),
+});
+
+/**
+ * Per-line consumption. Removal is a STATE (`deleted_at`), never a delete —
+ * Fase 1 invariant, and the reason «Guardar en Mesa» syncs as upsert-per-line
+ * instead of a whole-comanda replacement (two devices must not erase each
+ * other's rows).
+ */
+export const orderLinePayloadSchema = z.object({
+  order_id: uuid,
+  variant_id: uuid,
+  name: z.string().min(1).max(500),
+  price: money,
+  qty: z.number().int().positive(),
+  sort: z.number().int().min(0).max(100000).optional(),
+  notes: z.string().max(500).nullable().optional(),
+  deleted_at: isoDate.nullable().optional(),
+  created_at: isoDate.optional(),
+});
+
 export const mutationPayloadSchemas = {
   cash_movement: cashMovementPayloadSchema,
   ticket: ticketPayloadSchema,
@@ -206,6 +270,9 @@ export const mutationPayloadSchemas = {
   shift: shiftPayloadSchema,
   customer: customerPayloadSchema,
   credit_abono: creditAbonoPayloadSchema,
+  table: tablePayloadSchema,
+  order: orderPayloadSchema,
+  order_line: orderLinePayloadSchema,
 } as const;
 
 /* ------------------------------------------------------------------ */
@@ -239,6 +306,9 @@ export const mutationEnvelopeSchema = z.discriminatedUnion("entity", [
   envelopeFor("shift", shiftPayloadSchema),
   envelopeFor("customer", customerPayloadSchema),
   envelopeFor("credit_abono", creditAbonoPayloadSchema),
+  envelopeFor("table", tablePayloadSchema),
+  envelopeFor("order", orderPayloadSchema),
+  envelopeFor("order_line", orderLinePayloadSchema),
 ]);
 
 export type MutationEnvelope = z.infer<typeof mutationEnvelopeSchema>;

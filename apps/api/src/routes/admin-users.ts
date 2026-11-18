@@ -5,10 +5,13 @@ import {
   USERNAME_MAX_LENGTH,
   USERNAME_MIN_LENGTH,
   USERNAME_RE,
+  PASSWORD_MIN,
   memberEmailFromUsername,
 } from "@pos/shared";
 import { getAuth } from "../auth/auth";
 import { repoFor } from "../auth/ctx";
+import { setUserPassword } from "../auth/password";
+import { config } from "../config";
 
 const roleSchema = z.enum(["member", "admin"]);
 const createSchema = z.object({
@@ -18,8 +21,13 @@ const createSchema = z.object({
   username: z.string().trim()
     .min(USERNAME_MIN_LENGTH).max(USERNAME_MAX_LENGTH)
     .regex(USERNAME_RE, "username_invalid"),
-  password: z.string().min(12).max(128),
+  password: z.string().min(PASSWORD_MIN).max(128),
   role: roleSchema,
+}).strict();
+const resetSchema = z.object({
+  newPassword: z.string()
+    .min(PASSWORD_MIN, `La contraseña debe tener al menos ${PASSWORD_MIN} caracteres.`)
+    .max(128),
 }).strict();
 const memberParams = z.object({ memberId: z.string().uuid() });
 const safeMember = (m: { id: string; userId: string; role: string; createdAt: Date }) => ({
@@ -42,13 +50,22 @@ function signupFailure(reply: FastifyReply, status: number, detail: string) {
 
 export async function adminUsersRoutes(app: FastifyInstance): Promise<void> {
   const preHandler = [app.requireAuth, app.requireDueño];
-  app.get("/api/admin/members", { preHandler }, async req => {
+  // P2-7 · this router mints credentials and revokes access: 30 req/min/IP,
+  // the same per-route `config.rateLimit` shape app.ts uses for /api/auth/*.
+  // Disabled in tests (NODE_ENV=test) exactly like the global/auth windows,
+  // otherwise the suites would throttle themselves.
+  const rateLimited = config.nodeEnv !== "test"
+    ? { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }
+    : {};
+  app.get("/api/admin/members", { preHandler, ...rateLimited }, async (req, reply) => {
     const { members } = await getAuth().api.listMembers({
       query: { organizationId: req.ctx.tenantId!, limit: 10000 }, headers: fromNodeHeaders(req.headers),
     });
     // See db/scope.ts → authMembers.usernames: the SDK's member projection
     // drops `username`, so it is fetched in one extra query.
     const usernames = await repoFor(req).authMembers.usernames(members.map(m => m.userId));
+    // PII (name/e-mail/username per member) → never cacheable.
+    reply.header("Cache-Control", "no-store");
     return { members: members.map(m => ({
       ...safeMember(m),
       user: {
@@ -58,7 +75,7 @@ export async function adminUsersRoutes(app: FastifyInstance): Promise<void> {
     })) };
   });
 
-  app.post("/api/admin/users", { preHandler }, async (req, reply) => {
+  app.post("/api/admin/users", { preHandler, ...rateLimited }, async (req, reply) => {
     const input = createSchema.parse(req.body);
     if (req.ctx.role !== "owner" && input.role !== "member") return reply.code(403).send({ error: "owner_only" });
     const auth = getAuth();
@@ -107,7 +124,7 @@ export async function adminUsersRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  app.patch("/api/admin/members/:memberId", { preHandler }, async (req, reply) => {
+  app.patch("/api/admin/members/:memberId", { preHandler, ...rateLimited }, async (req, reply) => {
     const { memberId } = memberParams.parse(req.params);
     const { role } = z.object({ role: roleSchema }).strict().parse(req.body);
     const repo = repoFor(req);
@@ -124,7 +141,41 @@ export async function adminUsersRoutes(app: FastifyInstance): Promise<void> {
     return { member: safeMember(member) };
   });
 
-  app.delete("/api/admin/members/:memberId", { preHandler }, async (req, reply) => {
+  /**
+   * A2 · restablecer la contraseña de un empleado (perdió el acceso).
+   *
+   * Deliberately NOT the better-auth admin plugin: its `role` column is
+   * GLOBAL, while this app's roles live on `member` per tenant — the two
+   * collide (audited and rejected with evidence). Everything below runs on
+   * the tenant-scoped repo + the auth context instead.
+   */
+  app.post("/api/admin/members/:memberId/password", { preHandler, ...rateLimited }, async (req, reply) => {
+    const { memberId } = memberParams.parse(req.params);
+    const { newPassword } = resetSchema.parse(req.body);
+    const repo = repoFor(req);
+    // Scoped by organizationId → a foreign memberId is a 404, never a 403
+    // (no tenant-existence oracle, no IDOR).
+    const target = await repo.authMembers.byId(memberId);
+    if (!target) return reply.code(404).send({ error: "not_found" });
+    if (target.userId === req.ctx.userId) return reply.code(403).send({ error: "cannot_reset_self" });
+    // Same owner_readonly rule as PATCH/DELETE: an `admin` must not be able
+    // to take over the owner's account by resetting its password.
+    if (target.role.split(",").includes("owner")) return reply.code(403).send({ error: "owner_readonly" });
+    // updatePassword is a silent no-op without a credential account — the
+    // helper branches exactly like better-auth's own setUserPassword.
+    await setUserPassword(target.userId, newPassword);
+    // A rotated credential must not leave the old sessions alive.
+    const ctx = await getAuth().$context;
+    await ctx.internalAdapter.deleteUserSessions(target.userId);
+    // NEVER the password (nor its hash) — ids only.
+    await repo.auditLog.insert({ actor: req.ctx.userId, action: "member.password_reset", meta: {
+      member_id: memberId, user_id: target.userId,
+    } });
+    reply.header("Cache-Control", "no-store");
+    return reply.code(200).send({ ok: true });
+  });
+
+  app.delete("/api/admin/members/:memberId", { preHandler, ...rateLimited }, async (req, reply) => {
     const { memberId } = memberParams.parse(req.params);
     const repo = repoFor(req);
     const target = await repo.authMembers.byId(memberId);

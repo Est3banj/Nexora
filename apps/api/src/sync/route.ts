@@ -72,6 +72,11 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
             const forbidden =
               parsed.data.entity === "category" ||
               parsed.data.entity === "product" ||
+              // mesas Fase 2: the TABLE catalog is dueño-tier (Fase 1
+              // decision #5: «+ Agregar Mesa» is Admin-only) — same
+              // authority as category/product. `order`/`order_line` stay
+              // open to members: serving a mesa IS selling.
+              parsed.data.entity === "table" ||
               ((parsed.data.entity === "variant" ||
                 parsed.data.entity === "stockdiary") &&
                 !inSale);

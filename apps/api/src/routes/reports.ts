@@ -68,13 +68,20 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
   app.get(
     "/api/reports/customer-balances",
     { preHandler: app.requireAuth },
-    async (req) => ({ rows: await repoFor(req).reports.customerBalances() }),
+    // P2-3 · customer name + phone + balance = PII → never cacheable.
+    async (req, reply) => {
+      reply.header("Cache-Control", "no-store");
+      return { rows: await repoFor(req).reports.customerBalances() };
+    },
   );
 
   app.get(
     "/api/reports/customer-accounts",
     { preHandler: app.requireAuth },
-    async (req) => ({ rows: await repoFor(req).reports.customerAccounts() }),
+    async (req, reply) => {
+      reply.header("Cache-Control", "no-store");
+      return { rows: await repoFor(req).reports.customerAccounts() };
+    },
   );
 
   app.get(

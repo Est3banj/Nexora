@@ -7,7 +7,7 @@ for (const width of [375, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/");
     await page.getByTestId("login-identifier").fill("owner@demo.test");
-    await page.getByTestId("login-password").fill("demo12345");
+    await page.getByTestId("login-password").fill("demo1234567890");
     await page.getByTestId("login-submit").click();
     await expect(page.getByTestId("tab-sale")).toBeVisible();
     await page.getByTestId("tab-catalog").click();
