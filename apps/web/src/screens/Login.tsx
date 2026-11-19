@@ -13,6 +13,7 @@ export function Login({ recovery = false, onAuthenticated }: { recovery?: boolea
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [forgot, setForgot] = useState(false);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -46,14 +47,18 @@ export function Login({ recovery = false, onAuthenticated }: { recovery?: boolea
   return (
     <div className="login-screen">
       <form className="card login-card" onSubmit={submit}>
-        <h1><img src="/icon-192.png" alt="" className="login-logo" /> NEXORA</h1>
-        <p className="muted">Ingresá para vender</p>
+        <div className="login-brand">
+          <img src="/icon-192.png" alt="" className="login-logo" />
+          <h1 className="login-title">Nexora POS</h1>
+          <p className="muted login-sub">Ingresa tus datos para acceder al sistema</p>
+        </div>
         {recovery && <p className="muted" data-testid="recovery-note">Si tenés cambios pendientes, ingresá con el mismo comercio para recuperarlos. No se borraron datos locales.</p>}
-        <label htmlFor="identifier">Usuario o correo</label>
+        <label htmlFor="identifier">Usuario o correo electrónico</label>
         <input
           id="identifier"
           data-testid="login-identifier"
           type="text"
+          placeholder="usuario@nexora.com"
           autoCapitalize="none"
           spellCheck={false}
           autoComplete="username"
@@ -70,6 +75,22 @@ export function Login({ recovery = false, onAuthenticated }: { recovery?: boolea
           value={password}
           onChange={(e) => setPassword(e.target.value)}
         />
+        <div className="login-forgot-row">
+          <button
+            type="button"
+            className="login-forgot"
+            data-testid="login-forgot"
+            aria-expanded={forgot}
+            onClick={() => setForgot((open) => !open)}
+          >
+            ¿Olvidaste tu contraseña?
+          </button>
+        </div>
+        {forgot && (
+          <p className="login-forgot-note" data-testid="login-forgot-note" role="status">
+            Pídele a tu administrador que te la restablezca.
+          </p>
+        )}
         {error && (
           <p className="error" data-testid="login-error" role="alert">
             {error}
@@ -78,12 +99,13 @@ export function Login({ recovery = false, onAuthenticated }: { recovery?: boolea
         <button
           type="submit"
           data-testid="login-submit"
-          className="btn primary"
+          className="btn primary login-submit"
           disabled={busy}
         >
-          {busy ? "Ingresando…" : "Ingresar"}
+          {busy ? "Ingresando…" : "Iniciar sesión"}
         </button>
       </form>
+      <p className="login-footer">NEXORA POS © 2026</p>
     </div>
   );
 }

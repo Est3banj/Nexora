@@ -426,6 +426,10 @@ for (const width of [1440, 375]) {
     await page.getByTestId("tab-catalog").click();
     await page.getByTestId("product-new").click();
     await modalKeyboard(page, "product-modal", "product-new", width);
+    /* the manage-categories modal is a first-class dialog: same focus trap,
+     * short-viewport reachability and Escape → focus back on its trigger. */
+    await page.getByTestId("categories-manage").click();
+    await modalKeyboard(page, "category-modal", "categories-manage", width);
     await page.getByTestId("tab-sale").click();
     await page.getByTestId("sale-item").first().click();
     await page.getByTestId("sale-search").focus();

@@ -562,7 +562,17 @@ test.describe("Mesas · multi-dispositivo (Fase 2)", () => {
     wipeSalesAndCatalog();
     await login(page);
     await seedProduct(page, "Remota E2E", 4000);
-    const variantId = dbOne("SELECT id FROM product_variants WHERE name = 'Único'");
+    /* local-first: the variant exists in the LOCAL cache until the queue
+       drains (boot drain or the 4s timer) — force it and pin SERVER truth
+       before seeding the remote comanda, otherwise the read races the push
+       and the order_line goes out with variant_id: "".
+       Same pattern as the «liberar» sync above / d3-oversell. */
+    await page.evaluate(() =>
+      (window as unknown as { __pos: { pushNow: () => Promise<void> } }).__pos.pushNow(),
+    );
+    const variantSql = "SELECT id FROM product_variants WHERE name = 'Único'";
+    await expect.poll(() => dbOne(variantSql), { timeout: 15_000 }).not.toBe("");
+    const variantId = dbOne(variantSql);
     await navigate(page, "mesas");
     await expect(page.getByTestId("mesas-empty")).toBeVisible();
 

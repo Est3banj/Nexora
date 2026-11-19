@@ -71,15 +71,15 @@ test("member palette mirrors the five-tab nav and catalog is browse-only", async
     await expect(staff.getByTestId("product-item").filter({ hasText: "Café roles E2E" })).toBeVisible();
     await staff.getByTestId("catalog-search").fill("Café roles");
     await expect(staff.getByTestId("product-item")).toHaveCount(1);
-    for (const id of ["product-new", "toggle-active", "product-edit", "new-category-name", "category-create"]) {
+    await expect(staff.getByTestId("catalog-category-filter")).toBeVisible();
+    for (const id of ["product-new", "toggle-active", "product-edit", "categories-manage", "new-category-name", "category-create"]) {
       await expect(staff.getByTestId(id)).toHaveCount(0);
     }
     /* human-visual-audit evidence (1440 + 375) — captured, never read */
     await staff.setViewportSize({ width: 1440, height: 1000 });
     await staff.screenshot({ path: `${evidence}/batch8-role-matrix-1440-member-menu.png`, fullPage: true });
     await staff.setViewportSize({ width: 375, height: 812 });
-    await staff.screenshot({ path: `${evidence}/batch8-role-matrix-375-member-menu.png`, fullPage: true });
-  } finally {
+    await staff.screenshot({ path: `${evidence}/batch8-role-matrix-375-member-menu.png`, fullPage: true });  } finally {
     await staffContext.close();
   }
 });

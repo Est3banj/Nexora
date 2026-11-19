@@ -92,6 +92,10 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    /* Dev-only: permitir el túnel ngrok de pruebas en dispositivo (HTTPS).
+     * Vite bloquea hosts desconocidos por DNS-rebinding; el sufijo cubre
+     * las URLs random de ngrok-free. No aplica al build de producción. */
+    allowedHosts: [".ngrok-free.dev"],
     proxy: {
       "/api": {
         target: process.env.VITE_API_PROXY ?? "http://localhost:3000",

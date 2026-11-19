@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PGlite } from "@electric-sql/pglite";
-import { Plus, Search, SquarePen } from "lucide-react";
-import { catalogError, createLocalCategory, listCategories, listProducts, updateLocalProduct, type LocalCategory, type LocalProduct } from "../db/local";
+import { Plus, Search, Settings2, SquarePen } from "lucide-react";
+import { catalogError, listCategories, listProducts, updateLocalProduct, type LocalCategory, type LocalProduct } from "../db/local";
+import { CategoryModal } from "../components/CategoryModal";
 import { ProductIcon } from "../components/ProductIcon";
 import { ProductModal } from "../components/ProductModal";
 import { isDueñoHint, type RoleHint } from "../components/navigation";
@@ -20,12 +21,12 @@ export function Catalog({ db, tenantId, role, refreshToken, showToast, onMutated
   const [categories, setCategories] = useState<LocalCategory[]>([]);
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
-  const [newCategory, setNewCategory] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [open, setOpen] = useState(false);
+  const [managingCategories, setManagingCategories] = useState(false);
   const [editing, setEditing] = useState<LocalProduct | null>(null);
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -59,7 +60,9 @@ export function Catalog({ db, tenantId, role, refreshToken, showToast, onMutated
   return <section className="screen catalog catalog-modern" aria-label="Catálogo">
     <div className="catalog-controls">
       <div className="catalog-filters"><div className="catalog-search-wrap"><Search size={16} aria-hidden="true" /><input type="search" data-testid="catalog-search" aria-label="Buscar en catálogo" placeholder="Buscar producto o SKU…" value={search} onChange={e => setSearch(e.target.value)} /></div>
-        <select aria-label="Filtrar categoría" data-testid="catalog-category-filter" value={category} onChange={e => setCategory(e.target.value)}><option value="all">Todas las Categorías</option><option value="">Sin categoría</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+        <div className="catalog-category-group"><select aria-label="Filtrar categoría" data-testid="catalog-category-filter" value={category} onChange={e => setCategory(e.target.value)}><option value="all">Todas las Categorías</option><option value="">Sin categoría</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+          {canWrite && <button type="button" className="btn ghost catalog-manage" data-testid="categories-manage" aria-label="Administrar categorías" title="Administrar categorías" onClick={() => setManagingCategories(true)}><Settings2 size={18} aria-hidden="true" /></button>}
+        </div>
       </div>
       {canWrite && <button className="btn primary" data-testid="product-new" onClick={() => { setEditing(null); setOpen(true); }}><Plus size={16} aria-hidden="true" /> Nuevo Producto</button>}
     </div>
@@ -78,7 +81,7 @@ export function Catalog({ db, tenantId, role, refreshToken, showToast, onMutated
       </article>)}
     </div>
     {!loading && !error && !visible.length && <div className="empty-state" data-testid="empty-catalog-note"><h2>{products.length ? "Sin resultados" : "Catálogo vacío"}</h2><p>{products.length ? "Probá otra búsqueda o categoría." : canWrite ? "Creá el primer producto con Nuevo Producto para empezar a vender." : "El dueño o administrador puede cargar productos para empezar a vender."}</p></div>}
-    {canWrite && <details className="catalog-categories"><summary>Administrar categorías</summary><form onSubmit={e => { e.preventDefault(); if (newCategory.trim()) void mutate(async () => { await createLocalCategory(db, tenantId, { name: newCategory.trim() }); setNewCategory(""); }, "Categoría creada (pendiente de sync)"); }}><label htmlFor="new-category">Nueva categoría</label><div className="row gap"><input id="new-category" data-testid="new-category-name" maxLength={60} required value={newCategory} onChange={e => setNewCategory(e.target.value)} /><button className="btn" data-testid="category-create" disabled={busy}>Agregar</button></div></form></details>}
+    <CategoryModal open={managingCategories} db={db} tenantId={tenantId} categories={categories} products={products} onClose={() => setManagingCategories(false)} onSaved={() => { void refresh(); onMutated(); showToast("Categoría creada (pendiente de sync)"); }} />
     <ProductModal open={open} product={editing} categories={categories} db={db} tenantId={tenantId} onClose={() => setOpen(false)} onSaved={() => { setOpen(false); void refresh(); onMutated(); showToast(`${editing ? "Producto actualizado" : "Producto creado"} (pendiente de sync)`); }} />
   </section>;
 }

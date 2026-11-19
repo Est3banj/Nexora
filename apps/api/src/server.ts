@@ -2,6 +2,7 @@ import { buildApp } from "./app";
 import { config } from "./config";
 import { ensureAuthTables } from "./db/bootstrap";
 import { closeDb } from "./db";
+import { AUDIT_RETENTION_DAYS, pruneAuditLog } from "./db/audit-retention";
 import { initBaseline } from "./db/init-baseline";
 import { migrateCatalog } from "./db/migrate-catalog";
 import { migrateCost } from "./db/migrate-cost";
@@ -22,6 +23,20 @@ await migrateMesas();
 await migratePrototype();
 await migrateSaleStage();
 await migrateSettings();
+
+// Retention housekeeping · AFTER initBaseline (which is what guarantees
+// `audit_log` exists on a fresh database) and after the additive chain, so
+// the prune always runs against a complete schema. Idempotent + cheap: one
+// DELETE over a timestamp cutoff, once per boot (see audit-retention.ts for
+// the 180-day policy and why it is a single global statement).
+try {
+  const pruned = await pruneAuditLog();
+  if (pruned > 0) {
+    console.log(`[audit-retention] dropped ${pruned} audit_log rows older than ${AUDIT_RETENTION_DAYS} days`);
+  }
+} catch (err) {
+  console.error("[audit-retention] prune failed (boot continues, retried on next start):", err);
+}
 
 const app = await buildApp();
 

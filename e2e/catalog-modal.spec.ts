@@ -15,11 +15,25 @@ for (const width of [1440, 375]) {
     await page.goto("/");
     await page.getByTestId("tab-catalog").click();
     await expect(page.getByTestId("empty-catalog-note")).toContainText("Catálogo vacío");
-    await page.getByText("Administrar categorías", { exact: true }).click();
+    /* manage-categories moved from the orphan disclosure under the grid to a
+     * gated icon button beside the category filter → compact modal. */
+    const manage = page.getByTestId("categories-manage");
+    const categoryModal = page.getByTestId("category-modal");
+    await expect(manage).toBeVisible();
+    await manage.click();
+    await expect(categoryModal).toBeVisible();
+    await expect(page.getByTestId("new-category-name")).toBeFocused();
     await page.getByTestId("new-category-name").fill("Bebidas");
     await page.getByTestId("category-create").click();
     await expect(page.getByTestId("catalog-category-filter").locator("option")).toHaveCount(3);
-    await page.getByText("Administrar categorías", { exact: true }).click();
+    /* the modal stays open for batch entry: input cleared and focused again */
+    await expect(categoryModal).toBeVisible();
+    await expect(page.getByTestId("new-category-name")).toHaveValue("");
+    await expect(page.getByTestId("new-category-name")).toBeFocused();
+    await expect(page.getByTestId("category-list-item")).toHaveCount(1);
+    await page.keyboard.press("Escape");
+    await expect(categoryModal).not.toBeVisible();
+    await expect(manage).toBeFocused();
     await context.route("**/api/sync/**", route => route.abort());
     await page.evaluate(flag => localStorage.setItem(flag, "1"), offlineFlag);
     await context.setOffline(true);

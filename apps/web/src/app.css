@@ -521,10 +521,26 @@ dialog .row, .ticket-actions { flex-wrap: wrap; }
 .transition-card p { max-width: none; margin: 0; }
 .transition-card .btn { width: 100%; min-width: 0; }
 
-.login-card {
-  width: 100%;
-  max-width: 380px;
+/* Login: centered brand card on the system surface, footer below the card.
+   `.card.login-card` (not just `.login-card`) so radius/shadow beat
+   nexora.css's `.card` — it is imported after this file. */
+.card.login-card {
+  width: min(100%, 460px);
+  margin-bottom: 0;
+  padding: 24px;
   text-align: left;
+  border-radius: var(--radius-modal);
+  box-shadow:
+    0 18px 40px -18px rgb(15 23 42 / 25%),
+    var(--shadow-sm);
+}
+
+.login-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 24px;
+  text-align: center;
 }
 
 .login-card h1 {
@@ -535,9 +551,102 @@ dialog .row, .ticket-actions { flex-wrap: wrap; }
   text-align: center;
 }
 
+/* Field labels keep the system's muted color, at 14/600 so they read as
+   labels and not as body copy. Rhythm: 12px into the field, 8px down to its
+   input — 8px also matches the password field's grid gap, so both fields
+   breathe the same. */
+.login-card label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.login-card > label {
+  margin-top: 12px;
+  margin-bottom: 8px;
+}
+
+.login-card .pw-field {
+  margin-top: 12px;
+}
+
+.login-sub {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
 .login-card .btn {
   width: 100%;
   margin-top: 16px;
+}
+
+/* Full-width CTA at pay-confirm metrics, primary instead of success. */
+.login-submit {
+  min-height: 52px;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+/* Own line under the password field: the link sits right-aligned at 13px.
+   12px above it (field gap) and 16px to the CTA; the 44px box keeps the
+   tap target at the system minimum without stealing the visual rhythm. */
+.login-forgot-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.login-forgot {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--primary);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: right;
+  transition: color var(--dur) var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .login-forgot:hover {
+    color: var(--primary-hover);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+}
+
+.login-forgot:active {
+  transform: scale(0.97);
+}
+
+/* Plain status line under the link — muted 12px, no box. */
+.login-forgot-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  text-align: right;
+}
+
+.login-footer {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+/* The screen owns its spacing: card ↔ footer gap + safe-area padding. */
+.login-screen {
+  gap: 24px;
+  padding: 24px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  overflow-y: auto;
+}
+
+@media (min-width: 640px) {
+  .card.login-card {
+    padding: 32px;
+  }
 }
 
 /* ── sale ─────────────────────────────────────────────────── */
@@ -1932,13 +2041,22 @@ select {
   margin-right: 6px;
 }
 
-/* Real favicon logo — clearly visible in the login hero (user request) */
+/* Real favicon logo — stacked above the login title, centered, block.
+   Square box + object-fit:contain → the 192×192 asset never distorts.
+   80px on phones, 104px from the card's 640px breakpoint up. */
 .login-logo {
-  width: 64px;
-  height: 64px;
+  display: block;
+  width: 80px;
+  height: 80px;
   object-fit: contain;
-  vertical-align: -16px;
-  margin-right: 10px;
+  margin: 0 auto 16px;
+}
+
+@media (min-width: 640px) {
+  .login-logo {
+    width: 104px;
+    height: 104px;
+  }
 }
 
 .brand-logo {
@@ -1954,6 +2072,11 @@ select {
   align-items: center;
   justify-content: center;
   gap: 4px;
+  margin: 0 0 8px;
+  color: var(--text);
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
 /* ── dashboard (Tanda B) ──────────────────────────────────── */
@@ -3462,8 +3585,28 @@ select {
 .catalog-tile .catalog-price { color: #059669; font-weight: 700; }
 .catalog-tile .catalog-low { color: #d97706; font-weight: 700; }
 .catalog-tile .catalog-edit { width: 100%; background: #f1f5f9; color: #334155; border-radius: 8px; font-size: 12px; margin-top: 8px; }
-.catalog-categories { font-size: 12px; color: var(--muted); }
-.catalog-categories form { max-width: 448px; padding-top: 12px; }
+/* Manage-categories entry point: sits right of the category filter, same
+   44px tap height as the select (--tap), square-ish ghost so it reads as a
+   control of the filter and not as a third toolbar button. */
+.catalog-category-group { display: flex; gap: 8px; align-items: center; min-width: 0; max-width: 100%; }
+.catalog-category-group select { flex: 1 1 auto; }
+/* stretch (not a hard height) so the control always matches the select's
+   real rendered height, including its fractional border-box rounding */
+.catalog-manage { flex: none; align-self: stretch; width: var(--tap); padding: 0; display: grid; place-items: center; border-radius: var(--radius-sm); }
+.category-modal[open] {
+  width: min(448px, calc(100% - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  padding: 24px;
+  border-radius: var(--radius-modal);
+}
+.category-modal .row.gap { margin-top: 0; }
+.category-modal .modal-x { min-width: 44px; min-height: 44px; }
+.category-list { list-style: none; display: flex; flex-direction: column; gap: 8px; margin: 16px 0 0; padding: 12px 0 0; border-top: 1px solid var(--border); font-size: 13px; }
+.category-list li { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
+.category-list-name { overflow-wrap: anywhere; }
+.category-list-count { flex: none; color: var(--muted); font: 11px/16px var(--font-mono); }
+.category-modal .modal-actions { padding-top: 16px; }
 .product-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
 .product-variant-editor { min-width: 0; margin: 12px 0; border-top: 1px solid var(--border); padding-top: 4px; }
 .product-number-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
@@ -3484,7 +3627,10 @@ select {
   .catalog-controls > .btn { width: 100%; }
   .catalog-search-wrap { max-width: none; }
   .catalog-filters { width: 100%; }
-  .catalog-filters select { width: 100%; }
+  /* filter + manage button share the row: the select flexes, the 44px
+     icon button keeps its tap target instead of wrapping alone. */
+  .catalog-category-group { width: 100%; }
+  .catalog-category-group select { width: auto; flex: 1 1 0; }
   .product-modal input, .product-modal select { font-size: 16px; }
   .product-modal .product-number-grid label { min-height: 32px; line-height: 16px; }
 }
